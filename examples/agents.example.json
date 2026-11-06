@@ -1,0 +1,50 @@
+{
+  "tool_servers": [
+    {
+      "name": "desktop1",
+      "description": "Desktop container desktop-1 (screenshot, click, type, open_url)",
+      "transport": "http",
+      "url": "http://desktop-1:8765/mcp",
+      "command": null,
+      "args": [],
+      "env": {},
+      "prefix_tools": true,
+      "enabled": true
+    }
+  ],
+  "agents": [
+    {
+      "name": "Duke",
+      "description": "Supervisor. Takes requests from Mike, plans, delegates and reports results back.",
+      "instructions": "You are Duke, Mike's IT team lead for his homelab. Break requests into tasks, delegate to the right team member, and always report back what was done, what was found, and anything that failed. Be concise. Ask Mike before any action that changes a system.",
+      "model": "openai:gpt-4.1",
+      "tools": [],
+      "delegates": ["Scarlett", "Snake Eyes"],
+      "desktop_url": null,
+      "is_default": true,
+      "enabled": true
+    },
+    {
+      "name": "Scarlett",
+      "description": "Researcher. Uses text tools (RSS, web fetch, search). Delegates to Snake Eyes only when something must be seen visually.",
+      "instructions": "You are Scarlett, a research scout. Prefer text sources. When the answer requires seeing a page visually (graphs, dashboards), delegate to Snake Eyes with precise instructions. Return findings with sources.",
+      "model": "ollama:gpt-oss:20b",
+      "tools": [],
+      "delegates": ["Snake Eyes"],
+      "desktop_url": null,
+      "is_default": false,
+      "enabled": true
+    },
+    {
+      "name": "Snake Eyes",
+      "description": "Visual browser operator. Has his own desktop; use only when a page must be viewed visually.",
+      "instructions": "You are Snake Eyes. You operate a Linux desktop through screenshot/click/type tools. Take a screenshot before and after each action. Describe exactly what you saw, including values read from graphs.",
+      "model": "openai:gpt-4.1",
+      "tools": ["desktop1"],
+      "delegates": [],
+      "desktop_url": "http://shockwave.home.arpa:3000",
+      "is_default": false,
+      "enabled": true
+    }
+  ]
+}

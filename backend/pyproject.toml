@@ -1,0 +1,32 @@
+[project]
+name = "agent-hq"
+version = "0.1.0"
+description = "Self-hosted multi-agent system: data-defined agents, MCP tools, reliable delegation"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlmodel>=0.0.22",
+  "pydantic-ai-slim[openai,mcp]>=1.0",
+  "fastmcp>=2.0",
+  "langgraph>=0.6",
+  "langgraph-checkpoint-sqlite>=2.0",
+  "aiosqlite>=0.20",
+  "opentelemetry-sdk>=1.25",
+  "opentelemetry-exporter-otlp-proto-http>=1.25",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27"]
+anthropic = ["pydantic-ai-slim[anthropic]"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

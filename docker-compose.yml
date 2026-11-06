@@ -1,0 +1,30 @@
+# docker compose up -d --build
+# UI + API: http://<host>:8000     Example desktop viewer: http://<host>:3000
+name: agent-hq
+
+services:
+  hq:
+    build: .
+    restart: unless-stopped
+    ports: ["8000:8000"]
+    volumes: ["./data:/data"]
+    env_file: [.env]
+    environment:
+      AHQ_DATA_DIR: /data
+      AHQ_CORS_ORIGINS: http://localhost:4200
+
+  # One service per agent desktop. Copy this block (desktop-2, port 3002, ...) to add more.
+  # In the UI: register tool server http://desktop-1:8765/mcp (HTTP), tick it on the agent,
+  # and set that agent's desktop viewer URL to http://<host>:3000.
+  desktop-1:
+    build: ./desktop
+    restart: unless-stopped
+    shm_size: "1gb"
+    ports: ["3000:3000"]          # browser view of the desktop; MCP port 8765 stays internal
+    volumes: ["./desktops/desktop-1:/config"]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: America/New_York
+      # CUSTOM_USER: mike
+      # PASSWORD: change-me      # recommended: protects the desktop viewer
