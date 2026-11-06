@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models import AgentDef, ToolServer, _now
+from ..models import AgentDef, Subscription, ToolServer, _now
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -19,6 +19,7 @@ class AgentIn(BaseModel):
     description: str = ""
     instructions: str = ""
     model: str = "ollama:gpt-oss:20b"
+    pool: str = "default"
     tool_server_ids: list[str] = []
     delegates: list[str] = []
     desktop_url: str | None = None
@@ -73,6 +74,11 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
              "delegates": ["*" if d == "*" else by_id.get(d, d) for d in a.delegates]}
             for a in agents
         ],
+        "subscriptions": [
+            {**sub.model_dump(exclude={"id", "created_at", "agent_id", "thread_id"}),
+             "agent": by_id.get(sub.agent_id, sub.agent_id)}
+            for sub in s.exec(select(Subscription)).all()
+        ],
     }
 
 
@@ -105,7 +111,22 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         row.delegates = ["*" if d == "*" else names[d] for d in delegates if d == "*" or d in names]
         s.add(row)
     s.commit()
-    return {"agents": len(pending), "tool_servers": len(body.get("tool_servers", []))}
+    subs = 0
+    for sub in body.get("subscriptions", []):
+        if sub.get("agent") not in names:
+            continue
+        existing = s.exec(select(Subscription).where(Subscription.name == sub["name"])).first()
+        row = existing or Subscription(name=sub["name"], topic_filter=sub["topic_filter"],
+                                       agent_id=names[sub["agent"]])
+        for k, v in sub.items():
+            if k != "agent" and hasattr(row, k):
+                setattr(row, k, v)
+        row.agent_id = names[sub["agent"]]
+        s.add(row)
+        subs += 1
+    s.commit()
+    return {"agents": len(pending), "tool_servers": len(body.get("tool_servers", [])),
+            "subscriptions": subs}
 
 
 @router.get("/{agent_id}", response_model=AgentDef)

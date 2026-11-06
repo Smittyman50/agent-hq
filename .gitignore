@@ -9,3 +9,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/.angular/
 *.egg-info/
+deploy/infra/.env
+deploy/infra/postgres/
+deploy/infra/valkey/
+deploy/infra/mosquitto/data/
+deploy/infra/mosquitto/config/passwd

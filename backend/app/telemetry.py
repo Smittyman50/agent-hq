@@ -7,11 +7,12 @@ import logging
 import os
 
 log = logging.getLogger("agent_hq.telemetry")
+_done = False
 
 
-def setup_telemetry() -> None:
-    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        log.info("OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing disabled")
+def setup_telemetry(service_suffix: str = "") -> None:
+    global _done
+    if _done or not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         return
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -21,9 +22,12 @@ def setup_telemetry() -> None:
     from pydantic_ai import Agent
 
     service = os.environ.get("OTEL_SERVICE_NAME", "agent-hq")
+    if service_suffix:
+        service = f"{service}-{service_suffix}"
     provider = TracerProvider(resource=Resource.create({"service.name": service}))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
     # Every PydanticAI agent run, model call and tool call becomes a span.
     Agent.instrument_all()
-    log.info("tracing enabled -> %s", os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"])
+    _done = True
+    log.info("tracing enabled (%s) -> %s", service, os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"])

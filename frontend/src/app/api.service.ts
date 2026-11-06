@@ -8,6 +8,7 @@ export interface AgentDef {
   description: string;
   instructions: string;
   model: string;
+  pool: string;
   tool_server_ids: string[];
   delegates: string[];
   desktop_url: string | null;
@@ -40,8 +41,24 @@ export interface Message {
   created_at: string;
 }
 
+export interface Subscription {
+  id?: string;
+  name: string;
+  topic_filter: string;
+  agent_id: string;
+  thread_id: string | null;
+  prompt_template: string;
+  min_interval_seconds: number;
+  enabled: boolean;
+}
+
+export interface WorkerInfo { name: string; pools: string[]; concurrency: number; busy: number; seen: string; }
+export interface QueueInfo { pool: string; entries: number; in_progress: number; }
+export interface SystemStatus { valkey: boolean; mqtt: boolean | null; embedded_worker: boolean; }
+
 export interface Job {
-  id: string; status: string; task: string; background: boolean;
+  id: string; kind: 'turn' | 'task'; status: string; task: string; background: boolean;
+  pool: string; attempts: number; worker: string | null;
   requester_agent_id: string; assignee_agent_id: string;
   result: { status: string; summary: string; details: string } | null;
   created_at: string; finished_at: string | null;
@@ -50,8 +67,13 @@ export interface Job {
 export interface HqEvent { type: string; [k: string]: any; }
 
 export function blankAgent(): AgentDef {
-  return { name: '', description: '', instructions: '', model: 'ollama:gpt-oss:20b',
+  return { name: '', description: '', instructions: '', model: 'ollama:gpt-oss:20b', pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };
+}
+
+export function blankSubscription(agent_id = ''): Subscription {
+  return { name: '', topic_filter: 'homelab/alerts/#', agent_id, thread_id: null, prompt_template: '',
+    min_interval_seconds: 60, enabled: true };
 }
 
 export function blankServer(): ToolServer {
@@ -81,6 +103,20 @@ export class Api {
   probeServer(id: string) {
     return this.http.get<{ name: string; description: string }[]>(`/api/tool-servers/${id}/tools`);
   }
+
+  subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
+  saveSubscription(x: Subscription): Observable<Subscription> {
+    return x.id ? this.http.put<Subscription>(`/api/subscriptions/${x.id}`, x)
+                : this.http.post<Subscription>('/api/subscriptions', x);
+  }
+  deleteSubscription(id: string) { return this.http.delete(`/api/subscriptions/${id}`); }
+  testEvent(topic: string, payload: string) {
+    return this.http.post<{ queued_jobs: string[] }>('/api/subscriptions/test', { topic, payload });
+  }
+
+  workers() { return this.http.get<WorkerInfo[]>('/api/system/workers'); }
+  queues() { return this.http.get<QueueInfo[]>('/api/system/queues'); }
+  status() { return this.http.get<SystemStatus>('/api/system/status'); }
 
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }

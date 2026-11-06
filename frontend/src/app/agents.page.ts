@@ -17,7 +17,7 @@ import { AgentDef, Api, ToolServer, blankAgent } from './api.service';
         <button class="row" [class.active]="draft()?.id === a.id" [class.muted]="!a.enabled"
                 (click)="edit(a)">
           <span class="name">{{ a.name }} @if (a.is_default) {<span class="pill">default</span>}</span>
-          <span class="sub">{{ a.description || 'No description' }}</span>
+          <span class="sub">{{ a.pool }} · {{ a.description || 'No description' }}</span>
         </button>
       } @empty {
         <p class="hint">No agents yet. Create one, or import a JSON file.</p>
@@ -39,6 +39,9 @@ import { AgentDef, Api, ToolServer, blankAgent } from './api.service';
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
         <label>Model <small>e.g. ollama:gpt-oss:20b · openai:gpt-4.1 · anthropic:claude-sonnet-4-5</small>
           <input name="model" [(ngModel)]="d.model" list="models"></label>
+        <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
+          <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
+        <datalist id="pools">@for (p of pools(); track p) { <option [value]="p"></option> }</datalist>
         <datalist id="models">
           <option value="ollama:gpt-oss:20b"></option><option value="ollama:qwen3:14b"></option>
           <option value="openai:gpt-4.1"></option><option value="anthropic:claude-sonnet-4-5"></option>
@@ -92,6 +95,7 @@ export class AgentsPage implements OnInit {
   servers = signal<ToolServer[]>([]);
   draft = signal<AgentDef | null>(null);
   error = signal('');
+  pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
   others = computed(() => this.agents().filter(a => a.id !== this.draft()?.id && a.enabled));
 
   ngOnInit() { this.load(); }

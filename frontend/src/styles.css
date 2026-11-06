@@ -64,3 +64,13 @@ nav.top a { color: var(--muted); text-decoration: none; } nav.top a.on { color: 
 .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
 button, .file { white-space: nowrap; display: inline-flex; align-items: center; line-height: 1.2; margin: 0; }
 .list-head select { flex: 1; min-width: 0; }
+.editor.wide { max-width: 1000px; }
+.cards { display: flex; gap: 12px; margin-bottom: 8px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+.card .k { color: var(--muted); font-size: 12px; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+table.grid { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+table.grid th, table.grid td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+table.grid th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.inline input { flex: 1; } .act.queue { opacity: .7; }
+code { font-family: ui-monospace, monospace; font-size: 12px; }

@@ -23,7 +23,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
       @for (t of threads(); track t.id) {
         <button class="row" [class.active]="t.id === threadId()" (click)="open(t.id)">
           <span class="name">{{ agentName(t.agent_id) }}</span>
-          <span class="sub">{{ t.created_at | date:'MMM d, h:mm a' }}</span>
+          <span class="sub">{{ t.title }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span>
         </button>
       } @empty { <p class="hint">No conversations yet.</p> }
     </aside>
@@ -144,7 +144,9 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'status': this.busy.set(ev['state'] === 'thinking'); break;
       case 'tool_call': this.log(ev, `${ev['agent']} → ${ev['tool']}(${JSON.stringify(ev['args'])})`, 'call'); break;
       case 'tool_result': this.log(ev, `${ev['agent']} ← ${ev['tool']}: ${ev['error'] ?? ev['preview']}`, ev['error'] ? 'err' : 'result'); break;
-      case 'delegation_started': this.log(ev, `${ev['from_agent']} delegated to ${ev['to_agent']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg'); break;
+      case 'job_queued': this.log(ev, `queued ${ev['kind']} for ${this.agentName(ev['agent_id'])} on pool ${ev['pool']}`, 'queue'); break;
+      case 'job_retry': this.log(ev, `job ${ev['job_id']} retried on ${ev['worker']} (attempt ${ev['attempt']})`, 'err'); break;
+      case 'delegation_started': this.log(ev, `${ev['from_agent'] ?? 'you'} → ${ev['to_agent']} on ${ev['worker']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg'); break;
       case 'delegation_finished': this.log(ev, `${ev['to_agent']} finished [${ev['result'].status}]`, 'deleg'); break;
     }
   }

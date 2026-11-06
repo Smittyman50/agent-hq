@@ -1,0 +1,34 @@
+# Shared infrastructure for Agent HQ: run once, on one host.
+#   cd deploy/infra && cp .env.example .env && docker compose up -d
+# If you already run an MQTT broker (e.g. for Home Assistant), delete the mosquitto
+# service and point AHQ_MQTT_URL at your existing broker instead.
+name: agent-hq-infra
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_hq
+      POSTGRES_USER: agent_hq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: ["./postgres:/var/lib/postgresql/data"]
+    ports: ["5432:5432"]
+
+  valkey:
+    image: valkey/valkey:8
+    restart: unless-stopped
+    # AOF persistence so queued jobs survive a restart; never evict stream entries.
+    command: >
+      valkey-server --appendonly yes --appendfsync everysec
+      --maxmemory-policy noeviction --requirepass ${VALKEY_PASSWORD:?set VALKEY_PASSWORD in .env}
+    volumes: ["./valkey:/data"]
+    ports: ["6379:6379"]
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+    ports: ["1883:1883"]

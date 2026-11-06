@@ -9,12 +9,17 @@ from .config import settings
 _engine = None
 
 
+def _make_engine(url: str):
+    if url.startswith("sqlite"):
+        return create_engine(url, connect_args={"check_same_thread": False})
+    return create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10)
+
+
 def engine():
     global _engine
     if _engine is None:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(settings.db_url, connect_args={"check_same_thread": False}
-                                if settings.db_url.startswith("sqlite") else {})
+        _engine = _make_engine(settings.db_url)
     return _engine
 
 
@@ -33,6 +38,9 @@ def session() -> Session:
     return Session(engine(), expire_on_commit=False)
 
 
-def reset_engine_for_tests(url: str) -> None:
+def reset_engine(url: str | None = None) -> None:
+    """Point at a different database (tests)."""
     global _engine
-    _engine = create_engine(url, connect_args={"check_same_thread": False})
+    if _engine is not None:
+        _engine.dispose()
+    _engine = _make_engine(url or settings.db_url)

@@ -1,17 +1,39 @@
-# docker compose up -d --build
-# UI + API: http://<host>:8000     Example desktop viewer: http://<host>:3000
+# Agent HQ application: API/UI + workers (+ an example agent desktop).
+# Needs the shared infrastructure in deploy/infra (Postgres, Valkey, Mosquitto).
+#   cp .env.example .env   # set AHQ_DB_URL, AHQ_REDIS_URL, AHQ_MQTT_URL, model keys
+#   docker compose up -d --build
+#
+# Workers can also run on other machines: copy this file there and keep only the
+# worker services you want on that host (same image, same .env).
 name: agent-hq
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  env_file: [.env]
 
 services:
   hq:
-    build: .
-    restart: unless-stopped
+    <<: *app
     ports: ["8000:8000"]
-    volumes: ["./data:/data"]
-    env_file: [.env]
     environment:
-      AHQ_DATA_DIR: /data
       AHQ_CORS_ORIGINS: http://localhost:4200
+
+  # General-purpose worker: runs agents whose pool is "default".
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker", "--pools", "default", "--concurrency", "4"]
+    # No AHQ_WORKER_NAME here: each replica uses its container hostname, which is unique.
+    deploy:
+      replicas: 1          # raise for more parallel agent runs
+
+  # Worker for agents that drive the desktop below (set those agents' pool to "desktop").
+  # Runs on the same host, so it can reach http://desktop-1:8765/mcp on this network.
+  worker-desktop:
+    <<: *app
+    command: ["python", "-m", "app.worker", "--pools", "desktop", "--concurrency", "1"]
+    environment:
+      AHQ_WORKER_NAME: worker-desktop
 
   # One service per agent desktop. Copy this block (desktop-2, port 3002, ...) to add more.
   # In the UI: register tool server http://desktop-1:8765/mcp (HTTP), tick it on the agent,
