@@ -38,6 +38,42 @@ async def test_delegation_longer_than_five_seconds_still_reports_back(hq):
     assert await hq.wait_agent_replies(t["id"], 1, timeout=30) == ["Report: Worker finished"]
 
 
+async def test_delegated_results_are_attributed_and_tools_announced(hq, monkeypatch):
+    from app.broker import Broker
+
+    from .conftest import SCRIPTS, _instructions, _tool_returns, boss
+
+    seen, events = {}, []
+    publish = Broker.publish
+
+    async def recording(self, thread_id, type_, **data):
+        events.append({"type": type_, **data})
+        await publish(self, thread_id, type_, **data)
+
+    monkeypatch.setattr(Broker, "publish", recording)
+
+    def inspecting_boss(messages, info):
+        returns = _tool_returns(messages)
+        if returns:
+            seen["result"] = returns[-1].content
+            seen["rules"] = _instructions(messages)
+        return boss(False)(messages, info)
+
+    SCRIPTS["boss-inspect"] = inspecting_boss
+    await hq.start_worker()
+    _, _, t = await _team(hq, boss="fake:boss-inspect", worker_name="Scarlett")
+    await hq.say(t["id"], "check the feeds")
+    await hq.wait_agent_replies(t["id"], 1)
+    # The delegator is told whose report this is, and to say so.
+    assert seen["result"]["from"] == "Scarlett" and seen["result"]["status"] == "done"
+    assert "Scarlett's report to you, not your own work" in seen["result"]["note"]
+    assert "Never present a team" in seen["rules"]
+    # Each run announces which tool servers the agent has (none here), so a missing
+    # browser shows up in the activity log instead of as "I can't browse".
+    tools = [e for e in events if e["type"] == "agent_tools"]
+    assert {e["agent"] for e in tools} == {"Lead", "Scarlett"} and all(e["servers"] == [] for e in tools)
+
+
 async def test_single_slot_worker_does_not_deadlock(hq):
     # The supervisor waits on its delegate; it must give up its slot while waiting.
     await hq.start_worker(concurrency=1)

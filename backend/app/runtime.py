@@ -116,6 +116,10 @@ Operating rules:
   result when it finishes.
 - You are accountable for delegated work: always report its outcome (including failures)
   back to whoever asked you.
+- Make clear who did the work. Say whom you delegated to and what they reported, in your
+  own words ("I asked Scarlett to check the feeds; she found..."). Never present a team
+  member's result, or their failure, as if you had done it yourself. If they failed, say
+  so, and suggest a next step if you can.
 """
 
 
@@ -264,6 +268,13 @@ def has_fallback(agent: AgentDef) -> bool:
 DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools are paused. "
                   "Do not retry. Report that you are waiting for the user to hand the desktop "
                   "back; you will be woken when they do.")
+
+
+def attributed(name: str, result: dict) -> dict:
+    """A delegate's result, labelled so the delegator relays it as theirs, not its own."""
+    return {"from": name, **result,
+            "note": f"This is {name}'s report to you, not your own work. Tell whoever asked "
+                    f"you that you delegated this to {name} and what {name} reported."}
 
 
 def team_roster(agent: AgentDef) -> str:
@@ -508,8 +519,9 @@ class Runtime:
         return (f"[Background job {job.id} finished]\n"
                 f"{assignee.name} was asked: {job.task}\n"
                 f"Result: {result.model_dump_json()}\n\n"
-                "Report this outcome to the user now. Do not start new work unless the "
-                "result requires it.")
+                f"Report this outcome to the user now as {assignee.name}'s work: say you had "
+                f"asked {assignee.name} and what they reported, in your own words. Do not start "
+                "new work unless the result requires it.")
 
     # ------------------------------------------------------------ agents
 
@@ -562,6 +574,9 @@ class Runtime:
                         history: list | None = None, as_worker: bool = False):
         """Run on the agent's model; on failure or escalation, rerun on its fallback model."""
         recalled = await self._recall(agent, prompt, deps)
+        servers = agent_tool_servers(agent)
+        await self.broker.publish(deps.thread_id, "agent_tools", agent=agent.name, agent_id=agent.id,
+                                  servers=[s.name for s in servers], depth=deps.depth)
         try:
             pa_agent = self.build_agent(agent, as_worker=as_worker, memory_context=recalled)
             result = await pa_agent.run(prompt, deps=deps, message_history=history,
@@ -606,6 +621,10 @@ class Runtime:
 
     async def _capture_delegation(self, job: Job, assignee: AgentDef, result: WorkResult) -> None:
         if not memory.get_settings()["capture_delegations"] or not memory_on(assignee):
+            return
+        # Only completed work. Failures are usually setup problems or one-offs ("I can't
+        # browse" when a tool server was missing); remembering them teaches agents to give up.
+        if result.status != "done":
             return
         text = (f"{assignee.name} was asked: {job.task[:400]}\n"
                 f"Outcome ({result.status}): {result.summary[:800]}")
@@ -832,11 +851,11 @@ class Runtime:
             async with released_slot():
                 result = await rt.broker.wait_result(job.id, settings.delegate_wait_timeout)
             if result is not None:
-                return result
+                return attributed(target.name, result)
             # Taking too long: convert to a background job so the result still gets reported.
             job = update_job(job.id, background=True)
             if job.status in (JobStatus.done, JobStatus.failed) and job.result:
-                return job.result
+                return attributed(target.name, job.result)
             return {"status": "queued", "job_id": job.id,
                     "summary": f"{target.name} is still working after "
                     f"{int(settings.delegate_wait_timeout)}s. It now runs in the background; you "

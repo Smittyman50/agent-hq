@@ -207,6 +207,18 @@ async def test_delegation_results_are_captured_once(hq):
     assert captured[0]["text"].startswith("Scout was asked: Please handle: check the RSS feeds")
 
 
+async def test_failed_delegations_are_not_captured(hq):
+    # A failure ("I can't browse" with a tool server missing) recalled next time would teach
+    # the agent to give up again, so only completed work becomes memory.
+    await hq.start_worker()
+    w = await hq.agent(name="Snake Eyes", description="browses", model="fake:broken")
+    b = await hq.agent(name="Duke", model="fake:boss", delegates=[w["id"]])
+    t = await hq.thread(b["id"])
+    await hq.say(t["id"], "open CNN")
+    await hq.wait_agent_replies(t["id"], 1)
+    assert not [m for m in (await hq.http.get("/api/memory")).json() if m["source"] == "auto:delegation"]
+
+
 async def test_mqtt_events_are_captured(hq):
     await hq.start_worker()
     a = await hq.agent(name="Watcher", model="fake:alert")
