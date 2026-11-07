@@ -51,6 +51,7 @@ from . import db
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
+from .telemetry import current_traceparent, job_span, set_output
 from .models import (
     AgentDef,
     Job,
@@ -348,6 +349,7 @@ class Runtime:
         return await self._submit(job)
 
     async def _submit(self, job: Job) -> Job:
+        job.trace_parent = job.trace_parent or current_traceparent()
         with db.session() as s:
             s.add(job)
             s.commit()
@@ -373,10 +375,14 @@ class Runtime:
         if attempts > 1:
             await self.broker.publish(job.origin_thread_id, "job_retry", job_id=job.id,
                                       attempt=attempts, worker=worker)
-        if job.kind == JobKind.turn:
-            await self._run_turn(job)
-        else:
-            await self._run_task(job)
+        assignee = load_agent(job.assignee_agent_id)
+        with job_span(job, assignee.name, worker) as span:
+            if job.kind == JobKind.turn:
+                await self._run_turn(job)
+            else:
+                await self._run_task(job)
+            set_output(span, (load_job(job.id).result or {}).get("reply")
+                       or load_job(job.id).result)
 
     async def _give_up(self, job: Job) -> None:
         msg = f"Abandoned after {settings.max_attempts} attempts (workers kept dying)."
@@ -532,7 +538,8 @@ class Runtime:
         """Run on the agent's model; on failure or escalation, rerun on its fallback model."""
         try:
             pa_agent = self.build_agent(agent, as_worker=as_worker)
-            result = await pa_agent.run(prompt, deps=deps, message_history=history)
+            result = await pa_agent.run(prompt, deps=deps, message_history=history,
+                                        conversation_id=deps.thread_id)
             return result.output, result.all_messages()
         except asyncio.CancelledError:
             raise
@@ -551,7 +558,8 @@ class Runtime:
             note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Take over and complete it.]")
             pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=True)
-            result = await pa_agent.run(prompt + note, deps=deps, message_history=history)
+            result = await pa_agent.run(prompt + note, deps=deps, message_history=history,
+                                        conversation_id=deps.thread_id)
             return result.output, result.all_messages()
 
     # ------------------------------------------------------------ vision and escalation tools
@@ -570,7 +578,7 @@ class Runtime:
             if await rt.broker.user_has_control(srv.id):
                 await rt.broker.mark_blocked(srv.id, {"agent_id": me.id, "thread_id": ctx.deps.thread_id})
                 return None, DESKTOP_PAUSED
-            return DesktopEyes(me, srv), None
+            return DesktopEyes(me, srv, ctx.deps.thread_id), None
 
         async def look(ctx: RunContext[RunDeps], question: str) -> str:
             """Ask a question about what is currently on the screen.

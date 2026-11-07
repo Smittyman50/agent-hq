@@ -1,33 +1,129 @@
-"""OpenTelemetry setup. Point OTEL_EXPORTER_OTLP_ENDPOINT at your Collector
-(e.g. http://perceptor:4318) and traces flow on to Phoenix."""
+"""OpenTelemetry for Arize Phoenix (directly or through an OpenTelemetry Collector).
+
+Set OTEL_EXPORTER_OTLP_ENDPOINT (e.g. http://perceptor:4318, OTLP over HTTP) and:
+
+* Every agent run, model call and tool call becomes a span. The OpenInference span
+  processor reshapes PydanticAI's spans into the conventions Phoenix renders natively
+  (agent / LLM / tool spans with inputs, outputs and token counts).
+* Each job runs inside a "job" span whose parent is the span that queued it. The W3C
+  traceparent travels with the job through Valkey, so a conversation turn, its
+  delegations on other machines and any background report all form one trace.
+* Every span inside a job carries session.id = the conversation ID (Phoenix groups
+  them as a session) plus agent, job, kind, pool and worker attributes.
+* Images (screenshots sent to vision models) are never put into spans.
+  AHQ_TRACE_CONTENT=0 also leaves out prompts and replies.
+"""
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
+from contextvars import ContextVar
+from typing import Any
+
+from opentelemetry import context as otel_context
+from opentelemetry import trace
+from opentelemetry.propagate import extract, inject
 
 log = logging.getLogger("agent_hq.telemetry")
-_done = False
+_enabled = False
+
+TRACER = "agent_hq"
+
+# Attributes stamped onto every span started while a job runs.
+_job_attrs: ContextVar[dict[str, Any] | None] = ContextVar("ahq_job_attrs", default=None)
 
 
-def setup_telemetry(service_suffix: str = "") -> None:
-    global _done
-    if _done or not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        return
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+def _job_attributes_processor():
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    class JobAttributesProcessor(SpanProcessor):
+        """Copies the current job's attributes onto every new span."""
+
+        def on_start(self, span, parent_context=None) -> None:
+            attrs = _job_attrs.get()
+            if attrs:
+                span.set_attributes(attrs)
+
+    return JobAttributesProcessor()
+
+
+def setup_telemetry(service_suffix: str = "", *, exporter=None, force: bool = False) -> bool:
+    """Configure tracing. `exporter` is for tests (e.g. an InMemorySpanExporter)."""
+    global _enabled
+    if _enabled and not force:
+        return True
+    if exporter is None and not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        return False
+    from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
     from pydantic_ai import Agent
+    from pydantic_ai.models.instrumented import InstrumentationSettings
 
     service = os.environ.get("OTEL_SERVICE_NAME", "agent-hq")
     if service_suffix:
         service = f"{service}-{service_suffix}"
     provider = TracerProvider(resource=Resource.create({"service.name": service}))
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    # Order matters: stamp job attributes, reshape for Phoenix, then export.
+    provider.add_span_processor(_job_attributes_processor())
+    provider.add_span_processor(OpenInferenceSpanProcessor())
+    if exporter is None:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    else:
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
-    # Every PydanticAI agent run, model call and tool call becomes a span.
-    Agent.instrument_all()
-    _done = True
-    log.info("tracing enabled (%s) -> %s", service, os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"])
+    include_content = os.environ.get("AHQ_TRACE_CONTENT", "1") not in ("0", "false", "no")
+    Agent.instrument_all(InstrumentationSettings(
+        tracer_provider=provider, include_binary_content=False, include_content=include_content))
+    _enabled = True
+    log.info("tracing enabled (%s)%s", service,
+             f" -> {os.environ['OTEL_EXPORTER_OTLP_ENDPOINT']}" if exporter is None else "")
+    return True
+
+
+def current_traceparent() -> str | None:
+    """W3C traceparent of the active span, to store on a job being queued."""
+    carrier: dict[str, str] = {}
+    inject(carrier)
+    return carrier.get("traceparent")
+
+
+@contextlib.contextmanager
+def job_span(job, agent_name: str, worker: str):
+    """Run a job inside a span continuing the trace that queued it."""
+    attrs = {
+        "session.id": job.origin_thread_id,
+        "agent_hq.agent": agent_name,
+        "agent_hq.job_id": job.id,
+        "agent_hq.job_kind": str(getattr(job.kind, "value", job.kind)),
+        "agent_hq.pool": job.pool,
+        "agent_hq.worker": worker,
+        "agent_hq.attempt": job.attempts,
+        "metadata": json.dumps({"agent": agent_name, "job_id": job.id, "pool": job.pool,
+                                "worker": worker, "depth": job.depth}),
+    }
+    parent = extract({"traceparent": job.trace_parent}) if job.trace_parent else otel_context.Context()
+    tracer = trace.get_tracer(TRACER)
+    kind = attrs["agent_hq.job_kind"]
+    token = _job_attrs.set(attrs)
+    try:
+        with tracer.start_as_current_span(
+            f"{kind} {agent_name}", context=parent, kind=trace.SpanKind.CONSUMER,
+            attributes={**attrs, "openinference.span.kind": "CHAIN" if kind == "turn" else "AGENT",
+                        "input.value": job.task[:4000]},
+        ) as span:
+            yield span
+    finally:
+        _job_attrs.reset(token)
+
+
+def set_output(span, value: Any) -> None:
+    if span is not None and span.is_recording():
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        span.set_attribute("output.value", text[:4000])

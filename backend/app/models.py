@@ -188,6 +188,8 @@ class Job(SQLModel, table=True):
     depth: int = 0
     chain: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     pool: str = "default"
+    # W3C traceparent of the span that queued this job, so tracing continues on the worker.
+    trace_parent: str | None = None
     status: JobStatus = JobStatus.queued
     attempts: int = 0
     worker: str | None = None

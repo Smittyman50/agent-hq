@@ -213,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- tracing: one trace across two workers for a turn and its delegation, background reports joining that trace, session IDs and Phoenix span types on every span, and no screenshot data in spans
 - avatars: animated GIF served untouched plus a still first frame, validation, keeping them through agent edits and export/import
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
@@ -378,7 +379,15 @@ The switch shows up in the conversation and the live activity panel. The fallbac
 
 ## Observability
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry Collector. The API process traces as `agent-hq` and workers as `agent-hq-worker`, so every agent run, model call and tool call shows up in Phoenix. The live activity panel in each chat shows the same information, plus queueing, retries and which worker ran each job.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry Collector, for example `http://perceptor:4318`; it uses OTLP over HTTP, so the Collector needs its HTTP receiver. You can also point it straight at Phoenix (`http://phoenix-host:6006`). Agent HQ's traces are shaped for [Arize Phoenix](https://arize.com/docs/phoenix):
+
+- **Phoenix's native span types.** The OpenInference span processor reshapes PydanticAI's spans into the agent, LLM and tool spans Phoenix understands, with inputs, outputs and token counts.
+- **One trace per conversation turn, across machines.** Each job carries the W3C `traceparent` of whatever queued it, through Valkey to the worker. A turn, its delegations on other workers and any background report all form one tree: `turn` → `invoke_agent` → `execute_tool delegate` → `task` → `invoke_agent` → `chat`.
+- **Sessions.** Every span inside a job has `session.id` set to the conversation ID, so Phoenix's **View Session** shows a whole conversation, every turn included. Job spans also carry agent, job ID, pool, worker and attempt, as attributes and as metadata.
+- **No screenshots in traces.** Images sent to vision models are never recorded. `AHQ_TRACE_CONTENT=0` also leaves prompts and replies out.
+- **No HTTP noise.** FastAPI's own request tracing is turned off, so the UI's background polling doesn't bury agent traces.
+
+The API process reports as `agent-hq` and workers as `agent-hq-worker`. The chat page's live activity panel shows the same activity in real time.
 
 ## Layout
 

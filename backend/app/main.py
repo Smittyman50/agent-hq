@@ -66,8 +66,19 @@ async def lifespan(app: FastAPI):
     await broker.close()
 
 
+def _fastapi_kwargs() -> dict:
+    """Newer FastAPI versions trace every HTTP request by themselves. The UI polls several
+    endpoints, which would bury the agent traces in Phoenix, so turn that off; agent work
+    is traced per job instead."""
+    import inspect
+
+    if "telemetry" in inspect.signature(FastAPI.__init__).parameters:
+        return {"telemetry": {"tracing": False, "metrics": False, "logs": False}}
+    return {}
+
+
 def create_app(lifespan_=lifespan) -> FastAPI:
-    app = FastAPI(title="Agent HQ", lifespan=lifespan_)
+    app = FastAPI(title="Agent HQ", lifespan=lifespan_, **_fastapi_kwargs())
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
     for r in (agents.router, avatars.router, desktop.router, providers.router, tool_servers.router, threads.router, subscriptions.router,

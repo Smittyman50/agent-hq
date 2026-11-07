@@ -111,6 +111,7 @@ class DesktopEyes:
 
     agent: AgentDef
     server: ToolServer
+    thread_id: str | None = None  # traces group vision calls with the conversation
 
     def _vision_agent(self) -> Agent:
         model = build_model_for(self.agent.vision_provider_id, self.agent.vision_model,
@@ -133,7 +134,8 @@ class DesktopEyes:
         raise RuntimeError("the desktop returned no image")
 
     async def ask(self, prompt: str, png: bytes) -> str:
-        r = await self._vision_agent().run([prompt, BinaryContent(data=png, media_type="image/png")])
+        r = await self._vision_agent().run([prompt, BinaryContent(data=png, media_type="image/png")],
+                                           conversation_id=self.thread_id)
         return str(r.output).strip()
 
     async def look(self, question: str) -> str:
