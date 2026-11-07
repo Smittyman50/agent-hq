@@ -28,6 +28,8 @@ class Settings:
     max_delegation_depth: int = field(default_factory=lambda: int(_env("MAX_DELEGATION_DEPTH", "4")))
     # A waiting delegation switches to background mode after this many seconds.
     delegate_wait_timeout: float = field(default_factory=lambda: float(_env("DELEGATE_WAIT_TIMEOUT", "1800")))
+    # Largest avatar upload accepted, in bytes.
+    avatar_max_bytes: int = field(default_factory=lambda: int(_env("AVATAR_MAX_BYTES", str(3 * 1024 * 1024))))
     # How long an agent waits for you after asking you to take over its desktop.
     handoff_timeout: float = field(default_factory=lambda: float(_env("HANDOFF_TIMEOUT", "1800")))
     # Worker reliability knobs.

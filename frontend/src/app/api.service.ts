@@ -21,6 +21,8 @@ export interface AgentDef {
   desktop_url: string | null;
   is_default: boolean;
   enabled: boolean;
+  avatar_version?: number;
+  avatar_animated?: boolean;
 }
 
 export interface ToolServer {
@@ -122,6 +124,12 @@ export class Api {
                 : this.http.post<AgentDef>('/api/agents', a);
   }
   deleteAgent(id: string) { return this.http.delete(`/api/agents/${id}`); }
+  uploadAvatar(id: string, file: File) {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.put<AgentDef>(`/api/agents/${id}/avatar`, form);
+  }
+  removeAvatar(id: string) { return this.http.delete<AgentDef>(`/api/agents/${id}/avatar`); }
   exportAgents() { return this.http.get<any>('/api/agents/export'); }
   importAgents(data: any) { return this.http.post<any>('/api/agents/import', data); }
 

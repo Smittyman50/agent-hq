@@ -213,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- avatars: animated GIF served untouched plus a still first frame, validation, keeping them through agent edits and export/import
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
@@ -305,6 +306,19 @@ You can register several providers of the same kind, for example two Ollama serv
 
 Agents that use desktop tools need a vision-capable model.
 
+## Avatars
+
+Give each agent a face on the **Agents** page: **Upload avatar** accepts a GIF (animated is fine), PNG, JPEG or WebP image up to 3 MB (`AHQ_AVATAR_MAX_BYTES`). Avatars appear in the agent list, the conversation list, the chat header, next to each reply, and on desktop-help banners. Agents without one get their initials on a colour derived from their name.
+
+- **Storage:** images are kept in the database, so every machine serves the same ones, and they're included in agent export and import.
+- **Animation:** how animated GIFs behave is a per-browser setting on the **System** page:
+  - *Always animate*
+  - *Only while the agent is working*
+  - *Never*: shows the first frame; hovering plays the animation.
+
+  Browsers set to reduce motion default to *Never*.
+- **Working indicator:** an agent that's currently working also gets a highlighted ring around its avatar.
+
 ## Local-first models
 
 Three features let local models do most of the work, so frontier models are only used when needed.
@@ -376,6 +390,7 @@ backend/app/
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
   vision.py          look / locate / click_on via a per-agent vision model
+  api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
   llm.py             model providers: build an agent's model; list a provider's models
   api/               REST + WebSocket (/ws/threads/{id})

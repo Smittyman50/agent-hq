@@ -1,10 +1,12 @@
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { AvatarSettings } from './avatar';
 import { Api, QueueInfo, SystemStatus, WorkerInfo } from './api.service';
 
 @Component({
   selector: 'hq-system',
-  imports: [DatePipe],
+  imports: [DatePipe, FormsModule],
   template: `
   <div class="editor wide">
     <h2>System</h2>
@@ -16,6 +18,14 @@ import { Api, QueueInfo, SystemStatus, WorkerInfo } from './api.service';
         <div class="card"><span class="k">Embedded worker</span><span class="muted">{{ s.embedded_worker ? 'on' : 'off' }}</span></div>
       </div>
     }
+
+    <h3>Display</h3>
+    <label class="narrow">Animated avatars <small>this browser only</small>
+      <select [ngModel]="avatars.mode()" (ngModelChange)="avatars.set($event)">
+        <option value="always">Always animate</option>
+        <option value="active">Animate only while the agent is working</option>
+        <option value="never">Never animate (still image; hover to play)</option>
+      </select></label>
 
     <h3>Live workers</h3>
     <table class="grid">
@@ -38,6 +48,7 @@ import { Api, QueueInfo, SystemStatus, WorkerInfo } from './api.service';
 })
 export class SystemPage implements OnInit, OnDestroy {
   private api = inject(Api);
+  avatars = inject(AvatarSettings);
   private timer?: ReturnType<typeof setInterval>;
   workers = signal<WorkerInfo[]>([]);
   queues = signal<QueueInfo[]>([]);

@@ -78,7 +78,9 @@ def create_agent(body: AgentIn, s: Session = Depends(get_session)):
 @router.get("/export")
 def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
     """Portable JSON: providers, delegates and tools are referenced by name, not ID.
-    Provider API keys are never exported."""
+    Provider API keys are never exported. Avatars are included as base64."""
+    from .avatars import export_avatar
+
     agents = s.exec(select(AgentDef)).all()
     servers = s.exec(select(ToolServer)).all()
     providers = s.exec(select(ModelProvider)).all()
@@ -90,7 +92,9 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
         "tool_servers": [t.model_dump(exclude={"id", "created_at"}) for t in servers],
         "agents": [
             {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
-                                     "provider_id", "vision_provider_id", "fallback_provider_id"}),
+                                     "provider_id", "vision_provider_id", "fallback_provider_id",
+                                     "avatar_version", "avatar_animated"}),
+             "avatar": export_avatar(s, a.id),
              "provider": prov_by_id.get(a.provider_id),
              "vision_provider": prov_by_id.get(a.vision_provider_id),
              "fallback_provider": prov_by_id.get(a.fallback_provider_id),
@@ -134,7 +138,8 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         row = existing or AgentDef(name=a["name"])
         for k, v in a.items():
             if k not in ("tools", "delegates", "provider", "provider_id", "vision_provider",
-                         "vision_provider_id", "fallback_provider", "fallback_provider_id") and hasattr(row, k):
+                         "vision_provider_id", "fallback_provider", "fallback_provider_id",
+                         "avatar", "avatar_version", "avatar_animated") and hasattr(row, k):
                 setattr(row, k, v)
         row.provider_id = providers.get(a.get("provider")) if a.get("provider") else None
         row.vision_provider_id = providers.get(a.get("vision_provider")) if a.get("vision_provider") else None
@@ -143,6 +148,12 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         row.tool_server_ids = [servers[n] for n in a.get("tools", []) if n in servers]
         row.updated_at = _now()
         s.add(row)
+        if a.get("avatar"):
+            import base64
+
+            from .avatars import store_avatar
+            s.flush()
+            store_avatar(s, row, base64.b64decode(a["avatar"]["data_base64"]))
         pending.append((row, a.get("delegates", [])))
     s.commit()
     names = {a.name: a.id for a in s.exec(select(AgentDef)).all()}

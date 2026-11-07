@@ -80,3 +80,13 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 .desk-bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
 .desk-bar input { flex: 1; }
 .pill.you { color: var(--warn); border-color: var(--warn); }
+.avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; background: var(--panel2); box-shadow: 0 0 0 1px var(--line); vertical-align: middle; transition: box-shadow .2s; }
+.avatar.active { box-shadow: 0 0 0 2px var(--accent); }
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.avatar .initials { width: 100%; height: 100%; display: grid; place-items: center; color: #fff; font-weight: 600; letter-spacing: .5px; }
+.row-with-avatar { display: flex; gap: 10px; align-items: center; min-width: 0; width: 100%; }
+.row-text { display: flex; flex-direction: column; min-width: 0; }
+.msg .who { display: flex; align-items: center; gap: 6px; }
+.avatar-edit { display: flex; gap: 18px; align-items: center; margin-bottom: 16px; }
+.avatar-edit h2 { margin-bottom: 8px; }
+label.narrow { max-width: 420px; }

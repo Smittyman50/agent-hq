@@ -5,12 +5,13 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AgentDef, Api, DesktopState, HqEvent, Message, Thread } from './api.service';
+import { Avatar } from './avatar';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe],
+  imports: [FormsModule, DatePipe, Avatar],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <aside class="list">
@@ -22,8 +23,11 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
       </div>
       @for (t of threads(); track t.id) {
         <button class="row" [class.active]="t.id === threadId()" (click)="open(t.id)">
-          <span class="name">{{ agentName(t.agent_id) }}</span>
-          <span class="sub">{{ t.title }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span>
+          <span class="row-with-avatar"><hq-avatar [agent]="agentById(t.agent_id)" [size]="30" [active]="isActive(t.agent_id)" />
+            <span class="row-text">
+              <span class="name">{{ agentName(t.agent_id) }}</span>
+              <span class="sub">{{ t.title }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span>
+            </span></span>
         </button>
       } @empty { <p class="hint">No conversations yet.</p> }
     </aside>
@@ -31,6 +35,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
     <section class="conversation">
       @if (threadId()) {
         <header class="conv-head">
+          <hq-avatar [agent]="agentById(thread()?.agent_id)" [size]="30" [active]="isActive(thread()?.agent_id)" />
           <strong>{{ agentName(thread()?.agent_id) }}</strong>
           @if (busy()) { <span class="pill live">working…</span> }
           <span class="spacer"></span>
@@ -41,14 +46,17 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
         </header>
         @if (pendingRequest(); as r) {
           <div class="banner">
-            <span><strong>{{ agentName(r.agent_id) }}</strong> needs you on its desktop: {{ r.reason }}</span>
+            <span class="row-with-avatar"><hq-avatar [agent]="agentById(r.agent_id)" [size]="28" [active]="true" />
+              <span><strong>{{ agentName(r.agent_id) }}</strong> needs you on its desktop: {{ r.reason }}</span></span>
             <button (click)="takeFor(r.agent_id)">Open desktop and take control</button>
           </div>
         }
         <div class="messages" #scroller>
           @for (m of messages(); track m.id) {
             <div class="msg {{ m.role }}">
-              @if (m.role !== 'user') { <div class="who">{{ m.role === 'event' ? 'activity' : agentName(m.agent_id) }}</div> }
+              @if (m.role === 'agent') {
+                <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}</div>
+              } @else if (m.role === 'event') { <div class="who">activity</div> }
               <div class="body">{{ m.content }}</div>
             </div>
           }
@@ -151,7 +159,7 @@ export class ChatPage implements OnInit, OnDestroy {
     this.route.paramMap.subscribe(p => this.select(p.get('id')));
   }
 
-  ngOnDestroy() { this.sub?.unsubscribe(); clearInterval(this.deskTimer); }
+  ngOnDestroy() { this.sub?.unsubscribe(); clearInterval(this.deskTimer); clearInterval(this.ticker); }
 
   constructor() {
     effect(() => {
@@ -200,7 +208,35 @@ export class ChatPage implements OnInit, OnDestroy {
     this.sub = this.api.events(id).subscribe(ev => this.onEvent(ev));
   }
 
+  agentById(id: string | null | undefined) { return this.agents().find(a => a.id === id); }
+
+  /** Agents seen doing something in the last few seconds animate in "while working" mode. */
+  private lastSeen = signal<Record<string, number>>({});
+  private now = signal(Date.now());
+  private ticker = setInterval(() => this.now.set(Date.now()), 1500);
+
+  isActive(id: string | null | undefined) {
+    if (!id) return false;
+    if (this.busy() && this.thread()?.agent_id === id) return true;
+    return this.now() - (this.lastSeen()[id] ?? 0) < 6000;
+  }
+
+  private markActive(ev: HqEvent) {
+    const ids: string[] = [];
+    if (ev['agent_id']) ids.push(ev['agent_id']);
+    for (const key of ['to_agent', 'from_agent', 'agent']) {
+      const a = this.agents().find(x => x.name === ev[key]);
+      if (a?.id) ids.push(a.id);
+    }
+    if (ids.length) {
+      const t = Date.now();
+      this.lastSeen.update(m => ({ ...m, ...Object.fromEntries(ids.map(i => [i, t])) }));
+      this.now.set(t);
+    }
+  }
+
   onEvent(ev: HqEvent) {
+    if (ev.type !== 'message') this.markActive(ev);
     switch (ev.type) {
       case 'message':
         if (!this.messages().some(m => m.id === ev['message'].id)) {

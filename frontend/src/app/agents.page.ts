@@ -3,10 +3,11 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent } from './api.service';
 import { ModelPicker } from './model-picker';
+import { Avatar } from './avatar';
 
 @Component({
   selector: 'hq-agents',
-  imports: [FormsModule, ModelPicker],
+  imports: [FormsModule, ModelPicker, Avatar],
   template: `
   <div class="split">
     <aside class="list">
@@ -17,8 +18,11 @@ import { ModelPicker } from './model-picker';
       @for (a of agents(); track a.id) {
         <button class="row" [class.active]="draft()?.id === a.id" [class.muted]="!a.enabled"
                 (click)="edit(a)">
-          <span class="name">{{ a.name }} @if (a.is_default) {<span class="pill">default</span>}</span>
-          <span class="sub">{{ modelLabel(a) }} · {{ a.pool }}</span>
+          <span class="row-with-avatar"><hq-avatar [agent]="a" [size]="34" />
+            <span class="row-text">
+              <span class="name">{{ a.name }} @if (a.is_default) {<span class="pill">default</span>}</span>
+              <span class="sub">{{ modelLabel(a) }} · {{ a.pool }}</span>
+            </span></span>
         </button>
       } @empty {
         <p class="hint">No agents yet. Create one, or import a JSON file.</p>
@@ -31,7 +35,22 @@ import { ModelPicker } from './model-picker';
 
     @if (draft(); as d) {
       <form class="editor" (ngSubmit)="save()">
-        <h2>{{ d.id ? 'Edit ' + d.name : 'New agent' }}</h2>
+        <div class="avatar-edit">
+          <hq-avatar [agent]="d" [size]="88" [active]="true" />
+          <div>
+            <h2>{{ d.id ? 'Edit ' + d.name : 'New agent' }}</h2>
+            @if (d.id) {
+              <div class="actions">
+                <label class="ghost file">{{ d.avatar_version ? 'Change avatar' : 'Upload avatar' }}
+                  <input type="file" accept="image/gif,image/png,image/jpeg,image/webp" (change)="uploadAvatar(d, $event)"></label>
+                @if (d.avatar_version) { <button type="button" class="ghost" (click)="removeAvatar(d)">Remove</button> }
+              </div>
+              <p class="hint inline-hint">GIF (animated is fine), PNG, JPEG or WebP, up to 3 MB. Square images look best.</p>
+            } @else {
+              <p class="hint inline-hint">Save the agent first, then add an avatar.</p>
+            }
+          </div>
+        </div>
         <label>Name<input name="name" [(ngModel)]="d.name" required></label>
         <label>Description <small>shown to other agents deciding whom to delegate to</small>
           <input name="description" [(ngModel)]="d.description"></label>
@@ -137,6 +156,28 @@ export class AgentsPage implements OnInit {
     const d = a ? structuredClone(a) : blankAgent();
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
     this.draft.set(d);
+  }
+
+  uploadAvatar(d: AgentDef, ev: Event) {
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    this.api.uploadAvatar(d.id!, file).subscribe({
+      next: a => this.avatarSaved(a),
+      error: e => this.error.set(e.error?.detail ?? 'Upload failed'),
+    });
+  }
+
+  removeAvatar(d: AgentDef) {
+    this.api.removeAvatar(d.id!).subscribe(a => this.avatarSaved(a));
+  }
+
+  private avatarSaved(a: AgentDef) {
+    this.error.set('');
+    const d = this.draft();
+    if (d) this.draft.set({ ...d, avatar_version: a.avatar_version, avatar_animated: a.avatar_animated });
+    this.agents.update(list => list.map(x => x.id === a.id ? { ...x, avatar_version: a.avatar_version, avatar_animated: a.avatar_animated } : x));
   }
 
   modelLabel(a: AgentDef) {

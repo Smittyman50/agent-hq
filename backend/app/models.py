@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, LargeBinary, Text
 from sqlmodel import Field, SQLModel
 
 
@@ -80,8 +80,25 @@ class AgentDef(SQLModel, table=True):
     desktop_url: str | None = None
     # The agent new chats open with, if any. Purely a UI default.
     is_default: bool = False
+    # Bumped on every avatar upload; 0 = no avatar. The UI uses it to bust image caches.
+    avatar_version: int = 0
+    avatar_animated: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class AgentAvatar(SQLModel, table=True):
+    """An agent's avatar image, stored in the database so every machine sees it."""
+
+    agent_id: str = Field(foreign_key="agentdef.id", primary_key=True)
+    content_type: str
+    data: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
+    # First frame as a small PNG, for when animation is turned off.
+    still: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
+    width: int = 0
+    height: int = 0
+    frames: int = 1
     updated_at: datetime = Field(default_factory=_now)
 
 

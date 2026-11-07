@@ -17,6 +17,7 @@ dependencies = [
   "redis>=5.2",
   "aiomqtt>=2.3",
   "pillow>=10",
+  "python-multipart>=0.0.9",
   "opentelemetry-sdk>=1.25",
   "opentelemetry-exporter-otlp-proto-http>=1.25",
 ]
