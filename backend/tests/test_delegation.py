@@ -139,7 +139,7 @@ async def test_export_import_roundtrip(hq):
     assert agents["B"]["delegates"] == ["W"] and agents["W"]["pool"] == "gpu"
     assert exported["subscriptions"][0]["agent"] == "B"
     r = (await hq.http.post("/api/agents/import", json=exported)).json()
-    assert r == {"agents": 2, "tool_servers": 0, "subscriptions": 1}
+    assert r == {"providers": 0, "agents": 2, "tool_servers": 0, "subscriptions": 1}
 
 
 async def test_example_crew_imports_as_data(hq):

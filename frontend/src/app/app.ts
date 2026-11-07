@@ -9,6 +9,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
       <span class="brand">Agent HQ</span>
       <a routerLink="/chat" routerLinkActive="on">Chat</a>
       <a routerLink="/agents" routerLinkActive="on">Agents</a>
+      <a routerLink="/models" routerLinkActive="on">Models</a>
       <a routerLink="/tools" routerLinkActive="on">Tools</a>
       <a routerLink="/events" routerLinkActive="on">Events</a>
       <a routerLink="/system" routerLinkActive="on">System</a>

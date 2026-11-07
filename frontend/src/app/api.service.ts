@@ -7,6 +7,7 @@ export interface AgentDef {
   name: string;
   description: string;
   instructions: string;
+  provider_id: string | null;
   model: string;
   pool: string;
   tool_server_ids: string[];
@@ -41,6 +42,21 @@ export interface Message {
   created_at: string;
 }
 
+export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic';
+
+export interface ProviderInfo {
+  id: string; name: string; kind: ProviderKind; base_url: string | null;
+  has_api_key: boolean; enabled: boolean; created_at: string;
+}
+
+/** What the editor sends. api_key: undefined = keep, '' = clear, value = replace. */
+export interface ProviderIn {
+  id?: string; name: string; kind: ProviderKind; base_url: string | null;
+  api_key?: string; enabled: boolean;
+}
+
+export interface ModelInfo { id: string; details: string; }
+
 export interface Subscription {
   id?: string;
   name: string;
@@ -67,7 +83,7 @@ export interface Job {
 export interface HqEvent { type: string; [k: string]: any; }
 
 export function blankAgent(): AgentDef {
-  return { name: '', description: '', instructions: '', model: 'ollama:gpt-oss:20b', pool: 'default',
+  return { name: '', description: '', instructions: '', provider_id: null, model: '', pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };
 }
 
@@ -93,6 +109,20 @@ export class Api {
   deleteAgent(id: string) { return this.http.delete(`/api/agents/${id}`); }
   exportAgents() { return this.http.get<any>('/api/agents/export'); }
   importAgents(data: any) { return this.http.post<any>('/api/agents/import', data); }
+
+  providers() { return this.http.get<ProviderInfo[]>('/api/providers'); }
+  saveProvider(p: ProviderIn): Observable<ProviderInfo> {
+    const body = { ...p };
+    if (!body.api_key) delete body.api_key;   // blank field = keep the stored key
+    return p.id ? this.http.put<ProviderInfo>(`/api/providers/${p.id}`, body)
+                : this.http.post<ProviderInfo>('/api/providers', body);
+  }
+  clearProviderKey(p: ProviderInfo) {
+    return this.http.put<ProviderInfo>(`/api/providers/${p.id}`,
+      { name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '' });
+  }
+  deleteProvider(id: string) { return this.http.delete(`/api/providers/${id}`); }
+  providerModels(id: string) { return this.http.get<ModelInfo[]>(`/api/providers/${id}/models`); }
 
   servers() { return this.http.get<ToolServer[]>('/api/tool-servers'); }
   saveServer(t: ToolServer): Observable<ToolServer> {

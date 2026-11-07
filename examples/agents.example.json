@@ -1,4 +1,18 @@
 {
+  "providers": [
+    {
+      "name": "Ollama (GPU server)",
+      "kind": "ollama",
+      "base_url": "http://your-ollama-host:11434",
+      "enabled": true
+    },
+    {
+      "name": "OpenAI",
+      "kind": "openai",
+      "base_url": null,
+      "enabled": true
+    }
+  ],
   "tool_servers": [
     {
       "name": "desktop1",
@@ -17,7 +31,8 @@
       "name": "Duke",
       "description": "Supervisor. Takes requests from Mike, plans, delegates and reports results back.",
       "instructions": "You are Duke, Mike's IT team lead for his homelab. Break requests into tasks, delegate to the right team member, and always report back what was done, what was found, and anything that failed. Be concise. Ask Mike before any action that changes a system.",
-      "model": "openai:gpt-4.1",
+      "provider": "OpenAI",
+      "model": "gpt-4.1",
       "tools": [],
       "delegates": [
         "Scarlett",
@@ -32,7 +47,8 @@
       "name": "Scarlett",
       "description": "Researcher. Uses text tools (RSS, web fetch, search). Delegates to Snake Eyes only when something must be seen visually.",
       "instructions": "You are Scarlett, a research scout. Prefer text sources. When the answer requires seeing a page visually (graphs, dashboards), delegate to Snake Eyes with precise instructions. Return findings with sources.",
-      "model": "ollama:gpt-oss:20b",
+      "provider": "Ollama (GPU server)",
+      "model": "gpt-oss:20b",
       "tools": [],
       "delegates": [
         "Snake Eyes"
@@ -46,7 +62,8 @@
       "name": "Snake Eyes",
       "description": "Visual browser operator. Has his own desktop; use only when a page must be viewed visually.",
       "instructions": "You are Snake Eyes. You operate a Linux desktop through screenshot/click/type tools. Take a screenshot before and after each action. Describe exactly what you saw, including values read from graphs.",
-      "model": "openai:gpt-4.1",
+      "provider": "OpenAI",
+      "model": "gpt-4.1",
       "tools": [
         "desktop1"
       ],

@@ -1,6 +1,6 @@
 # Agent HQ
 
-A self-hosted multi-agent system. You create agents in the web UI and give each one instructions, a model, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own.
+A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own.
 
 - **Backend:** FastAPI, LangGraph (conversation graph + checkpointing), PydanticAI (agents, typed results, MCP tools)
 - **Frontend:** Angular 22 (signals, standalone components)
@@ -11,7 +11,7 @@ A self-hosted multi-agent system. You create agents in the web UI and give each 
 - **Tools:** any MCP server, registered in the UI
 - **Desktops:** one `linuxserver/webtop` container per agent, driven by a small MCP server and viewable in the UI
 
-Nothing about specific agents is in the code. Names, roles, instructions, models, tools, pools, delegation rights and event subscriptions are all database rows, so renaming or re-tasking an agent takes effect on its next job.
+Nothing about specific agents or models is in the code. Providers, names, roles, instructions, models, tools, pools, delegation rights and event subscriptions are all database rows, so renaming or re-tasking an agent takes effect on its next job.
 
 ## Architecture
 
@@ -190,7 +190,9 @@ npm install
 npx ng serve        # http://localhost:4200, proxies /api and /ws to :8000
 ```
 
-To try the example crew, go to **Agents → Import** and pick `examples/agents.example.json`. It contains the agents, their pools, a desktop tool server and an alerts subscription, all as data. Edit the models and URLs to match your setup.
+In the UI, start on the **Models** page and add your Ollama server (or another provider), then create agents and pick a model for each.
+
+To try the example crew, go to **Agents → Import** and pick `examples/agents.example.json`. It contains two providers (an Ollama server and OpenAI), the agents with their models and pools, a desktop tool server and an alerts subscription, all as data. Then fix the Ollama URL on the **Models** page and choose models that your server actually has.
 
 Without `AHQ_DB_URL`, the system falls back to SQLite files in `AHQ_DATA_DIR`. That's fine for a single machine, but use Postgres as soon as workers run anywhere else.
 
@@ -211,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
 - import and export
 
 ## Deploy (Docker)
@@ -244,14 +247,25 @@ Register MCP servers on the **Tools** page:
 
 Click **Test connection** to list the server's tools (this connects from the API host), then tick the server on any agent. Tool names are prefixed with the server name by default (`proxmox_list_vms`) so they never collide.
 
-## Model specs
+## Model providers
 
-| Spec | Goes to |
-|---|---|
-| `ollama:gpt-oss:20b` | `AHQ_OLLAMA_BASE_URL` |
-| `openai:gpt-4.1` | OpenAI (`OPENAI_API_KEY`) |
-| `anthropic:<model>` | Anthropic (`pip install ".[anthropic]"`, `ANTHROPIC_API_KEY`) |
-| `test` | PydanticAI's built-in test model (no LLM, for UI checks) |
+Providers live on the **Models** page; nothing about servers or model names is hardcoded. Add a provider once, and its models become choices in every agent's **Model** picker. Different agents can use different models from the same provider: one on `qwen3:14b`, another on `gpt-oss:20b`.
+
+| Kind | Base URL | Model list comes from | API key |
+|---|---|---|---|
+| **Ollama** | `http://host:11434` (with or without `/v1`) | `GET /api/tags`, with size and quantization | usually none |
+| **OpenAI** | optional override | `GET /v1/models` | stored, or `OPENAI_API_KEY` on the workers |
+| **OpenAI-compatible** (vLLM, LM Studio, LiteLLM, llama.cpp server…) | required, the server's `/v1` URL | `GET /v1/models` | only if the server needs one |
+| **Anthropic** | optional override | `GET /v1/models` | stored, or `ANTHROPIC_API_KEY` on the workers |
+
+You can register several providers of the same kind, for example two Ollama servers on different GPUs.
+
+- **Picking a model:** the agent editor lists the provider's current models. You can still type a name the provider doesn't list yet, such as a model you're about to pull.
+- **API keys are write-only.** They're stored in the database and used by the workers, but the API never returns them and exports never include them. To keep keys out of the database entirely, leave the field blank and set the provider's usual environment variable on the workers instead.
+- **Disabling and deleting:** disabling a provider stops its agents with a clear error in their conversations. A provider can't be deleted while agents still use it.
+- **Advanced:** with the provider set to *Custom model spec*, the Model field takes a raw PydanticAI spec such as `openai:gpt-4.1`, or `test` for a no-LLM test model.
+
+Agents that use desktop tools need a vision-capable model.
 
 ## Observability
 
@@ -261,18 +275,18 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry Collector. The API proce
 
 ```
 backend/app/
-  models.py          AgentDef, ToolServer, Thread, Message, Job, Subscription tables
+  models.py          ModelProvider, AgentDef, ToolServer, Thread, Message, Job, Subscription tables
   runtime.py         builds agents from rows; turns; delegation; report-back
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
-  llm.py             model spec -> PydanticAI model
+  llm.py             model providers: build an agent's model; list a provider's models
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
-frontend/src/app/    chat, agents, tools, events and system pages
+frontend/src/app/    chat, agents, models, tools, events and system pages
 desktop/             webtop image + desktop MCP server (screenshot/click/type/key/scroll/open_url)
 deploy/infra/        Postgres, Valkey and Mosquitto compose file
-examples/            example crew (agents, pools, tools, subscriptions) as importable JSON
+examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
 ```
 
 ## Next steps worth building

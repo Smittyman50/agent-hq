@@ -50,7 +50,7 @@ from sqlmodel import select
 from . import db
 from .broker import Broker
 from .config import settings
-from .llm import build_model
+from .llm import build_agent_model
 from .models import (
     AgentDef,
     Job,
@@ -434,7 +434,7 @@ class Runtime:
         if roster:
             toolsets.append(self._delegation_toolset())
         return Agent(
-            build_model(agent.model),
+            build_agent_model(agent),
             name=agent.name,
             instructions="\n\n".join(instructions),
             deps_type=RunDeps,

@@ -1,7 +1,7 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, ToolServer, blankAgent } from './api.service';
+import { AgentDef, Api, ModelInfo, ProviderInfo, ToolServer, blankAgent } from './api.service';
 
 @Component({
   selector: 'hq-agents',
@@ -17,7 +17,7 @@ import { AgentDef, Api, ToolServer, blankAgent } from './api.service';
         <button class="row" [class.active]="draft()?.id === a.id" [class.muted]="!a.enabled"
                 (click)="edit(a)">
           <span class="name">{{ a.name }} @if (a.is_default) {<span class="pill">default</span>}</span>
-          <span class="sub">{{ a.pool }} · {{ a.description || 'No description' }}</span>
+          <span class="sub">{{ modelLabel(a) }} · {{ a.pool }}</span>
         </button>
       } @empty {
         <p class="hint">No agents yet. Create one, or import a JSON file.</p>
@@ -37,15 +37,28 @@ import { AgentDef, Api, ToolServer, blankAgent } from './api.service';
         <label>Instructions
           <textarea name="instructions" rows="10" [(ngModel)]="d.instructions"
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
-        <label>Model <small>e.g. ollama:gpt-oss:20b · openai:gpt-4.1 · anthropic:claude-sonnet-4-5</small>
-          <input name="model" [(ngModel)]="d.model" list="models"></label>
+        <div class="inline model-row">
+          <label>Model provider <small>set these up on the Models page</small>
+            <select name="provider" [ngModel]="d.provider_id" (ngModelChange)="setProvider(d, $event)">
+              @for (p of providers(); track p.id) {
+                <option [ngValue]="p.id">{{ p.name }}{{ p.enabled ? '' : ' (disabled)' }}</option>
+              }
+              <option [ngValue]="null">Custom model spec (advanced)</option>
+            </select></label>
+          <label>Model
+            @if (d.provider_id) {
+              <small>{{ modelsStatus() }} <a href="" (click)="$event.preventDefault(); loadModels(d.provider_id)">refresh</a></small>
+            } @else { <small>a PydanticAI spec, e.g. openai:gpt-4.1</small> }
+            <input name="model" [(ngModel)]="d.model" list="provider-models"
+              [placeholder]="d.provider_id ? 'pick or type a model name' : 'provider:model'"></label>
+        </div>
+        @if (modelDetails(d); as det) { <p class="hint inline-hint">{{ det }}</p> }
+        <datalist id="provider-models">
+          @for (m of models(); track m.id) { <option [value]="m.id">{{ m.details }}</option> }
+        </datalist>
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
         <datalist id="pools">@for (p of pools(); track p) { <option [value]="p"></option> }</datalist>
-        <datalist id="models">
-          <option value="ollama:gpt-oss:20b"></option><option value="ollama:qwen3:14b"></option>
-          <option value="openai:gpt-4.1"></option><option value="anthropic:claude-sonnet-4-5"></option>
-        </datalist>
 
         <fieldset>
           <legend>Tools (MCP servers)</legend>
@@ -95,6 +108,9 @@ export class AgentsPage implements OnInit {
   servers = signal<ToolServer[]>([]);
   draft = signal<AgentDef | null>(null);
   error = signal('');
+  providers = signal<ProviderInfo[]>([]);
+  models = signal<ModelInfo[]>([]);
+  modelsStatus = signal('');
   pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
   others = computed(() => this.agents().filter(a => a.id !== this.draft()?.id && a.enabled));
 
@@ -103,11 +119,42 @@ export class AgentsPage implements OnInit {
   load() {
     this.api.agents().subscribe(a => this.agents.set(a));
     this.api.servers().subscribe(s => this.servers.set(s));
+    this.api.providers().subscribe(p => this.providers.set(p));
   }
 
   edit(a: AgentDef | null) {
     this.error.set('');
-    this.draft.set(a ? structuredClone(a) : blankAgent());
+    const d = a ? structuredClone(a) : blankAgent();
+    if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
+    this.draft.set(d);
+    this.loadModels(d.provider_id);
+  }
+
+  setProvider(d: AgentDef, id: string | null) {
+    if (d.provider_id !== id) d.model = '';
+    d.provider_id = id;
+    this.draft.set({ ...d });
+    this.loadModels(id);
+  }
+
+  loadModels(providerId: string | null) {
+    this.models.set([]);
+    if (!providerId) { this.modelsStatus.set(''); return; }
+    this.modelsStatus.set('loading models…');
+    this.api.providerModels(providerId).subscribe({
+      next: m => { this.models.set(m); this.modelsStatus.set(`${m.length} available`); },
+      error: e => this.modelsStatus.set(e.error?.detail ?? 'could not reach provider'),
+    });
+  }
+
+  modelDetails(d: AgentDef) {
+    return d.provider_id ? this.models().find(m => m.id === d.model)?.details ?? '' : '';
+  }
+
+  modelLabel(a: AgentDef) {
+    if (!a.model) return 'no model';
+    const p = this.providers().find(x => x.id === a.provider_id);
+    return p ? `${a.model} @ ${p.name}` : a.model;
   }
 
   toggle(list: string[], id: string) {

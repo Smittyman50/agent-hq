@@ -24,6 +24,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class ProviderKind(str, Enum):
+    ollama = "ollama"                        # Ollama server (models listed from /api/tags)
+    openai = "openai"                        # OpenAI
+    openai_compatible = "openai_compatible"  # vLLM, LM Studio, LiteLLM, llama.cpp server, ...
+    anthropic = "anthropic"                  # Anthropic
+
+
+class ModelProvider(SQLModel, table=True):
+    """Somewhere models come from. Agents pick a provider, then one of its models."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    kind: ProviderKind = ProviderKind.ollama
+    # Ollama: http://host:11434   OpenAI-compatible: http://host:8000/v1   Others: optional override
+    base_url: str | None = None
+    # Optional. Empty = workers use the provider's usual environment variable
+    # (OPENAI_API_KEY, ANTHROPIC_API_KEY). Never returned by the API.
+    api_key: str | None = None
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_now)
+
+
 class AgentDef(SQLModel, table=True):
     id: str = Field(default_factory=_id, primary_key=True)
     name: str = Field(index=True, unique=True)
@@ -31,8 +53,10 @@ class AgentDef(SQLModel, table=True):
     description: str = Field(default="", sa_column=Column(Text, default=""))
     # The system instructions for this agent.
     instructions: str = Field(default="", sa_column=Column(Text, default=""))
-    # Model spec, e.g. "openai:gpt-4.1", "ollama:gpt-oss:20b", "anthropic:claude-sonnet-4-5".
-    model: str = "ollama:gpt-oss:20b"
+    # The model provider (a ModelProvider row) and a model name it offers, e.g. "qwen3:14b".
+    # With no provider, `model` is a raw PydanticAI spec such as "openai:gpt-4.1" (advanced).
+    provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
+    model: str = ""
     # Which worker pool runs this agent. Workers subscribe to one or more pools, so
     # this is how you pin an agent to a machine (e.g. the host next to its desktop).
     pool: str = "default"

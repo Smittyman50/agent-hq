@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models import AgentDef, Subscription, ToolServer, _now
+from ..models import AgentDef, ModelProvider, Subscription, ToolServer, _now
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -18,7 +18,8 @@ class AgentIn(BaseModel):
     name: str
     description: str = ""
     instructions: str = ""
-    model: str = "ollama:gpt-oss:20b"
+    provider_id: str | None = None
+    model: str = ""
     pool: str = "default"
     tool_server_ids: list[str] = []
     delegates: list[str] = []
@@ -32,6 +33,11 @@ def _clear_other_defaults(s: Session, keep_id: str) -> None:
         if a.id != keep_id:
             a.is_default = False
             s.add(a)
+
+
+def _check_provider(s: Session, body: AgentIn) -> None:
+    if body.provider_id and not s.get(ModelProvider, body.provider_id):
+        raise HTTPException(422, "model provider not found")
 
 
 def _check_name(s: Session, name: str, own_id: str | None = None) -> None:
@@ -50,6 +56,7 @@ def list_agents(s: Session = Depends(get_session)):
 @router.post("", response_model=AgentDef, status_code=201)
 def create_agent(body: AgentIn, s: Session = Depends(get_session)):
     _check_name(s, body.name)
+    _check_provider(s, body)
     a = AgentDef(**body.model_dump())
     s.add(a)
     if a.is_default:
@@ -61,15 +68,21 @@ def create_agent(body: AgentIn, s: Session = Depends(get_session)):
 
 @router.get("/export")
 def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
-    """Portable JSON: delegates and tools are referenced by name, not ID."""
+    """Portable JSON: providers, delegates and tools are referenced by name, not ID.
+    Provider API keys are never exported."""
     agents = s.exec(select(AgentDef)).all()
     servers = s.exec(select(ToolServer)).all()
+    providers = s.exec(select(ModelProvider)).all()
     by_id = {a.id: a.name for a in agents}
     srv_by_id = {t.id: t.name for t in servers}
+    prov_by_id = {p.id: p.name for p in providers}
     return {
+        "providers": [p.model_dump(exclude={"id", "created_at", "api_key"}) for p in providers],
         "tool_servers": [t.model_dump(exclude={"id", "created_at"}) for t in servers],
         "agents": [
-            {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates"}),
+            {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
+                                     "provider_id"}),
+             "provider": prov_by_id.get(a.provider_id),
              "tools": [srv_by_id[i] for i in a.tool_server_ids if i in srv_by_id],
              "delegates": ["*" if d == "*" else by_id.get(d, d) for d in a.delegates]}
             for a in agents
@@ -84,7 +97,17 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
 
 @router.post("/import")
 def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> dict[str, int]:
-    """Create or update agents/tool servers from an export. Matches on name."""
+    """Create or update providers/agents/tool servers/subscriptions from an export.
+    Matches on name. Stored provider API keys are kept."""
+    for pdata in body.get("providers", []):
+        existing = s.exec(select(ModelProvider).where(ModelProvider.name == pdata["name"])).first()
+        row = existing or ModelProvider(name=pdata["name"])
+        for k, v in pdata.items():
+            if k != "api_key" and hasattr(row, k):
+                setattr(row, k, v)
+        s.add(row)
+    s.commit()
+    providers = {p.name: p.id for p in s.exec(select(ModelProvider)).all()}
     for t in body.get("tool_servers", []):
         existing = s.exec(select(ToolServer).where(ToolServer.name == t["name"])).first()
         row = existing or ToolServer(name=t["name"])
@@ -99,8 +122,9 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         existing = s.exec(select(AgentDef).where(AgentDef.name == a["name"])).first()
         row = existing or AgentDef(name=a["name"])
         for k, v in a.items():
-            if k not in ("tools", "delegates") and hasattr(row, k):
+            if k not in ("tools", "delegates", "provider", "provider_id") and hasattr(row, k):
                 setattr(row, k, v)
+        row.provider_id = providers.get(a.get("provider")) if a.get("provider") else None
         row.tool_server_ids = [servers[n] for n in a.get("tools", []) if n in servers]
         row.updated_at = _now()
         s.add(row)
@@ -125,8 +149,8 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         s.add(row)
         subs += 1
     s.commit()
-    return {"agents": len(pending), "tool_servers": len(body.get("tool_servers", [])),
-            "subscriptions": subs}
+    return {"providers": len(body.get("providers", [])), "agents": len(pending),
+            "tool_servers": len(body.get("tool_servers", [])), "subscriptions": subs}
 
 
 @router.get("/{agent_id}", response_model=AgentDef)
@@ -143,6 +167,7 @@ def update_agent(agent_id: str, body: AgentIn, s: Session = Depends(get_session)
     if not a:
         raise HTTPException(404)
     _check_name(s, body.name, agent_id)
+    _check_provider(s, body)
     for k, v in body.model_dump().items():
         setattr(a, k, v)
     a.updated_at = _now()
