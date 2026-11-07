@@ -21,6 +21,7 @@ export interface AgentDef {
   desktop_url: string | null;
   is_default: boolean;
   enabled: boolean;
+  memory_enabled: boolean;
   avatar_version?: number;
   avatar_animated?: boolean;
 }
@@ -66,6 +67,22 @@ export interface ProviderIn {
 
 export interface ModelInfo { id: string; details: string; }
 
+export type MemoryKind = 'fact' | 'incident' | 'preference' | 'procedure' | 'note';
+export type MemoryScope = 'team' | 'agent' | 'thread';
+export interface MemoryItem {
+  id: string; text: string; kind: MemoryKind; scope: MemoryScope; agent_id: string | null;
+  thread_id: string | null; source: string; source_job_id: string | null; created_by: string | null;
+  invalidated_at: string | null; invalidated_reason: string | null; superseded_by: string | null;
+  last_confirmed: string; times_seen: number; embedded: boolean; created_at: string; score: number | null;
+}
+export interface MemorySettings {
+  enabled: boolean; embedding_provider_id: string | null; embedding_model: string;
+  recall_count: number; min_score: number; capture_delegations: boolean; capture_events: boolean;
+  duplicate_threshold: number; related_threshold: number;
+  tidy_provider_id: string | null; tidy_model: string; tidy_nightly: boolean; tidy_hour: number;
+}
+export interface MemoryStats { total: number; active: number; retired: number; embedded_with_current_model: number; pgvector: boolean; }
+
 export interface DesktopRequest { agent_id: string; agent: string; thread_id: string; reason: string; at: string; }
 export interface DesktopState {
   agent_id: string; desktop_url: string | null; has_desktop_tools: boolean;
@@ -100,7 +117,7 @@ export interface HqEvent { type: string; [k: string]: any; }
 export function blankAgent(): AgentDef {
   return { name: '', description: '', instructions: '', provider_id: null, model: '',
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
-    fallback_provider_id: null, fallback_model: '', pool: 'default',
+    fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };
 }
 
@@ -154,6 +171,28 @@ export class Api {
   releaseDesktop(agentId: string, threadId: string | null, note: string) {
     return this.http.post<DesktopState>(`/api/agents/${agentId}/desktop/release`, { thread_id: threadId, note });
   }
+
+  memories(query: string, opts: { scope?: string; include_retired?: boolean } = {}) {
+    const params: Record<string, string> = { query };
+    if (opts.scope) params['scope'] = opts.scope;
+    if (opts.include_retired) params['include_retired'] = 'true';
+    return this.http.get<MemoryItem[]>('/api/memory', { params });
+  }
+  addMemory(m: { text: string; kind: MemoryKind; scope: MemoryScope; agent_id?: string | null }) {
+    return this.http.post<MemoryItem>('/api/memory', m);
+  }
+  editMemory(id: string, m: { text: string; kind: MemoryKind; scope: MemoryScope; agent_id?: string | null }) {
+    return this.http.put<MemoryItem>(`/api/memory/${id}`, m);
+  }
+  retireMemory(id: string, reason: string) { return this.http.post<MemoryItem>(`/api/memory/${id}/retire`, { reason }); }
+  restoreMemory(id: string) { return this.http.post<MemoryItem>(`/api/memory/${id}/restore`, {}); }
+  confirmMemory(id: string) { return this.http.post<MemoryItem>(`/api/memory/${id}/confirm`, {}); }
+  deleteMemory(id: string) { return this.http.delete(`/api/memory/${id}`); }
+  memorySettings() { return this.http.get<MemorySettings>('/api/memory/settings'); }
+  saveMemorySettings(s: MemorySettings) { return this.http.put<MemorySettings>('/api/memory/settings', s); }
+  memoryStats() { return this.http.get<MemoryStats>('/api/memory/stats'); }
+  reembedMemories() { return this.http.post<{ embedded: number; reason?: string }>('/api/memory/reembed', {}); }
+  tidyMemories() { return this.http.post<{ groups: number; merged: number; retired: number; model_used: boolean }>('/api/memory/tidy', {}); }
 
   servers() { return this.http.get<ToolServer[]>('/api/tool-servers'); }
   saveServer(t: ToolServer): Observable<ToolServer> {

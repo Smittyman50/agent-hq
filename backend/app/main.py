@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .api import agents, avatars, desktop, providers, subscriptions, system, threads, tool_servers
+from .api import agents, avatars, desktop, memory as memory_api, providers, subscriptions, system, threads, tool_servers
 from .broker import Broker
 from .config import settings
 from .db import init_db
@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI):
             app.state.worker = worker
             stack.push_async_callback(worker.stop)
 
+        background.append(asyncio.create_task(memory_api.nightly_tidy_loop(broker)))
+
         if settings.mqtt_url:
             from .mqtt_bridge import MqttBridge
 
@@ -81,7 +83,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app = FastAPI(title="Agent HQ", lifespan=lifespan_, **_fastapi_kwargs())
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
-    for r in (agents.router, avatars.router, desktop.router, providers.router, tool_servers.router, threads.router, subscriptions.router,
+    for r in (agents.router, avatars.router, desktop.router, memory_api.router, providers.router, tool_servers.router, threads.router, subscriptions.router,
               system.router):
         app.include_router(r)
 

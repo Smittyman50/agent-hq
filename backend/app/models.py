@@ -80,6 +80,8 @@ class AgentDef(SQLModel, table=True):
     desktop_url: str | None = None
     # The agent new chats open with, if any. Purely a UI default.
     is_default: bool = False
+    # Use long-term memory: recall before each job, memory tools, automatic capture.
+    memory_enabled: bool = True
     # Bumped on every avatar upload; 0 = no avatar. The UI uses it to bust image caches.
     avatar_version: int = 0
     avatar_animated: bool = False
@@ -190,6 +192,8 @@ class Job(SQLModel, table=True):
     pool: str = "default"
     # W3C traceparent of the span that queued this job, so tracing continues on the worker.
     trace_parent: str | None = None
+    # Where a turn came from, e.g. {"kind": "mqtt", "topic": ..., "payload": ...}.
+    meta: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: JobStatus = JobStatus.queued
     attempts: int = 0
     worker: str | None = None
@@ -198,6 +202,55 @@ class Job(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class SystemSetting(SQLModel, table=True):
+    """Small key/value store for settings edited in the UI (e.g. memory settings)."""
+
+    key: str = Field(primary_key=True)
+    value: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class MemoryKind(str, Enum):
+    fact = "fact"              # something true about the environment
+    incident = "incident"      # something that happened and how it was handled
+    preference = "preference"  # how the user wants things done
+    procedure = "procedure"    # how to do something
+    note = "note"
+
+
+class MemoryScope(str, Enum):
+    team = "team"      # visible to every agent
+    agent = "agent"    # visible only to one agent
+    thread = "thread"  # visible only within one conversation
+
+
+class Memory(SQLModel, table=True):
+    """Long-term memory. Never silently overwritten: outdated memories are retired
+    (invalidated_at) and optionally point at the memory that replaced them."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    text: str = Field(sa_column=Column(Text, nullable=False))
+    kind: MemoryKind = MemoryKind.fact
+    scope: MemoryScope = MemoryScope.team
+    agent_id: str | None = Field(default=None, index=True)
+    thread_id: str | None = Field(default=None, index=True)
+    # auto:delegation, auto:event, agent, user, tidy
+    source: str = "user"
+    source_job_id: str | None = None
+    created_by: str | None = None  # agent ID, or None for you
+    valid_from: datetime = Field(default_factory=_now)
+    invalidated_at: datetime | None = Field(default=None, index=True)
+    invalidated_reason: str | None = None
+    superseded_by: str | None = None
+    last_confirmed: datetime = Field(default_factory=_now)
+    times_seen: int = 1
+    # Embedding (portable copy; on Postgres with pgvector the vector column is used instead).
+    embedding: list[float] | None = Field(default=None, sa_column=Column(JSON))
+    embedding_model: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class Subscription(SQLModel, table=True):

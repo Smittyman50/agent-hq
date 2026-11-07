@@ -90,3 +90,25 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 .avatar-edit { display: flex; gap: 18px; align-items: center; margin-bottom: 16px; }
 .avatar-edit h2 { margin-bottom: 8px; }
 label.narrow { max-width: 420px; }
+.memory-layout { display: grid; grid-template-columns: 1fr 380px; height: 100%; }
+.mem-main { overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+.mem-side { overflow-y: auto; padding: 16px 18px; border-left: 1px solid var(--line); background: var(--panel); }
+.mem-toolbar { display: flex; gap: 8px; align-items: center; }
+.mem-toolbar .grow { flex: 1; } .mem-toolbar select { width: auto; } .mem-toolbar label.check { margin: 0; white-space: nowrap; }
+.mem-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.mem-card.editing { border-color: var(--accent); }
+.mem-card.editing .inline { gap: 8px; align-items: center; margin-top: 8px; }
+.mem-card.editing .inline select { width: auto; }
+.mem-card.retired { opacity: .55; }
+.mem-text { white-space: pre-wrap; line-height: 1.45; }
+.mem-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; font-size: 12px; }
+.mem-meta .pill { margin-left: 0; }
+.bad-pill { color: var(--bad); border-color: var(--bad); }
+button.link { background: none; border: 0; color: var(--accent); padding: 0 4px; font-size: 12px; }
+button.danger-link { color: var(--bad); }
+.mem-side h3 { margin-top: 14px; }
+.mem-side .inline { gap: 10px; align-items: center; }
+.mem-side .inline select { width: auto; }
+.mem-side h2 { margin-bottom: 6px; }
+.mem-side > .inline-hint { margin: 0 0 12px; }
+.mem-side .model-row { flex-direction: column; gap: 0; }

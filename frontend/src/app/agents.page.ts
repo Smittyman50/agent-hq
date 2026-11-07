@@ -116,6 +116,8 @@ import { Avatar } from './avatar';
         <div class="inline">
           <label class="check"><input type="checkbox" name="is_default" [(ngModel)]="d.is_default"> Default chat agent</label>
           <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>
+          <label class="check" title="Recall relevant memories before each job, memory tools, automatic capture of its results">
+            <input type="checkbox" name="memory" [(ngModel)]="d.memory_enabled"> Long-term memory</label>
         </div>
 
         @if (error()) { <p class="error">{{ error() }}</p> }

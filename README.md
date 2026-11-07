@@ -213,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- long-term memory: keyword and embedding search, scopes, retire/restore/supersede, recall added to instructions, capturing delegations and events without duplicates, agent memory tools, tidy-up with and without a model, re-embedding, and the same search on Postgres + pgvector (via PGlite)
 - tracing: one trace across two workers for a turn and its delegation, background reports joining that trace, session IDs and Phoenix span types on every span, and no screenshot data in spans
 - avatars: animated GIF served untouched plus a still first frame, validation, keeping them through agent edits and export/import
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
@@ -307,6 +308,42 @@ You can register several providers of the same kind, for example two Ollama serv
 
 Agents that use desktop tools need a vision-capable model.
 
+## Long-term memory
+
+Agents remember across conversations: how your lab is set up, what went wrong before and what fixed it, and how you like things done. Memory lives in your Postgres (pgvector for meaning-based search, plus Postgres full-text search) and uses an embedding model from your providers. A small model such as `nomic-embed-text` on Ollama runs fine on CPU.
+
+```mermaid
+flowchart LR
+    J["Job starts<br/>(turn or delegated task)"] --> R["Recall:<br/>search memory with the<br/>message or task"]
+    R --> I["Top matches added to the<br/>agent's instructions,<br/>with dates, as leads to verify"]
+    I --> A["Agent works<br/>remember / recall / forget / confirm"]
+    A --> C["Capture:<br/>delegation results and<br/>handled MQTT events"]
+    C --> D{"near-duplicate<br/>already stored?"}
+    D -- yes --> K["confirm it<br/>(seen N times, fresher date)"]
+    D -- no --> N["new memory"]
+    T["Nightly tidy-up<br/>(optional model)"] -. "merge duplicates,<br/>retire contradicted facts" .-> N
+```
+
+- **Recall is automatic.** Before every job, the runtime searches memory with the incoming message or task and gives the agent the best matches, with their dates. Small local models don't have to remember to look things up. Search blends meaning (embeddings), exact keywords (identifiers like `pve1` or an IP address count) and recency.
+- **Capture is automatic, and doesn't need an extra model call.** Delegation results and handled MQTT events are already concise summaries, so they're stored as **incident** memories as they happen. If a near-duplicate already exists, it's confirmed (fresher date, higher count) rather than stored twice.
+- **Agents have tools:** `remember` (with *team* or *agent* scope, and optionally which memory it replaces), `recall`, `forget` and `confirm`.
+- **Nothing is silently overwritten.** Outdated memories are *retired*, with a reason and a pointer to whatever replaced them, so history stays searchable ("show retired"), and a retired memory can be restored.
+- **Tidy-up** (on demand, or nightly at a set hour) merges duplicates. With a *tidy-up model* configured, it also merges related memories and retires ones a newer memory contradicts.
+- **Scopes:** *team* (every agent), *agent* (only one agent), or *conversation* (only one thread). Each agent has a **Long-term memory** switch.
+
+On the **Memory** page you can:
+- search, add and edit memories;
+- confirm, retire, restore or delete them;
+- choose the embedding model;
+- tune recall (how many memories per job, and a minimum match score);
+- turn automatic capture on or off;
+- set up the tidy-up.
+
+Changing the embedding model re-embeds existing memories in the background.
+
+- **On Postgres:** the infrastructure compose file uses the `pgvector/pgvector:pg17` image, and Agent HQ enables the extension, adds the vector column and creates the full-text index on startup.
+- **On SQLite (single-machine dev):** search runs in Python instead. It's fine for thousands of memories.
+
 ## Avatars
 
 Give each agent a face on the **Agents** page: **Upload avatar** accepts a GIF (animated is fine), PNG, JPEG or WebP image up to 3 MB (`AHQ_AVATAR_MAX_BYTES`). Avatars appear in the agent list, the conversation list, the chat header, next to each reply, and on desktop-help banners. Agents without one get their initials on a colour derived from their name.
@@ -399,12 +436,13 @@ backend/app/
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
   vision.py          look / locate / click_on via a per-agent vision model
+  memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
   llm.py             model providers: build an agent's model; list a provider's models
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
-frontend/src/app/    chat, agents, models, tools, events and system pages
+frontend/src/app/    chat, agents, models, memory, tools, events and system pages
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 deploy/infra/        Postgres, Valkey and Mosquitto compose file
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON

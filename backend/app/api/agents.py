@@ -26,6 +26,7 @@ class AgentIn(BaseModel):
     vision_zoom: bool = True
     fallback_provider_id: str | None = None
     fallback_model: str = ""
+    memory_enabled: bool = True
     pool: str = "default"
     tool_server_ids: list[str] = []
     delegates: list[str] = []

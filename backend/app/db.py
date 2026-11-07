@@ -27,6 +27,9 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
     SQLModel.metadata.create_all(engine())
+    from . import memory
+
+    memory.init_storage()
 
 
 def get_session() -> Iterator[Session]:

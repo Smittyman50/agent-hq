@@ -6,7 +6,8 @@ name: agent-hq-infra
 
 services:
   postgres:
-    image: postgres:17
+    # Postgres 17 with the pgvector extension, used by long-term memory.
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_DB: agent_hq

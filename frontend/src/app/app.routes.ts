@@ -5,6 +5,7 @@ import { ToolsPage } from './tools.page';
 import { EventsPage } from './events.page';
 import { SystemPage } from './system.page';
 import { ModelsPage } from './models.page';
+import { MemoryPage } from './memory.page';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'chat' },
@@ -12,6 +13,7 @@ export const routes: Routes = [
   { path: 'chat/:id', component: ChatPage },
   { path: 'agents', component: AgentsPage },
   { path: 'models', component: ModelsPage },
+  { path: 'memory', component: MemoryPage },
   { path: 'tools', component: ToolsPage },
   { path: 'events', component: EventsPage },
   { path: 'system', component: SystemPage },

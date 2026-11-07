@@ -51,6 +51,7 @@ from . import db
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
+from . import memory
 from .telemetry import current_traceparent, job_span, set_output
 from .models import (
     AgentDef,
@@ -59,6 +60,7 @@ from .models import (
     JobStatus,
     Message,
     Role,
+    MemoryKind,
     Thread,
     ToolServer,
     Transport,
@@ -242,6 +244,19 @@ def has_vision(agent: AgentDef) -> bool:
     return bool(agent.vision_model) and bool(desktop_servers(agent))
 
 
+def memory_on(agent: AgentDef) -> bool:
+    return agent.memory_enabled and memory.get_settings()["enabled"]
+
+
+MEMORY_RULES = """\
+Long-term memory:
+- Relevant memories may be listed below. Treat them as leads to verify, not facts.
+- Use `remember` for things worth knowing next time (how the environment is set up, what
+  fixed a problem, the user's preferences). One clear, self-contained statement each.
+- Use `forget` when you find a memory is wrong or outdated, `confirm` when you verify one,
+  and `recall` to search for more."""
+
+
 def has_fallback(agent: AgentDef) -> bool:
     return bool(agent.fallback_model)
 
@@ -345,7 +360,8 @@ class Runtime:
         elif event_text:
             await self.save_message(thread_id, Role.event, event_text, **meta)
         job = Job(kind=JobKind.turn, origin_thread_id=thread_id, assignee_agent_id=owner.id,
-                  task=prompt, depth=0, chain=[owner.id], pool=owner.pool)
+                  task=prompt, depth=0, chain=[owner.id], pool=owner.pool,
+                  meta={**meta, **({"event": event_text} if event_text else {})})
         return await self._submit(job)
 
     async def _submit(self, job: Job) -> Job:
@@ -423,6 +439,8 @@ class Runtime:
             reply = out["reply"]
             await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id)
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
+            if (job.meta or {}).get("kind") == "mqtt":
+                await self._capture_event(job, reply)
         except Exception as e:
             log.exception("turn %s failed", job.id)
             await self.save_message(thread_id, Role.event, f"Error: {e}", kind="error")
@@ -477,6 +495,7 @@ class Runtime:
             f"[{result.status}] {result.summary}",
             agent_id=assignee.id, kind="delegation_result", job_id=job.id,
             result=result.model_dump())
+        await self._capture_delegation(job, assignee, result)
         # Wake a waiting delegator, if there is one.
         await self.broker.push_result(job.id, result.model_dump())
         # Background jobs (including waits that timed out) report into the origin thread.
@@ -494,7 +513,8 @@ class Runtime:
 
     # ------------------------------------------------------------ agents
 
-    def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False) -> Agent:
+    def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
+                    memory_context: str = "") -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         roster = team_roster(agent)
         if roster:
@@ -518,6 +538,11 @@ class Runtime:
         if has_fallback(agent) and not on_fallback:
             instructions.append(ESCALATE_RULES)
             toolsets.append((self._escalate_toolset(), None))
+        if memory_on(agent):
+            instructions.append(MEMORY_RULES)
+            if memory_context:
+                instructions.append(memory_context)
+            toolsets.append((self._memory_toolset(), None))
         if roster:
             toolsets.append((self._delegation_toolset(), None))
         model = (build_model_for(agent.fallback_provider_id, agent.fallback_model,
@@ -536,8 +561,9 @@ class Runtime:
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
                         history: list | None = None, as_worker: bool = False):
         """Run on the agent's model; on failure or escalation, rerun on its fallback model."""
+        recalled = await self._recall(agent, prompt, deps)
         try:
-            pa_agent = self.build_agent(agent, as_worker=as_worker)
+            pa_agent = self.build_agent(agent, as_worker=as_worker, memory_context=recalled)
             result = await pa_agent.run(prompt, deps=deps, message_history=history,
                                         conversation_id=deps.thread_id)
             return result.output, result.all_messages()
@@ -557,10 +583,110 @@ class Runtime:
                                     agent_id=agent.id, kind="model_fallback")
             note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Take over and complete it.]")
-            pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=True)
+            pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=True,
+                                        memory_context=recalled)
             result = await pa_agent.run(prompt + note, deps=deps, message_history=history,
                                         conversation_id=deps.thread_id)
             return result.output, result.all_messages()
+
+    # ------------------------------------------------------------ memory
+
+    async def _recall(self, agent: AgentDef, prompt: str, deps: RunDeps) -> str:
+        if not memory_on(agent):
+            return ""
+        try:
+            block = await memory.recall_for(agent, prompt, deps.thread_id)
+        except Exception as e:  # memory must never stop the agent from working
+            log.warning("memory recall failed: %s", e)
+            return ""
+        if block:
+            await self.broker.publish(deps.thread_id, "memory_recall", agent=agent.name,
+                                      agent_id=agent.id, count=block.count("\n- "), depth=deps.depth)
+        return block
+
+    async def _capture_delegation(self, job: Job, assignee: AgentDef, result: WorkResult) -> None:
+        if not memory.get_settings()["capture_delegations"] or not memory_on(assignee):
+            return
+        text = (f"{assignee.name} was asked: {job.task[:400]}\n"
+                f"Outcome ({result.status}): {result.summary[:800]}")
+        if result.details:
+            text += f"\nDetails: {result.details[:600]}"
+        try:
+            await memory.capture(text, kind="incident", scope="team", thread_id=job.origin_thread_id,
+                                 source="auto:delegation", source_job_id=job.id,
+                                 created_by=assignee.id)
+        except Exception as e:
+            log.warning("memory capture failed: %s", e)
+
+    async def _capture_event(self, job: Job, reply: str) -> None:
+        owner = load_agent(job.assignee_agent_id)
+        if not memory.get_settings()["capture_events"] or not memory_on(owner):
+            return
+        meta = job.meta or {}
+        text = (f"Event on MQTT topic {meta.get('topic', '?')}: {str(meta.get('event', ''))[:400]}\n"
+                f"{owner.name}'s assessment: {reply[:800]}")
+        try:
+            await memory.capture(text, kind="incident", scope="team", thread_id=job.origin_thread_id,
+                                 source="auto:event", source_job_id=job.id, created_by=owner.id)
+        except Exception as e:
+            log.warning("memory capture failed: %s", e)
+
+    def _memory_toolset(self) -> FunctionToolset:
+        async def remember(ctx: RunContext[RunDeps], text: str, kind: str = "fact",
+                           scope: str = "team", supersedes: str | None = None) -> dict:
+            """Save something worth knowing next time.
+
+            Args:
+                text: One self-contained statement, e.g. "pve1's backups run nightly at 02:00 to PBS on rewind".
+                kind: fact, incident, preference, procedure or note.
+                scope: "team" (all agents) or "agent" (only you).
+                supersedes: ID of a memory this replaces; the old one is retired.
+            """
+            if kind not in MemoryKind.__members__:
+                kind = "note"
+            scope = "agent" if scope == "agent" else "team"
+            m = await memory.add(text, kind=kind, scope=scope,
+                                 agent_id=ctx.deps.agent_id if scope == "agent" else None,
+                                 thread_id=ctx.deps.thread_id, source="agent",
+                                 source_job_id=ctx.deps.job_id, created_by=ctx.deps.agent_id,
+                                 supersedes=supersedes)
+            return {"saved": m.id}
+
+        async def recall(ctx: RunContext[RunDeps], query: str, include_retired: bool = False) -> list[dict]:
+            """Search long-term memory.
+
+            Args:
+                query: What you want to know, e.g. "pve1 disk" or "how do we patch OPNsense".
+                include_retired: also show memories that were retired as outdated.
+            """
+            hits = await memory.search(query, agent_id=ctx.deps.agent_id, thread_id=ctx.deps.thread_id,
+                                       k=8, include_retired=include_retired, min_score=0.1)
+            return [{"id": h.memory.id, "text": h.memory.text, "kind": h.memory.kind.value,
+                     "date": h.memory.last_confirmed.strftime("%Y-%m-%d"),
+                     "retired": h.memory.invalidated_reason} for h in hits]
+
+        async def forget(ctx: RunContext[RunDeps], memory_id: str, reason: str) -> dict:
+            """Retire a memory that is wrong or no longer true (it is kept as history).
+
+            Args:
+                memory_id: The ID shown in brackets.
+                reason: Why, e.g. "disk was cleaned up on 2026-11-06".
+            """
+            try:
+                memory.retire(memory_id, reason)
+                return {"retired": memory_id}
+            except LookupError:
+                return {"error": "no such memory"}
+
+        async def confirm(ctx: RunContext[RunDeps], memory_id: str) -> dict:
+            """Mark a memory as verified just now, so it ranks as current."""
+            try:
+                memory.confirm(memory_id)
+                return {"confirmed": memory_id}
+            except LookupError:
+                return {"error": "no such memory"}
+
+        return FunctionToolset([remember, recall, forget, confirm], id="memory")
 
     # ------------------------------------------------------------ vision and escalation tools
 
