@@ -22,6 +22,7 @@ class ToolServerIn(BaseModel):
     args: list[str] = []
     env: dict[str, str] = {}
     prefix_tools: bool = True
+    desktop: bool = False
     enabled: bool = True
 
 

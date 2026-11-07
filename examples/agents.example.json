@@ -23,6 +23,7 @@
       "args": [],
       "env": {},
       "prefix_tools": true,
+      "desktop": true,
       "enabled": true
     }
   ],

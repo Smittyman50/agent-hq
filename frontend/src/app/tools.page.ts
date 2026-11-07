@@ -39,6 +39,8 @@ import { Api, ToolServer, blankServer } from './api.service';
         }
         <div class="inline">
           <label class="check"><input type="checkbox" name="prefix" [(ngModel)]="d.prefix_tools"> Prefix tool names</label>
+          <label class="check" title="Its tools pause while you have control of the desktop, and agents using it can ask you to take over">
+            <input type="checkbox" name="desktop" [(ngModel)]="d.desktop"> Controls an agent desktop</label>
           <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>
         </div>
         @if (error()) { <p class="error">{{ error() }}</p> }

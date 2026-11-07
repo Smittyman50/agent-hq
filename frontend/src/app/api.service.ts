@@ -27,6 +27,7 @@ export interface ToolServer {
   args: string[];
   env: Record<string, string>;
   prefix_tools: boolean;
+  desktop: boolean;
   enabled: boolean;
 }
 
@@ -56,6 +57,12 @@ export interface ProviderIn {
 }
 
 export interface ModelInfo { id: string; details: string; }
+
+export interface DesktopRequest { agent_id: string; agent: string; thread_id: string; reason: string; at: string; }
+export interface DesktopState {
+  agent_id: string; desktop_url: string | null; has_desktop_tools: boolean;
+  user_has_control: boolean; request: DesktopRequest | null;
+}
 
 export interface Subscription {
   id?: string;
@@ -94,7 +101,7 @@ export function blankSubscription(agent_id = ''): Subscription {
 
 export function blankServer(): ToolServer {
   return { name: '', description: '', transport: 'http', url: '', command: null, args: [],
-    env: {}, prefix_tools: true, enabled: true };
+    env: {}, prefix_tools: true, desktop: false, enabled: true };
 }
 
 @Injectable({ providedIn: 'root' })
@@ -123,6 +130,14 @@ export class Api {
   }
   deleteProvider(id: string) { return this.http.delete(`/api/providers/${id}`); }
   providerModels(id: string) { return this.http.get<ModelInfo[]>(`/api/providers/${id}/models`); }
+
+  desktopState(agentId: string) { return this.http.get<DesktopState>(`/api/agents/${agentId}/desktop`); }
+  takeDesktop(agentId: string, threadId: string | null) {
+    return this.http.post<DesktopState>(`/api/agents/${agentId}/desktop/take`, { thread_id: threadId });
+  }
+  releaseDesktop(agentId: string, threadId: string | null, note: string) {
+    return this.http.post<DesktopState>(`/api/agents/${agentId}/desktop/release`, { thread_id: threadId, note });
+  }
 
   servers() { return this.http.get<ToolServer[]>('/api/tool-servers'); }
   saveServer(t: ToolServer): Observable<ToolServer> {

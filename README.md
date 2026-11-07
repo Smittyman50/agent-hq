@@ -213,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
 - import and export
 
@@ -233,11 +234,47 @@ Valkey settings that matter (already set in the infra compose file):
 ### Agent desktops
 
 To add another desktop, copy the `desktop-1` block in `docker-compose.yml` (`desktop-2`, host port `3002:3000`, its own `/config` volume). Then, in the UI:
-1. Register `http://desktop-2:8765/mcp` as an HTTP tool server.
-2. Tick it on the agent that owns the desktop.
+1. Register `http://desktop-2:8765/mcp` as an HTTP tool server, and tick **Controls an agent desktop** on it.
+2. Tick it on the agent that owns the desktop, and set that agent's *Desktop viewer URL*.
 3. Set that agent's pool to one served by a worker that can reach the desktop's network.
 
-Agents that use desktop tools need a vision-capable model.
+Agents that use desktop tools need a vision-capable model. Protect the viewer with the container's `PASSWORD` option, and keep its port on your LAN: anyone who can open the viewer can use whatever sessions the agent's browser is logged in to.
+
+### Taking control of a desktop
+
+You can drive an agent's desktop yourself: to log in to a site, solve a CAPTCHA or enter an MFA code. That way the agent works with an authenticated session and never sees your password.
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant UI as Chat UI
+    participant API as API process
+    participant VK as Valkey
+    participant W as Worker (agent's run)
+    participant D as Agent desktop
+
+    W->>W: agent hits a login page
+    W->>VK: request: "Log in to the Zabbix web UI"
+    W-->>UI: banner: agent needs you on its desktop
+    Note over W: waits (worker slot released)
+    You->>UI: Open desktop and take control
+    UI->>API: take
+    API->>VK: control = you
+    Note over W,D: any desktop tool call now returns "paused"
+    You->>D: log in through the desktop viewer
+    You->>UI: Hand back ("logged in, 2FA done")
+    UI->>API: release
+    API->>VK: clear control, push hand-back note
+    VK-->>W: note
+    W->>D: screenshot, continue the task
+    W-->>You: result in the conversation
+```
+
+- **When the agent asks.** Agents with a desktop get an `ask_user_to_take_over(reason)` tool and are told to use it, never to ask for passwords in chat. The request appears as a banner in the conversation. The agent waits for up to `AHQ_HANDOFF_TIMEOUT` seconds (30 minutes by default), giving up its worker slot while it waits. When you hand back, it continues with your note.
+- **When you step in on your own.** **Take control** on the desktop panel pauses the agent at any time. While you have control, every call to that desktop's tools, screenshots included, is refused. So the agent neither fights you for the mouse nor sends what you're typing to its model provider. If the agent ran into the paused desktop mid-task, **Hand back** wakes it in that conversation to carry on.
+- **A forgotten takeover can't block an agent forever.** Control expires after 24 hours.
+
+Credentials typed into chat are stored in the transcript, the conversation history and possibly your traces. Logging in yourself on the desktop keeps them out of all three.
 
 ## Adding tools
 
@@ -280,6 +317,7 @@ backend/app/
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
+  api/desktop.py     take control of an agent's desktop / hand it back
   llm.py             model providers: build an agent's model; list a provider's models
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix

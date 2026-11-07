@@ -176,18 +176,38 @@ def mcp_toolset(srv: ToolServer) -> MCPToolset:
     return MCPToolset(config, id=srv.name)
 
 
-def build_tool_toolsets(agent: AgentDef) -> list:
+def agent_tool_servers(agent: AgentDef) -> list[ToolServer]:
     if not agent.tool_server_ids:
         return []
     with db.session() as s:
         servers = [s.get(ToolServer, i) for i in agent.tool_server_ids]
+    return [srv for srv in servers if srv is not None and srv.enabled]
+
+
+def desktop_servers(agent: AgentDef) -> list[ToolServer]:
+    return [srv for srv in agent_tool_servers(agent) if srv.desktop]
+
+
+def build_tool_toolsets(agent: AgentDef) -> list[tuple[Any, str | None]]:
+    """[(toolset, desktop server id or None)] for the agent's MCP servers."""
     out = []
-    for srv in servers:
-        if srv is None or not srv.enabled:
-            continue
+    for srv in agent_tool_servers(agent):
         ts = mcp_toolset(srv)
-        out.append(PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts)
+        out.append((PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts,
+                    srv.id if srv.desktop else None))
     return out
+
+
+DESKTOP_RULES = """Desktop handoff:
+- If a web page needs a login, a CAPTCHA, an MFA code or anything else only the user
+  should do, call `ask_user_to_take_over` with a short reason. It waits until the user
+  hands the desktop back, then you continue. Never ask for passwords in chat.
+- If a desktop tool says the user has control, stop using the desktop; tell whoever you
+  report to that you are waiting for the user."""
+
+DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools are paused. "
+                  "Do not retry. Report that you are waiting for the user to hand the desktop "
+                  "back; you will be woken when they do.")
 
 
 def team_roster(agent: AgentDef) -> str:
@@ -204,9 +224,17 @@ class ObservedToolset(WrapperToolset):
 
     agent_name: str = ""
     broker: Broker | None = None
+    desktop_server_id: str | None = None
 
     async def call_tool(self, name, tool_args, ctx: RunContext[RunDeps], tool):
         d = ctx.deps
+        if self.desktop_server_id and await self.broker.user_has_control(self.desktop_server_id):
+            await self.broker.mark_blocked(self.desktop_server_id,
+                                           {"agent_id": d.agent_id, "thread_id": d.thread_id})
+            await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
+                                      agent_id=d.agent_id, tool=name, depth=d.depth,
+                                      error="paused: you have control of this desktop")
+            return DESKTOP_PAUSED
         await self.broker.publish(d.thread_id, "tool_call", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, args=tool_args, depth=d.depth)
         try:
@@ -431,16 +459,19 @@ class Runtime:
                 "return a WorkResult. If you cannot finish, return status 'failed' or "
                 "'partial' and explain why in the summary.")
         toolsets = build_tool_toolsets(agent)
+        if any(desk for _, desk in toolsets):
+            instructions.append(DESKTOP_RULES)
+            toolsets.append((self._handoff_toolset(), None))
         if roster:
-            toolsets.append(self._delegation_toolset())
+            toolsets.append((self._delegation_toolset(), None))
         return Agent(
             build_agent_model(agent),
             name=agent.name,
             instructions="\n\n".join(instructions),
             deps_type=RunDeps,
             output_type=WorkResult if as_worker else str,
-            toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker)
-                      for t in toolsets],
+            toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker,
+                                      desktop_server_id=desk) for t, desk in toolsets],
         )
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
@@ -448,6 +479,45 @@ class Runtime:
         pa_agent = self.build_agent(agent, as_worker=as_worker)
         result = await pa_agent.run(prompt, deps=deps, message_history=history)
         return result.output, result.all_messages()
+
+    # ------------------------------------------------------------ desktop handoff tool
+
+    def _handoff_toolset(self) -> FunctionToolset:
+        rt = self
+
+        async def ask_user_to_take_over(ctx: RunContext[RunDeps], reason: str) -> dict:
+            """Ask the user to take control of your desktop (to log in, solve a CAPTCHA,
+            enter an MFA code...) and wait until they hand it back.
+
+            Args:
+                reason: What the user needs to do, e.g. "Log in to the Zabbix web UI".
+            """
+            me = load_agent(ctx.deps.agent_id)
+            servers = desktop_servers(me)
+            if not servers:
+                return {"status": "failed", "summary": "You have no desktop."}
+            srv = servers[0]
+            timeout = settings.handoff_timeout
+            await rt.broker.set_request(srv.id, {
+                "agent_id": me.id, "agent": me.name, "thread_id": ctx.deps.thread_id,
+                "job_id": ctx.deps.job_id, "reason": reason}, ttl=int(timeout) + 60)
+            await rt.save_message(ctx.deps.thread_id, Role.event,
+                                  f"{me.name} needs you on its desktop: {reason}",
+                                  agent_id=me.id, kind="desktop_request", tool_server_id=srv.id)
+            async with released_slot():
+                got = await rt.broker.wait_handback(srv.id, timeout)
+            if got is None:
+                await rt.broker.clear_request(srv.id)
+                await rt.save_message(ctx.deps.thread_id, Role.event,
+                                      f"{me.name} stopped waiting for you after {int(timeout)}s.",
+                                      agent_id=me.id, kind="desktop_timeout")
+                return {"status": "no_response",
+                        "summary": "The user did not take over in time. Report that the step "
+                                   "still needs them."}
+            return {"status": "handed_back", "note": got.get("note") or "(no note)",
+                    "summary": "The user has handed the desktop back. Take a screenshot and continue."}
+
+        return FunctionToolset([ask_user_to_take_over], id="handoff")
 
     # ------------------------------------------------------------ delegation tools
 

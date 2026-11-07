@@ -91,6 +91,9 @@ class ToolServer(SQLModel, table=True):
     env: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     # Prefix tool names with the server name to avoid collisions between servers.
     prefix_tools: bool = True
+    # This server drives an agent desktop. Its tools pause while you have control of the
+    # desktop, and agents using it get the ask_user_to_take_over tool.
+    desktop: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
 

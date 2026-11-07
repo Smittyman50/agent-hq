@@ -1,10 +1,10 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { AgentDef, Api, HqEvent, Message, Thread } from './api.service';
+import { AgentDef, Api, DesktopState, HqEvent, Message, Thread } from './api.service';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; }
 
@@ -39,6 +39,12 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
             @for (a of desktopAgents(); track a.id) { <option [value]="a.id">{{ a.name }}'s desktop</option> }
           </select>
         </header>
+        @if (pendingRequest(); as r) {
+          <div class="banner">
+            <span><strong>{{ agentName(r.agent_id) }}</strong> needs you on its desktop: {{ r.reason }}</span>
+            <button (click)="takeFor(r.agent_id)">Open desktop and take control</button>
+          </div>
+        }
         <div class="messages" #scroller>
           @for (m of messages(); track m.id) {
             <div class="msg {{ m.role }}">
@@ -69,8 +75,29 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
 
     @if (desktopAgent(); as d) {
       <section class="desktop">
-        <header class="conv-head"><strong>{{ d.name }}'s desktop</strong><span class="spacer"></span>
+        <header class="conv-head"><strong>{{ d.name }}'s desktop</strong>
+          @if (desk(); as s) {
+            @if (s.user_has_control) { <span class="pill you">you have control</span> }
+            @else if (s.has_desktop_tools) { <span class="pill">agent has control</span> }
+          }
+          <span class="spacer"></span>
           <a [href]="d.desktop_url" target="_blank">Open in tab</a></header>
+        @if (desk(); as s) {
+          @if (!s.has_desktop_tools) {
+            <div class="desk-bar muted">To use take-control, tick "Controls an agent desktop" on this desktop's tool server (Tools page).</div>
+          } @else if (s.user_has_control) {
+            <div class="desk-bar">
+              <input [(ngModel)]="deskNote" name="desknote" placeholder="Note for the agent (optional), e.g. logged in, 2FA done">
+              <button (click)="handBack(d.id!)">Hand back</button>
+            </div>
+          } @else {
+            <div class="desk-bar">
+              <span class="muted">{{ s.request ? 'The agent is waiting for you: ' + s.request.reason : 'The agent can use this desktop. Take control to pause it.' }}</span>
+              <span class="spacer"></span>
+              <button (click)="take(d.id!)">Take control</button>
+            </div>
+          }
+        }
         <iframe [src]="desktopUrl()" title="Agent desktop"></iframe>
       </section>
     }
@@ -91,6 +118,18 @@ export class ChatPage implements OnInit, OnDestroy {
   activity = signal<Activity[]>([]);
   busy = signal(false);
   desktopAgentId = signal('');
+  desk = signal<DesktopState | null>(null);
+  deskNote = '';
+  private deskTimer?: ReturnType<typeof setInterval>;
+  pendingRequest = computed(() => {
+    let req: { agent_id: string; reason: string } | null = null;
+    for (const m of this.messages()) {
+      const kind = m.meta?.['kind'];
+      if (kind === 'desktop_request') req = { agent_id: m.agent_id!, reason: m.content.split(': ').slice(1).join(': ') };
+      else if (kind === 'desktop_control' || kind === 'desktop_release' || kind === 'desktop_timeout') req = null;
+    }
+    return req;
+  });
   newAgentId = '';
   draft = '';
 
@@ -112,7 +151,35 @@ export class ChatPage implements OnInit, OnDestroy {
     this.route.paramMap.subscribe(p => this.select(p.get('id')));
   }
 
-  ngOnDestroy() { this.sub?.unsubscribe(); }
+  ngOnDestroy() { this.sub?.unsubscribe(); clearInterval(this.deskTimer); }
+
+  constructor() {
+    effect(() => {
+      const id = this.desktopAgentId();
+      clearInterval(this.deskTimer);
+      this.desk.set(null);
+      if (!id) return;
+      const poll = () => this.api.desktopState(id).subscribe({ next: s => this.desk.set(s), error: () => {} });
+      poll();
+      this.deskTimer = setInterval(poll, 3000);
+    });
+  }
+
+  take(agentId: string) {
+    this.api.takeDesktop(agentId, this.threadId()).subscribe({
+      next: s => this.desk.set(s), error: e => alert(e.error?.detail ?? 'Could not take control') });
+  }
+
+  takeFor(agentId: string) {
+    this.desktopAgentId.set(agentId);
+    this.take(agentId);
+  }
+
+  handBack(agentId: string) {
+    const note = this.deskNote.trim();
+    this.deskNote = '';
+    this.api.releaseDesktop(agentId, this.threadId(), note).subscribe(s => this.desk.set(s));
+  }
 
   agentName(id: string | null | undefined) { return this.agents().find(a => a.id === id)?.name ?? '—'; }
   loadThreads() { this.api.threads().subscribe(t => this.threads.set(t)); }

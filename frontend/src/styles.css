@@ -76,3 +76,7 @@ table.grid th { color: var(--muted); font-weight: 500; font-size: 12px; }
 code { font-family: ui-monospace, monospace; font-size: 12px; }
 .model-row { gap: 16px; } .model-row > label { flex: 1; }
 .inline-hint { padding: 0; margin: -6px 0 12px; font-size: 12px; }
+.banner { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 14px; background: #3a2f12; border-bottom: 1px solid var(--warn); color: #f3dfae; }
+.desk-bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+.desk-bar input { flex: 1; }
+.pill.you { color: var(--warn); border-color: var(--warn); }

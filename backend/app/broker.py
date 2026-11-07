@@ -7,6 +7,10 @@ Key layout (all prefixed "ahq:"):
   ahq:lock:thread:<id>   lock so turns of one conversation never overlap, across machines
   ahq:worker:<name>      heartbeat key of a live worker (expires if it dies)
   ahq:cooldown:<sub_id>  MQTT subscription cooldown marker
+  ahq:desktop:<server_id>:control   set while you have control of a desktop
+  ahq:desktop:<server_id>:request   an agent's pending "please take over" request
+  ahq:desktop:<server_id>:blocked   an agent tried the desktop while you had control
+  ahq:desktop:<server_id>:handback  list a waiting agent blocks on until you hand back
 """
 
 from __future__ import annotations
@@ -123,6 +127,52 @@ class Broker:
         if seconds <= 0:
             return True
         return bool(await self.r.set(f"ahq:cooldown:{key}", "1", nx=True, ex=seconds))
+
+    # ------------------------------------------------------------------ desktop handoff
+
+    @staticmethod
+    def _dk(server_id: str, part: str) -> str:
+        return f"ahq:desktop:{server_id}:{part}"
+
+    async def desktop_state(self, server_id: str) -> dict:
+        control, request, blocked = await self.r.mget(
+            self._dk(server_id, "control"), self._dk(server_id, "request"),
+            self._dk(server_id, "blocked"))
+        return {"control": json.loads(control) if control else None,
+                "request": json.loads(request) if request else None,
+                "blocked": json.loads(blocked) if blocked else None}
+
+    async def user_has_control(self, server_id: str) -> bool:
+        return bool(await self.r.exists(self._dk(server_id, "control")))
+
+    async def take_control(self, server_id: str, info: dict) -> None:
+        # Expires after a day so a forgotten takeover cannot block an agent forever.
+        await self.r.set(self._dk(server_id, "control"), json.dumps({**info, "since": _ts()}), ex=86400)
+
+    async def mark_blocked(self, server_id: str, info: dict) -> None:
+        await self.r.set(self._dk(server_id, "blocked"), json.dumps(info), ex=86400)
+
+    async def set_request(self, server_id: str, info: dict, ttl: int) -> None:
+        await self.r.delete(self._dk(server_id, "handback"))  # no stale hand-backs
+        await self.r.set(self._dk(server_id, "request"), json.dumps({**info, "at": _ts()}), ex=ttl)
+
+    async def release_control(self, server_id: str, note: str) -> dict:
+        """Clear control and wake a waiting agent. Returns the state as it was."""
+        state = await self.desktop_state(server_id)
+        await self.r.delete(self._dk(server_id, "control"), self._dk(server_id, "request"),
+                            self._dk(server_id, "blocked"))
+        if state["request"]:
+            key = self._dk(server_id, "handback")
+            await self.r.rpush(key, json.dumps({"note": note, "at": _ts()}))
+            await self.r.expire(key, 120)
+        return state
+
+    async def wait_handback(self, server_id: str, timeout: float) -> dict | None:
+        got = await self.r.blpop([self._dk(server_id, "handback")], timeout=timeout)
+        return json.loads(got[1]) if got else None
+
+    async def clear_request(self, server_id: str) -> None:
+        await self.r.delete(self._dk(server_id, "request"))
 
     # ------------------------------------------------------------------ worker registry
 

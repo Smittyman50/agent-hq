@@ -28,6 +28,8 @@ class Settings:
     max_delegation_depth: int = field(default_factory=lambda: int(_env("MAX_DELEGATION_DEPTH", "4")))
     # A waiting delegation switches to background mode after this many seconds.
     delegate_wait_timeout: float = field(default_factory=lambda: float(_env("DELEGATE_WAIT_TIMEOUT", "1800")))
+    # How long an agent waits for you after asking you to take over its desktop.
+    handoff_timeout: float = field(default_factory=lambda: float(_env("HANDOFF_TIMEOUT", "1800")))
     # Worker reliability knobs.
     worker_heartbeat: float = field(default_factory=lambda: float(_env("WORKER_HEARTBEAT", "15")))
     claim_idle_ms: int = field(default_factory=lambda: int(_env("CLAIM_IDLE_MS", "60000")))
