@@ -29,6 +29,7 @@ class ProviderKind(str, Enum):
     openai = "openai"                        # OpenAI
     openai_compatible = "openai_compatible"  # vLLM, LM Studio, LiteLLM, llama.cpp server, ...
     anthropic = "anthropic"                  # Anthropic
+    chatgpt = "chatgpt"                      # your ChatGPT Plus/Pro plan, via Sign in with ChatGPT
 
 
 class ModelProvider(SQLModel, table=True):
@@ -42,6 +43,9 @@ class ModelProvider(SQLModel, table=True):
     # Optional. Empty = workers use the provider's usual environment variable
     # (OPENAI_API_KEY, ANTHROPIC_API_KEY). Never returned by the API.
     api_key: str | None = None
+    # ChatGPT plan providers: the Sign in with ChatGPT registration and tokens
+    # (client_id, access/refresh/id tokens, granted scopes). Never returned by the API.
+    oauth: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
 

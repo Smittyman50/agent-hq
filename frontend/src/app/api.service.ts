@@ -52,11 +52,16 @@ export interface Message {
   created_at: string;
 }
 
-export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic';
+export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'chatgpt';
+
+export interface ChatGPTStatus {
+  connected: boolean; account: string | null; plan_usage: boolean; connected_at: string | null;
+}
 
 export interface ProviderInfo {
   id: string; name: string; kind: ProviderKind; base_url: string | null;
   has_api_key: boolean; enabled: boolean; created_at: string;
+  chatgpt: ChatGPTStatus | null;   // ChatGPT plan providers only
 }
 
 /** What the editor sends. api_key: undefined = keep, '' = clear, value = replace. */
@@ -163,6 +168,13 @@ export class Api {
   }
   deleteProvider(id: string) { return this.http.delete(`/api/providers/${id}`); }
   providerModels(id: string) { return this.http.get<ModelInfo[]>(`/api/providers/${id}/models`); }
+  chatgptStart(id: string) {
+    return this.http.post<{ url: string; redirect_uri: string; expires_in: number }>(`/api/providers/${id}/chatgpt/start`, {});
+  }
+  chatgptFinish(id: string, callback_url: string) {
+    return this.http.post<ProviderInfo>(`/api/providers/${id}/chatgpt/finish`, { callback_url });
+  }
+  chatgptDisconnect(id: string) { return this.http.post<ProviderInfo>(`/api/providers/${id}/chatgpt/disconnect`, {}); }
 
   desktopState(agentId: string) { return this.http.get<DesktopState>(`/api/agents/${agentId}/desktop`); }
   takeDesktop(agentId: string, threadId: string | null) {

@@ -112,3 +112,12 @@ button.danger-link { color: var(--bad); }
 .mem-side h2 { margin-bottom: 6px; }
 .mem-side > .inline-hint { margin: 0 0 12px; }
 .mem-side .model-row { flex-direction: column; gap: 0; }
+
+/* Sign in with ChatGPT (Models page) */
+.signin { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; background: var(--panel2); }
+.signin p { margin: 0 0 10px; }
+.signin .actions { margin-top: 0; }
+.signin .steps { margin: 0 0 12px; padding-left: 20px; color: var(--muted); line-height: 1.5; }
+.signin .steps li { margin-bottom: 4px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+.dot.ok { background: var(--ok); }

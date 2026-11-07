@@ -97,11 +97,19 @@ def build_provider_model(p: ModelProvider, model_name: str) -> Model:
 
         return AnthropicModel(model_name, provider=AnthropicProvider(api_key=key,
                                                                      base_url=p.base_url or None))
+    if p.kind == ProviderKind.chatgpt:
+        from . import chatgpt
+
+        return chatgpt.build_model(p, model_name)
     raise ValueError(f"unknown provider kind {p.kind}")
 
 
 async def list_models(p: ModelProvider, timeout: float = 10) -> list[dict]:
     """Ask the provider which models it offers. Returns [{id, details}] sorted by id."""
+    if p.kind == ProviderKind.chatgpt:
+        from . import chatgpt
+
+        return await chatgpt.list_models(p)  # kept in OpenAI's order
     async with httpx.AsyncClient(timeout=timeout) as client:
         if p.kind == ProviderKind.ollama:
             r = await client.get(f"{ollama_root(p)}/api/tags")

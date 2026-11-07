@@ -79,7 +79,7 @@ def create_agent(body: AgentIn, s: Session = Depends(get_session)):
 @router.get("/export")
 def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
     """Portable JSON: providers, delegates and tools are referenced by name, not ID.
-    Provider API keys are never exported. Avatars are included as base64."""
+    Provider API keys and ChatGPT sign-ins are never exported. Avatars are included as base64."""
     from .avatars import export_avatar
 
     agents = s.exec(select(AgentDef)).all()
@@ -89,7 +89,7 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
     srv_by_id = {t.id: t.name for t in servers}
     prov_by_id = {p.id: p.name for p in providers}
     return {
-        "providers": [p.model_dump(exclude={"id", "created_at", "api_key"}) for p in providers],
+        "providers": [p.model_dump(exclude={"id", "created_at", "api_key", "oauth"}) for p in providers],
         "tool_servers": [t.model_dump(exclude={"id", "created_at"}) for t in servers],
         "agents": [
             {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
@@ -114,12 +114,12 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
 @router.post("/import")
 def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> dict[str, int]:
     """Create or update providers/agents/tool servers/subscriptions from an export.
-    Matches on name. Stored provider API keys are kept."""
+    Matches on name. Stored provider API keys and ChatGPT sign-ins are kept."""
     for pdata in body.get("providers", []):
         existing = s.exec(select(ModelProvider).where(ModelProvider.name == pdata["name"])).first()
         row = existing or ModelProvider(name=pdata["name"])
         for k, v in pdata.items():
-            if k != "api_key" and hasattr(row, k):
+            if k not in ("api_key", "oauth", "id", "created_at") and hasattr(row, k):
                 setattr(row, k, v)
         s.add(row)
     s.commit()

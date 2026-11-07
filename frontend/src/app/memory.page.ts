@@ -122,7 +122,7 @@ export class MemoryPage implements OnInit {
   items = signal<MemoryItem[]>([]);
   agents = signal<AgentDef[]>([]);
   providers = signal<ProviderInfo[]>([]);
-  embedProviders = computed(() => this.providers().filter(p => p.kind !== 'anthropic'));
+  embedProviders = computed(() => this.providers().filter(p => p.kind !== 'anthropic' && p.kind !== 'chatgpt'));
   cfg = signal<MemorySettings | null>(null);
   stats = signal<MemoryStats | null>(null);
   draft = signal<Draft | null>(null);
