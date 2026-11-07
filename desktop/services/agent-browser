@@ -1,0 +1,5 @@
+#!/usr/bin/with-contenv bash
+# s6 service: keep the agent's Chromium open on the desktop (restarted if it is closed).
+until [ -e /tmp/.X11-unix/X1 ]; do sleep 1; done
+export DISPLAY=:1 HOME=/config PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+exec s6-setuidgid abc /usr/local/bin/agent-browser about:blank

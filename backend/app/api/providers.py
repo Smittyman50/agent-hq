@@ -94,7 +94,8 @@ def delete_provider(provider_id: str, s: Session = Depends(get_session)):
     p = s.get(ModelProvider, provider_id)
     if not p:
         raise HTTPException(404)
-    users = s.exec(select(AgentDef).where(AgentDef.provider_id == provider_id)).all()
+    users = [a for a in s.exec(select(AgentDef)).all()
+             if provider_id in (a.provider_id, a.vision_provider_id, a.fallback_provider_id)]
     if users:
         names = ", ".join(a.name for a in users)
         raise HTTPException(409, f"still used by: {names}. Move those agents to another provider first.")

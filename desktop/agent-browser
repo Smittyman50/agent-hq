@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Launch (or reuse) the desktop's Chromium. Running it again while it is open just opens
+# the given URL as a new tab in the existing window, because the profile is shared.
+# DevTools Protocol listens on 127.0.0.1 only; playwright-mcp attaches to it locally.
+CHROME=$(find "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}" -path '*chromium-*' -type f -name chrome -perm -u+x 2>/dev/null | head -n1)
+if [ -z "$CHROME" ]; then
+  echo "agent-browser: Chromium not found under $PLAYWRIGHT_BROWSERS_PATH" >&2
+  exit 1
+fi
+# Chromium's own sandbox usually needs privileges a container does not have.
+# Set AGENT_BROWSER_FLAGS="" if your container runtime allows the sandbox.
+exec "$CHROME" \
+  --user-data-dir="${HOME:-/config}/agent-browser" \
+  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+  --no-first-run --no-default-browser-check --start-maximized \
+  ${AGENT_BROWSER_FLAGS---no-sandbox} \
+  "$@"

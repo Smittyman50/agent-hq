@@ -50,7 +50,7 @@ from sqlmodel import select
 from . import db
 from .broker import Broker
 from .config import settings
-from .llm import build_agent_model
+from .llm import build_agent_model, build_model_for, describe_model
 from .models import (
     AgentDef,
     Job,
@@ -204,6 +204,46 @@ DESKTOP_RULES = """Desktop handoff:
   hands the desktop back, then you continue. Never ask for passwords in chat.
 - If a desktop tool says the user has control, stop using the desktop; tell whoever you
   report to that you are waiting for the user."""
+
+VISION_RULES = """\
+Seeing the screen:
+- You cannot see screenshots yourself. Use `look` to ask questions about what is on the
+  screen, and `locate` / `click_on` to act on things by describing them.
+- For web pages, prefer the browser_* tools when you have them: call `browser_snapshot`
+  to read the page as text and act on elements by their ref. Use `look` only for things
+  that are genuinely visual, such as charts and graphs."""
+
+ESCALATE_RULES = """\
+If the task is beyond you (you keep failing, or it needs stronger reasoning), call
+`escalate` with a short reason instead of guessing. A stronger model will take over."""
+
+
+class Escalation(Exception):
+    """Raised by the escalate tool to hand the run to the agent's fallback model."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _find_exc(exc: BaseException, kind: type) -> BaseException | None:
+    if isinstance(exc, kind):
+        return exc
+    for sub in getattr(exc, "exceptions", ()) or ():
+        found = _find_exc(sub, kind)
+        if found:
+            return found
+    cause = exc.__cause__ or exc.__context__
+    return _find_exc(cause, kind) if cause is not None and cause is not exc else None
+
+
+def has_vision(agent: AgentDef) -> bool:
+    return bool(agent.vision_model) and bool(desktop_servers(agent))
+
+
+def has_fallback(agent: AgentDef) -> bool:
+    return bool(agent.fallback_model)
+
 
 DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools are paused. "
                   "Do not retry. Report that you are waiting for the user to hand the desktop "
@@ -448,7 +488,7 @@ class Runtime:
 
     # ------------------------------------------------------------ agents
 
-    def build_agent(self, agent: AgentDef, *, as_worker: bool) -> Agent:
+    def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False) -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         roster = team_roster(agent)
         if roster:
@@ -462,10 +502,23 @@ class Runtime:
         if any(desk for _, desk in toolsets):
             instructions.append(DESKTOP_RULES)
             toolsets.append((self._handoff_toolset(), None))
+        if has_vision(agent):
+            # The main model never gets screenshots: hide every screenshot tool on desktop
+            # servers and give it look / locate / click_on instead.
+            toolsets = [(ts.filtered(lambda ctx, td: not td.name.endswith("screenshot")) if desk else ts, desk)
+                        for ts, desk in toolsets]
+            instructions.append(VISION_RULES)
+            toolsets.append((self._vision_toolset(), None))
+        if has_fallback(agent) and not on_fallback:
+            instructions.append(ESCALATE_RULES)
+            toolsets.append((self._escalate_toolset(), None))
         if roster:
             toolsets.append((self._delegation_toolset(), None))
+        model = (build_model_for(agent.fallback_provider_id, agent.fallback_model,
+                                 f"{agent.name} (fallback)")
+                 if on_fallback else build_agent_model(agent))
         return Agent(
-            build_agent_model(agent),
+            model,
             name=agent.name,
             instructions="\n\n".join(instructions),
             deps_type=RunDeps,
@@ -476,9 +529,95 @@ class Runtime:
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
                         history: list | None = None, as_worker: bool = False):
-        pa_agent = self.build_agent(agent, as_worker=as_worker)
-        result = await pa_agent.run(prompt, deps=deps, message_history=history)
-        return result.output, result.all_messages()
+        """Run on the agent's model; on failure or escalation, rerun on its fallback model."""
+        try:
+            pa_agent = self.build_agent(agent, as_worker=as_worker)
+            result = await pa_agent.run(prompt, deps=deps, message_history=history)
+            return result.output, result.all_messages()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:
+            if not has_fallback(agent) or not isinstance(e, Exception):
+                raise
+            esc = _find_exc(e, Escalation)
+            reason = f"escalated: {esc.reason}" if esc else f"{type(e).__name__}: {e}"
+            target = describe_model(agent.fallback_provider_id, agent.fallback_model)
+            await self.broker.publish(deps.thread_id, "model_fallback", agent=agent.name,
+                                      agent_id=agent.id, to_model=target, reason=reason[:300],
+                                      depth=deps.depth)
+            await self.save_message(deps.thread_id, Role.event,
+                                    f"{agent.name} switched to its fallback model {target} ({reason[:300]})",
+                                    agent_id=agent.id, kind="model_fallback")
+            note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
+                    "Take over and complete it.]")
+            pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=True)
+            result = await pa_agent.run(prompt + note, deps=deps, message_history=history)
+            return result.output, result.all_messages()
+
+    # ------------------------------------------------------------ vision and escalation tools
+
+    def _vision_toolset(self) -> FunctionToolset:
+        from .vision import DesktopEyes, screenshot_server
+
+        rt = self
+
+        async def eyes(ctx: RunContext[RunDeps]):
+            me = load_agent(ctx.deps.agent_id)
+            servers = desktop_servers(me)
+            srv = await screenshot_server(me, servers)
+            if srv is None:
+                return None, "No desktop with a screenshot tool is reachable."
+            if await rt.broker.user_has_control(srv.id):
+                await rt.broker.mark_blocked(srv.id, {"agent_id": me.id, "thread_id": ctx.deps.thread_id})
+                return None, DESKTOP_PAUSED
+            return DesktopEyes(me, srv), None
+
+        async def look(ctx: RunContext[RunDeps], question: str) -> str:
+            """Ask a question about what is currently on the screen.
+
+            Args:
+                question: e.g. "What is the highest CPU value on the graph, and when?"
+            """
+            e, err = await eyes(ctx)
+            return err if e is None else await e.look(question)
+
+        async def locate(ctx: RunContext[RunDeps], description: str) -> dict:
+            """Find something on the screen by description. Returns its x/y click coordinates.
+
+            Args:
+                description: e.g. "the blue Sign in button under the password field"
+            """
+            e, err = await eyes(ctx)
+            return {"found": False, "error": err} if e is None else await e.locate(description)
+
+        async def click_on(ctx: RunContext[RunDeps], description: str, double: bool = False) -> dict:
+            """Find something on the screen by description and click it.
+
+            Args:
+                description: what to click, described as you would to a person.
+                double: double-click instead of a single click.
+            """
+            e, err = await eyes(ctx)
+            if e is None:
+                return {"clicked": False, "error": err}
+            spot = await e.locate(description)
+            if not spot.get("found"):
+                return {"clicked": False, "error": f"could not find: {description}"}
+            msg = await e.click(spot["x"], spot["y"], double)
+            return {"clicked": True, "x": spot["x"], "y": spot["y"], "result": msg}
+
+        return FunctionToolset([look, locate, click_on], id="vision")
+
+    def _escalate_toolset(self) -> FunctionToolset:
+        async def escalate(ctx: RunContext[RunDeps], reason: str) -> str:
+            """Hand this task to a stronger model when you cannot do it well.
+
+            Args:
+                reason: what you tried and why you are stuck.
+            """
+            raise Escalation(reason)
+
+        return FunctionToolset([escalate], id="escalate")
 
     # ------------------------------------------------------------ desktop handoff tool
 

@@ -57,6 +57,18 @@ class AgentDef(SQLModel, table=True):
     # With no provider, `model` is a raw PydanticAI spec such as "openai:gpt-4.1" (advanced).
     provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
     model: str = ""
+    # Optional vision model. When set, the agent never sees screenshots itself: it gets
+    # look / locate / click_on tools, and this model looks at the screen for it.
+    vision_provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
+    vision_model: str = ""
+    # How the vision model reports positions: "relative_1000" (0-1000 scale, Qwen-VL
+    # family, Holo) or "pixels" (absolute pixels of the image it was given, UI-TARS).
+    vision_coords: str = "relative_1000"
+    # Re-check each located point on a zoomed-in crop (slower, more accurate).
+    vision_zoom: bool = True
+    # Optional fallback model, used when the main model fails or the agent escalates.
+    fallback_provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
+    fallback_model: str = ""
     # Which worker pool runs this agent. Workers subscribe to one or more pools, so
     # this is how you pin an agent to a machine (e.g. the host next to its desktop).
     pool: str = "default"

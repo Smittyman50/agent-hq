@@ -1,8 +1,11 @@
 """MCP server that lets an agent see and drive the Linux desktop it runs inside.
 
 Runs inside each agent's desktop container (see Dockerfile) and listens on
-http://0.0.0.0:8765/mcp. Register that URL in Agent HQ's Tools tab and tick it
-on the agent that owns this desktop.
+http://0.0.0.0:8765/mcp. Register that URL in Agent HQ's Tools tab, tick
+"Controls an agent desktop", and tick it on the agent that owns this desktop.
+
+For web pages, prefer the Playwright MCP server on :8931 (text, no vision model).
+Use this server for things that are only visible as pixels.
 
 Screenshots need a vision-capable model on the agent using them.
 """
@@ -12,6 +15,7 @@ from __future__ import annotations
 import io
 import os
 import shlex
+import shutil
 import subprocess
 
 from fastmcp import FastMCP
@@ -86,9 +90,10 @@ def scroll(x: int, y: int, direction: str = "down", amount: int = 3) -> str:
 
 @mcp.tool
 def open_url(url: str) -> str:
-    """Open a URL in the desktop's browser."""
+    """Open a URL in the desktop's browser (the same Chromium the browser_* tools drive)."""
     env = {**os.environ, "DISPLAY": DISPLAY}
-    subprocess.Popen(["xdg-open", url], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = ["agent-browser", url] if shutil.which("agent-browser") else ["xdg-open", url]
+    subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return f"opening {url}; take a screenshot in a few seconds to see it"
 
 

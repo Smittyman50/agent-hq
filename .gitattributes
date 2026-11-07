@@ -1,0 +1,6 @@
+# Scripts that run inside Linux containers must keep LF line endings,
+# even when the repo is checked out on Windows.
+*.sh                text eol=lf
+desktop/agent-browser   text eol=lf
+desktop/services/*      text eol=lf
+Dockerfile          text eol=lf

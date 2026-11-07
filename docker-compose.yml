@@ -36,13 +36,15 @@ services:
       AHQ_WORKER_NAME: worker-desktop
 
   # One service per agent desktop. Copy this block (desktop-2, port 3002, ...) to add more.
-  # In the UI: register tool server http://desktop-1:8765/mcp (HTTP), tick it on the agent,
-  # and set that agent's desktop viewer URL to http://<host>:3000.
+  # In the UI, register two HTTP tool servers (tick "Controls an agent desktop" on both):
+  #   http://desktop-1:8765/mcp   screenshots, mouse, keyboard
+  #   http://desktop-1:8931/mcp   the desktop's Chromium via Playwright (untick "Prefix tool names")
+  # tick them on the agent, and set its desktop viewer URL to http://<host>:3000.
   desktop-1:
     build: ./desktop
     restart: unless-stopped
     shm_size: "1gb"
-    ports: ["3000:3000"]          # browser view of the desktop; MCP port 8765 stays internal
+    ports: ["3000:3000"]          # browser view of the desktop; MCP ports 8765/8931 stay internal
     volumes: ["./desktops/desktop-1:/config"]
     environment:
       PUID: "1000"

@@ -9,6 +9,12 @@ export interface AgentDef {
   instructions: string;
   provider_id: string | null;
   model: string;
+  vision_provider_id: string | null;
+  vision_model: string;
+  vision_coords: 'relative_1000' | 'pixels';
+  vision_zoom: boolean;
+  fallback_provider_id: string | null;
+  fallback_model: string;
   pool: string;
   tool_server_ids: string[];
   delegates: string[];
@@ -90,7 +96,9 @@ export interface Job {
 export interface HqEvent { type: string; [k: string]: any; }
 
 export function blankAgent(): AgentDef {
-  return { name: '', description: '', instructions: '', provider_id: null, model: '', pool: 'default',
+  return { name: '', description: '', instructions: '', provider_id: null, model: '',
+    vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
+    fallback_provider_id: null, fallback_model: '', pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };
 }
 

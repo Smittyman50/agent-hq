@@ -1,0 +1,9 @@
+#!/usr/bin/with-contenv bash
+# s6 service: Playwright MCP on :8931, attached to the desktop's Chromium over CDP.
+until curl -fs http://127.0.0.1:9222/json/version >/dev/null; do sleep 1; done
+export HOME=/config
+mkdir -p /tmp/playwright-mcp && chown abc:abc /tmp/playwright-mcp
+exec s6-setuidgid abc playwright-mcp \
+  --cdp-endpoint http://127.0.0.1:9222 \
+  --host 0.0.0.0 --port 8931 --allowed-hosts '*' \
+  --output-dir /tmp/playwright-mcp --codegen none

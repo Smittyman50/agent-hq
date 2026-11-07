@@ -25,6 +25,18 @@
       "prefix_tools": true,
       "desktop": true,
       "enabled": true
+    },
+    {
+      "name": "desktop1-browser",
+      "description": "Desktop-1's Chromium via Playwright (text snapshots, no vision needed)",
+      "transport": "http",
+      "url": "http://desktop-1:8931/mcp",
+      "command": null,
+      "args": [],
+      "env": {},
+      "prefix_tools": false,
+      "desktop": true,
+      "enabled": true
     }
   ],
   "agents": [
@@ -57,22 +69,31 @@
       "desktop_url": null,
       "is_default": false,
       "enabled": true,
-      "pool": "default"
+      "pool": "default",
+      "fallback_provider": "OpenAI",
+      "fallback_model": "gpt-4.1"
     },
     {
       "name": "Snake Eyes",
       "description": "Visual browser operator. Has his own desktop; use only when a page must be viewed visually.",
-      "instructions": "You are Snake Eyes. You operate a Linux desktop through screenshot/click/type tools. Take a screenshot before and after each action. Describe exactly what you saw, including values read from graphs.",
-      "provider": "OpenAI",
-      "model": "gpt-4.1",
+      "instructions": "You are Snake Eyes. You operate a Linux desktop with a Chromium browser. For web pages, use the browser_* tools and read pages with browser_snapshot. For anything only visible as pixels, such as graphs, use look. Describe exactly what you found, including values read from graphs.",
+      "provider": "Ollama (GPU server)",
+      "model": "qwen3:14b",
       "tools": [
-        "desktop1"
+        "desktop1",
+        "desktop1-browser"
       ],
       "delegates": [],
       "desktop_url": "http://shockwave.home.arpa:3000",
       "is_default": false,
       "enabled": true,
-      "pool": "desktop"
+      "pool": "desktop",
+      "vision_provider": "Ollama (GPU server)",
+      "vision_model": "qwen3-vl:8b",
+      "vision_coords": "relative_1000",
+      "vision_zoom": true,
+      "fallback_provider": "OpenAI",
+      "fallback_model": "gpt-4.1"
     }
   ],
   "subscriptions": [

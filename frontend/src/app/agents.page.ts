@@ -1,11 +1,12 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, ModelInfo, ProviderInfo, ToolServer, blankAgent } from './api.service';
+import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent } from './api.service';
+import { ModelPicker } from './model-picker';
 
 @Component({
   selector: 'hq-agents',
-  imports: [FormsModule],
+  imports: [FormsModule, ModelPicker],
   template: `
   <div class="split">
     <aside class="list">
@@ -37,25 +38,8 @@ import { AgentDef, Api, ModelInfo, ProviderInfo, ToolServer, blankAgent } from '
         <label>Instructions
           <textarea name="instructions" rows="10" [(ngModel)]="d.instructions"
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
-        <div class="inline model-row">
-          <label>Model provider <small>set these up on the Models page</small>
-            <select name="provider" [ngModel]="d.provider_id" (ngModelChange)="setProvider(d, $event)">
-              @for (p of providers(); track p.id) {
-                <option [ngValue]="p.id">{{ p.name }}{{ p.enabled ? '' : ' (disabled)' }}</option>
-              }
-              <option [ngValue]="null">Custom model spec (advanced)</option>
-            </select></label>
-          <label>Model
-            @if (d.provider_id) {
-              <small>{{ modelsStatus() }} <a href="" (click)="$event.preventDefault(); loadModels(d.provider_id)">refresh</a></small>
-            } @else { <small>a PydanticAI spec, e.g. openai:gpt-4.1</small> }
-            <input name="model" [(ngModel)]="d.model" list="provider-models"
-              [placeholder]="d.provider_id ? 'pick or type a model name' : 'provider:model'"></label>
-        </div>
-        @if (modelDetails(d); as det) { <p class="hint inline-hint">{{ det }}</p> }
-        <datalist id="provider-models">
-          @for (m of models(); track m.id) { <option [value]="m.id">{{ m.details }}</option> }
-        </datalist>
+        <hq-model-picker label="Model" [providers]="providers()"
+          [(providerId)]="d.provider_id" [(modelName)]="d.model" />
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
         <datalist id="pools">@for (p of pools(); track p) { <option [value]="p"></option> }</datalist>
@@ -78,6 +62,34 @@ import { AgentDef, Api, ModelInfo, ProviderInfo, ToolServer, blankAgent } from '
                 (change)="toggle(d.delegates, a.id!)"> {{ a.name }}</label>
             }
           }
+        </fieldset>
+
+        <fieldset>
+          <legend>Vision model <small>looks at the desktop for this agent</small></legend>
+          <p class="hint inline-hint">Optional. When set, this agent never receives screenshots itself: it gets
+            look / locate / click_on tools and this model does the looking. Needs a desktop tool server.
+            A small local vision model (e.g. qwen3-vl:8b, Holo2) keeps the main model text-only.</p>
+          <hq-model-picker label="Vision model" [providers]="providers()" [optional]="true" noneLabel="No vision model"
+            [(providerId)]="d.vision_provider_id" [(modelName)]="d.vision_model" />
+          @if (d.vision_model) {
+            <div class="inline">
+              <label>Coordinates the model returns
+                <select name="vcoords" [(ngModel)]="d.vision_coords">
+                  <option value="relative_1000">0–1000 scale (Qwen-VL family, Holo)</option>
+                  <option value="pixels">Pixels (UI-TARS)</option>
+                </select></label>
+              <label class="check"><input type="checkbox" name="vzoom" [(ngModel)]="d.vision_zoom">
+                Zoom in to double-check clicks</label>
+            </div>
+          }
+        </fieldset>
+
+        <fieldset>
+          <legend>Fallback model <small>used when the main model fails or gives up</small></legend>
+          <p class="hint inline-hint">Optional. If the main model errors, loops, or calls <code>escalate</code>,
+            the turn is rerun on this model. Keep the main model local and put a frontier model here.</p>
+          <hq-model-picker label="Fallback model" [providers]="providers()" [optional]="true" noneLabel="No fallback"
+            [(providerId)]="d.fallback_provider_id" [(modelName)]="d.fallback_model" />
         </fieldset>
 
         <label>Desktop viewer URL <small>optional KasmVNC/noVNC address for this agent's desktop</small>
@@ -109,8 +121,6 @@ export class AgentsPage implements OnInit {
   draft = signal<AgentDef | null>(null);
   error = signal('');
   providers = signal<ProviderInfo[]>([]);
-  models = signal<ModelInfo[]>([]);
-  modelsStatus = signal('');
   pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
   others = computed(() => this.agents().filter(a => a.id !== this.draft()?.id && a.enabled));
 
@@ -127,28 +137,6 @@ export class AgentsPage implements OnInit {
     const d = a ? structuredClone(a) : blankAgent();
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
     this.draft.set(d);
-    this.loadModels(d.provider_id);
-  }
-
-  setProvider(d: AgentDef, id: string | null) {
-    if (d.provider_id !== id) d.model = '';
-    d.provider_id = id;
-    this.draft.set({ ...d });
-    this.loadModels(id);
-  }
-
-  loadModels(providerId: string | null) {
-    this.models.set([]);
-    if (!providerId) { this.modelsStatus.set(''); return; }
-    this.modelsStatus.set('loading models…');
-    this.api.providerModels(providerId).subscribe({
-      next: m => { this.models.set(m); this.modelsStatus.set(`${m.length} available`); },
-      error: e => this.modelsStatus.set(e.error?.detail ?? 'could not reach provider'),
-    });
-  }
-
-  modelDetails(d: AgentDef) {
-    return d.provider_id ? this.models().find(m => m.id === d.model)?.details ?? '' : '';
   }
 
   modelLabel(a: AgentDef) {

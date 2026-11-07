@@ -1,0 +1,5 @@
+#!/usr/bin/with-contenv bash
+# s6 service: screenshot/mouse/keyboard MCP server on :8765.
+until [ -e /tmp/.X11-unix/X1 ]; do sleep 1; done
+export DISPLAY=:1 HOME=/config
+exec s6-setuidgid abc /opt/desktop/venv/bin/python /opt/desktop/desktop_mcp.py

@@ -213,6 +213,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - a real stdio MCP server
 - MQTT matching, cooldowns and a real broker end to end
 - the Postgres database and checkpointer with two workers
+- local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
 - import and export
@@ -304,6 +305,63 @@ You can register several providers of the same kind, for example two Ollama serv
 
 Agents that use desktop tools need a vision-capable model.
 
+## Local-first models
+
+Three features let local models do most of the work, so frontier models are only used when needed.
+
+```mermaid
+flowchart LR
+    A["Agent's main model<br/>(local, text-only)"]
+    subgraph desktop["Agent desktop container"]
+        PW["Playwright MCP :8931<br/>page as accessibility text"]
+        CH["Chromium<br/>(same window you see)"]
+        DM["desktop MCP :8765<br/>screenshot, click, type"]
+    end
+    V["Vision model<br/>(small local VLM)"]
+    F["Fallback model<br/>(frontier, optional)"]
+
+    A -- "browser_navigate / snapshot / click by ref" --> PW
+    PW -- CDP --> CH
+    A -- "look(question) / click_on(description)" --> V
+    V -- "screenshots" --> DM
+    V -- "text answer or x,y" --> A
+    A -. "error, runaway loop, or escalate()" .-> F
+```
+
+### 1. Read web pages as text (Playwright MCP)
+
+Each desktop container now runs a Chromium window (kept on the desktop, with its profile in `/config/agent-browser`) and a [Playwright MCP](https://playwright.dev/mcp/snapshots) server attached to it over the DevTools Protocol. Agents read pages as an accessibility snapshot, a text tree in which every element has a ref, and click or type by ref. That brings some big advantages:
+- Any text model can browse; no vision model is involved.
+- Clicks are exact rather than guessed coordinates.
+- It costs far fewer tokens than screenshots.
+- It works in the same browser you see, so a login you do through take-control stays in place for the agent.
+
+Register it as an HTTP tool server at `http://desktop-1:8931/mcp`, tick **Controls an agent desktop**, and untick *Prefix tool names*, since its tools are already called `browser_*`. Agents should call `browser_snapshot` after navigating to read the page.
+
+### 2. Vision as a tool (per-agent vision model)
+
+Set a **Vision model** on an agent, for example `qwen3-vl:8b` from your Ollama provider. The agent's main model then never sees screenshots, so its context stays small and it can be a text-only model. Instead it gets three tools:
+- `look(question)`: a text answer about what's on screen, such as "CPU peaked at 87% at 14:20".
+- `locate(description)`: the x/y position of something described in words.
+- `click_on(description)`: locate it, then click.
+
+The vision model does the looking. Screenshot tools on that agent's desktop servers are hidden from the main model.
+
+Two settings tune it for the vision model you pick:
+- **Coordinates:** *0–1000 scale* for the Qwen-VL family and Holo models; *pixels* for UI-TARS.
+- **Zoom in to double-check clicks:** after a first guess, the area around it is cropped, enlarged and checked again. That takes one more vision call, but small local models land much more accurately with it.
+
+Good local choices are `qwen3-vl:4b` or `qwen3-vl:8b` (in Ollama) for reading screens and graphs, and Holo2 or UI-TARS-1.5 for precise clicking. The last two are served through vLLM or llama.cpp as an *OpenAI-compatible* provider. With 16 GB of VRAM, keep in mind that the main model and the vision model each need to load; a 14B text model plus a 4B vision model fit more comfortably than gpt-oss:20b plus an 8B.
+
+### 3. Fallback model
+
+Set a **Fallback model** on an agent, for example `gpt-4.1` from OpenAI. The turn is rerun on it when any of these happens:
+- the main model errors, for instance because the Ollama server is down;
+- it runs away, hitting the per-run request limit while looping on tool calls;
+- it calls `escalate(reason)` itself. Agents with a fallback are told to do this when a task is beyond them.
+
+The switch shows up in the conversation and the live activity panel. The fallback can't escalate again. A rerun starts the turn over, so any tool calls the main model made before failing may happen again.
+
 ## Observability
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry Collector. The API process traces as `agent-hq` and workers as `agent-hq-worker`, so every agent run, model call and tool call shows up in Phoenix. The live activity panel in each chat shows the same information, plus queueing, retries and which worker ran each job.
@@ -317,12 +375,13 @@ backend/app/
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
+  vision.py          look / locate / click_on via a per-agent vision model
   api/desktop.py     take control of an agent's desktop / hand it back
   llm.py             model providers: build an agent's model; list a provider's models
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
 frontend/src/app/    chat, agents, models, tools, events and system pages
-desktop/             webtop image + desktop MCP server (screenshot/click/type/key/scroll/open_url)
+desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 deploy/infra/        Postgres, Valkey and Mosquitto compose file
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
 ```

@@ -38,18 +38,31 @@ def build_model(spec: str) -> Model:
     return infer_model(spec)
 
 
-def build_agent_model(agent: AgentDef) -> Model:
-    if not agent.provider_id:
-        if not agent.model:
-            raise ValueError(f"{agent.name} has no model provider or model selected")
-        return build_model(agent.model)
+def build_model_for(provider_id: str | None, model: str, who: str) -> Model:
+    """A provider + model name (or a raw spec when there is no provider)."""
+    if not provider_id:
+        if not model:
+            raise ValueError(f"{who} has no model provider or model selected")
+        return build_model(model)
     with db.session() as s:
-        provider = s.get(ModelProvider, agent.provider_id)
+        provider = s.get(ModelProvider, provider_id)
     if provider is None:
-        raise ValueError(f"{agent.name}'s model provider no longer exists")
+        raise ValueError(f"{who}'s model provider no longer exists")
     if not provider.enabled:
         raise ValueError(f"model provider '{provider.name}' is disabled")
-    return build_provider_model(provider, agent.model)
+    return build_provider_model(provider, model)
+
+
+def build_agent_model(agent: AgentDef) -> Model:
+    return build_model_for(agent.provider_id, agent.model, agent.name)
+
+
+def describe_model(provider_id: str | None, model: str) -> str:
+    if not provider_id:
+        return model
+    with db.session() as s:
+        p = s.get(ModelProvider, provider_id)
+    return f"{model} @ {p.name}" if p else model
 
 
 def ollama_root(p: ModelProvider) -> str:

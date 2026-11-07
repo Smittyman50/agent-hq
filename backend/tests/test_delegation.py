@@ -147,4 +147,5 @@ async def test_example_crew_imports_as_data(hq):
     await hq.http.post("/api/agents/import", json=data)
     agents = {a["name"]: a for a in (await hq.http.get("/api/agents")).json()}
     assert {agents[n]["id"] for n in ("Scarlett", "Snake Eyes")} == set(agents["Duke"]["delegates"])
-    assert len(agents["Snake Eyes"]["tool_server_ids"]) == 1
+    assert len(agents["Snake Eyes"]["tool_server_ids"]) == 2
+    assert agents["Snake Eyes"]["vision_model"] and agents["Snake Eyes"]["fallback_provider_id"]

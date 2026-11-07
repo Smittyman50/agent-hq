@@ -20,6 +20,12 @@ class AgentIn(BaseModel):
     instructions: str = ""
     provider_id: str | None = None
     model: str = ""
+    vision_provider_id: str | None = None
+    vision_model: str = ""
+    vision_coords: str = "relative_1000"
+    vision_zoom: bool = True
+    fallback_provider_id: str | None = None
+    fallback_model: str = ""
     pool: str = "default"
     tool_server_ids: list[str] = []
     delegates: list[str] = []
@@ -36,8 +42,11 @@ def _clear_other_defaults(s: Session, keep_id: str) -> None:
 
 
 def _check_provider(s: Session, body: AgentIn) -> None:
-    if body.provider_id and not s.get(ModelProvider, body.provider_id):
-        raise HTTPException(422, "model provider not found")
+    for pid in (body.provider_id, body.vision_provider_id, body.fallback_provider_id):
+        if pid and not s.get(ModelProvider, pid):
+            raise HTTPException(422, "model provider not found")
+    if body.vision_coords not in ("relative_1000", "pixels"):
+        raise HTTPException(422, "vision_coords must be relative_1000 or pixels")
 
 
 def _check_name(s: Session, name: str, own_id: str | None = None) -> None:
@@ -81,8 +90,10 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
         "tool_servers": [t.model_dump(exclude={"id", "created_at"}) for t in servers],
         "agents": [
             {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
-                                     "provider_id"}),
+                                     "provider_id", "vision_provider_id", "fallback_provider_id"}),
              "provider": prov_by_id.get(a.provider_id),
+             "vision_provider": prov_by_id.get(a.vision_provider_id),
+             "fallback_provider": prov_by_id.get(a.fallback_provider_id),
              "tools": [srv_by_id[i] for i in a.tool_server_ids if i in srv_by_id],
              "delegates": ["*" if d == "*" else by_id.get(d, d) for d in a.delegates]}
             for a in agents
@@ -122,9 +133,13 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         existing = s.exec(select(AgentDef).where(AgentDef.name == a["name"])).first()
         row = existing or AgentDef(name=a["name"])
         for k, v in a.items():
-            if k not in ("tools", "delegates", "provider", "provider_id") and hasattr(row, k):
+            if k not in ("tools", "delegates", "provider", "provider_id", "vision_provider",
+                         "vision_provider_id", "fallback_provider", "fallback_provider_id") and hasattr(row, k):
                 setattr(row, k, v)
         row.provider_id = providers.get(a.get("provider")) if a.get("provider") else None
+        row.vision_provider_id = providers.get(a.get("vision_provider")) if a.get("vision_provider") else None
+        row.fallback_provider_id = (providers.get(a.get("fallback_provider"))
+                                    if a.get("fallback_provider") else None)
         row.tool_server_ids = [servers[n] for n in a.get("tools", []) if n in servers]
         row.updated_at = _now()
         s.add(row)
