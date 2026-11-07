@@ -149,7 +149,7 @@ flowchart LR
     T --> A["agent investigates,<br/>delegates, reports"]
 ```
 
-Subscriptions are managed on the **Events** page:
+Subscriptions are managed on the **Settings → Events** page:
 - **Topic filter:** MQTT wildcards, where `+` matches one level and `#` matches the rest.
 - **Agent:** the agent that handles matching events.
 - **Conversation:** where that agent reports. Leave it empty to get a dedicated events thread.
@@ -199,9 +199,9 @@ npm install
 npx ng serve        # http://localhost:4200, proxies /api and /ws to :8000
 ```
 
-In the UI, start on the **Models** page and add your Ollama server (or another provider), then create agents and pick a model for each.
+The UI keeps your conversations in the left sidebar; everything else (agents, model providers, memory, tools, events and system status) is under **Settings** at the bottom of the sidebar. Start on the **Settings → Model providers** page and add your Ollama server (or another provider), then create agents and pick a model for each.
 
-To try the example crew, go to **Agents → Import** and pick `examples/agents.example.json`. It contains two providers (an Ollama server and OpenAI), the agents with their models and pools, a desktop tool server and an alerts subscription, all as data. Then fix the Ollama URL on the **Models** page and choose models that your server actually has.
+To try the example crew, go to **Settings → Agents → Import** and pick `examples/agents.example.json`. It contains two providers (an Ollama server and OpenAI), the agents with their models and pools, a desktop tool server and an alerts subscription, all as data. Then fix the Ollama URL on the **Settings → Model providers** page and choose models that your server actually has.
 
 Without `AHQ_DB_URL`, the system falls back to SQLite files in `AHQ_DATA_DIR`. That's fine for a single machine, but use Postgres as soon as workers run anywhere else.
 
@@ -238,7 +238,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
    - `hq`: API, UI and MQTT bridge on port 8000
    - `worker`: pool `default`
    - `worker-desktop` and `desktop-1`: pool `desktop`, plus an example agent desktop
-3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **System** page with their pools and load, and each pool's queue depth appears next to them.
+3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 
 Valkey settings that matter (already set in the infra compose file):
 - `appendonly yes`: queued jobs survive a Valkey restart.
@@ -292,7 +292,7 @@ Credentials typed into chat are stored in the transcript, the conversation histo
 
 ## Adding tools
 
-Register MCP servers on the **Tools** page:
+Register MCP servers on the **Settings → Tools** page:
 - **HTTP:** a URL like `http://perceptor:8811/mcp`
 - **stdio:** a command plus arguments, which is launched **on whichever worker runs the agent**, so it must be installed there
 
@@ -300,7 +300,7 @@ Click **Test connection** to list the server's tools (this connects from the API
 
 ## Model providers
 
-Providers live on the **Models** page; nothing about servers or model names is hardcoded. Add a provider once, and its models become choices in every agent's **Model** picker. Different agents can use different models from the same provider: one on `qwen3:14b`, another on `gpt-oss:20b`.
+Providers live on the **Settings → Model providers** page; nothing about servers or model names is hardcoded. Add a provider once, and its models become choices in every agent's **Model** picker. Different agents can use different models from the same provider: one on `qwen3:14b`, another on `gpt-oss:20b`.
 
 | Kind | Base URL | Model list comes from | API key |
 |---|---|---|---|
@@ -323,7 +323,7 @@ Agents that use desktop tools need a vision-capable model.
 
 A **ChatGPT plan** provider runs agents on your ChatGPT Plus or Pro subscription, using OpenAI's [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) for open-source and self-hosted apps. There's no API key and no per-token bill: requests count against your plan's usage instead.
 
-**Signing in.** On the **Models** page, add a provider of kind *ChatGPT plan*, save it, and choose **Sign in with ChatGPT**. Then:
+**Signing in.** On the **Settings → Model providers** page, add a provider of kind *ChatGPT plan*, save it, and choose **Sign in with ChatGPT**. Then:
 1. Approve Agent HQ in the OpenAI tab that opens, including permission to use your plan.
 2. OpenAI only ever redirects to `http://127.0.0.1:1455/auth/callback`, which is the computer running your browser, not the server running Agent HQ. So that tab ends on a "can't connect" page. That's expected.
 3. Copy the whole address from that tab's address bar, paste it into Agent HQ, and choose **Finish sign-in**.
@@ -363,7 +363,7 @@ flowchart LR
 - **Tidy-up** (on demand, or nightly at a set hour) merges duplicates. With a *tidy-up model* configured, it also merges related memories and retires ones a newer memory contradicts.
 - **Scopes:** *team* (every agent), *agent* (only one agent), or *conversation* (only one thread). Each agent has a **Long-term memory** switch.
 
-On the **Memory** page you can:
+On the **Settings → Memory** page you can:
 - search, add and edit memories;
 - confirm, retire, restore or delete them;
 - choose the embedding model;
@@ -378,10 +378,10 @@ Changing the embedding model re-embeds existing memories in the background.
 
 ## Avatars
 
-Give each agent a face on the **Agents** page: **Upload avatar** accepts a GIF (animated is fine), PNG, JPEG or WebP image up to 3 MB (`AHQ_AVATAR_MAX_BYTES`). Avatars appear in the agent list, the conversation list, the chat header, next to each reply, and on desktop-help banners. Agents without one get their initials on a colour derived from their name.
+Give each agent a face on the **Settings → Agents** page: **Upload avatar** accepts a GIF (animated is fine), PNG, JPEG or WebP image up to 3 MB (`AHQ_AVATAR_MAX_BYTES`). Avatars appear in the agent list, the conversation list, the chat header, next to each reply, and on desktop-help banners. Agents without one get their initials on a colour derived from their name.
 
 - **Storage:** images are kept in the database, so every machine serves the same ones, and they're included in agent export and import.
-- **Animation:** how animated GIFs behave is a per-browser setting on the **System** page:
+- **Animation:** how animated GIFs behave is a per-browser setting on the **Settings → System** page:
   - *Always animate*
   - *Only while the agent is working*
   - *Never*: shows the first frame; hovering plays the animation.
@@ -477,7 +477,8 @@ backend/app/
   chatgpt.py         ChatGPT plan providers: Sign in with ChatGPT, stored tokens, cross-worker refresh lock
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
-frontend/src/app/    chat, agents, models, memory, tools, events and system pages
+frontend/src/app/    app shell (sidebar of conversations), chat, and the Settings pages
+                     (agents, model providers, memory, tools, events, system); icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON

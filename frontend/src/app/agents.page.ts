@@ -68,7 +68,7 @@ import { Avatar } from './avatar';
           @for (t of servers(); track t.id) {
             <label class="check"><input type="checkbox" [checked]="d.tool_server_ids.includes(t.id!)"
               (change)="toggle(d.tool_server_ids, t.id!)"> {{ t.name }} <small>{{ t.description }}</small></label>
-          } @empty { <p class="hint">No tool servers registered yet (Tools tab).</p> }
+          } @empty { <p class="hint">No tool servers registered yet (Settings → Tools).</p> }
         </fieldset>
 
         <fieldset>

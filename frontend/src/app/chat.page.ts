@@ -2,36 +2,20 @@ import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, sig
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { AgentDef, Api, DesktopState, HqEvent, Message, Thread } from './api.service';
+import { Api, DesktopState, HqEvent, Message } from './api.service';
 import { Avatar } from './avatar';
+import { Icon } from './icon';
+import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar],
+  imports: [FormsModule, DatePipe, Avatar, Icon],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
-    <aside class="list">
-      <div class="list-head">
-        <select [(ngModel)]="newAgentId" name="newAgent">
-          @for (a of enabledAgents(); track a.id) { <option [value]="a.id">{{ a.name }}</option> }
-        </select>
-        <button (click)="newThread()" [disabled]="!newAgentId">+ Chat</button>
-      </div>
-      @for (t of threads(); track t.id) {
-        <button class="row" [class.active]="t.id === threadId()" (click)="open(t.id)">
-          <span class="row-with-avatar"><hq-avatar [agent]="agentById(t.agent_id)" [size]="30" [active]="isActive(t.agent_id)" />
-            <span class="row-text">
-              <span class="name">{{ agentName(t.agent_id) }}</span>
-              <span class="sub">{{ t.title }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span>
-            </span></span>
-        </button>
-      } @empty { <p class="hint">No conversations yet.</p> }
-    </aside>
-
     <section class="conversation">
       @if (threadId()) {
         <header class="conv-head">
@@ -39,6 +23,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
           <strong>{{ agentName(thread()?.agent_id) }}</strong>
           @if (busy()) { <span class="pill live">working…</span> }
           <span class="spacer"></span>
+          <hq-icon name="monitor" [size]="16" class="muted" />
           <select [ngModel]="desktopAgentId()" (ngModelChange)="desktopAgentId.set($event)" name="desk">
             <option value="">No desktop</option>
             @for (a of desktopAgents(); track a.id) { <option [value]="a.id">{{ a.name }}'s desktop</option> }
@@ -77,7 +62,20 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
           <button type="submit" [disabled]="!draft.trim()">Send</button>
         </form>
       } @else {
-        <div class="empty">Pick a conversation or start a new chat.</div>
+        <div class="start">
+          <hq-icon name="logo" [size]="40" />
+          <h2>Start a conversation</h2>
+          <p class="muted">Pick an agent, or open a conversation from the sidebar.</p>
+          <div class="start-grid">
+            @for (a of ws.enabledAgents(); track a.id) {
+              <button class="start-card" (click)="ws.newChat(a.id!)">
+                <hq-avatar [agent]="a" [size]="40" [active]="isActive(a.id)" />
+                <span class="row-text"><span class="name">{{ a.name }}</span>
+                  <span class="sub">{{ a.description || 'No description' }}</span></span>
+              </button>
+            } @empty { <p class="muted">No agents yet. Create one under Settings → Agents.</p> }
+          </div>
+        </div>
       }
     </section>
 
@@ -92,7 +90,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
           <a [href]="d.desktop_url" target="_blank">Open in tab</a></header>
         @if (desk(); as s) {
           @if (!s.has_desktop_tools) {
-            <div class="desk-bar muted">To use take-control, tick "Controls an agent desktop" on this desktop's tool server (Tools page).</div>
+            <div class="desk-bar muted">To use take-control, tick "Controls an agent desktop" on this desktop's tool server (Settings → Tools).</div>
           } @else if (s.user_has_control) {
             <div class="desk-bar">
               <input [(ngModel)]="deskNote" name="desknote" placeholder="Note for the agent (optional), e.g. logged in, 2FA done">
@@ -113,14 +111,14 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
 })
 export class ChatPage implements OnInit, OnDestroy {
   private api = inject(Api);
+  ws = inject(Workspace);
   private route = inject(ActivatedRoute);
-  private router = inject(Router);
   private sanitizer = inject(DomSanitizer);
   private scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private sub?: Subscription;
 
-  agents = signal<AgentDef[]>([]);
-  threads = signal<Thread[]>([]);
+  agents = this.ws.agents;
+  threads = this.ws.threads;
   threadId = signal<string | null>(null);
   messages = signal<Message[]>([]);
   activity = signal<Activity[]>([]);
@@ -138,10 +136,8 @@ export class ChatPage implements OnInit, OnDestroy {
     }
     return req;
   });
-  newAgentId = '';
   draft = '';
 
-  enabledAgents = computed(() => this.agents().filter(a => a.enabled));
   desktopAgents = computed(() => this.agents().filter(a => a.desktop_url));
   thread = computed(() => this.threads().find(t => t.id === this.threadId()));
   desktopAgent = computed(() => this.agents().find(a => a.id === this.desktopAgentId()));
@@ -151,15 +147,11 @@ export class ChatPage implements OnInit, OnDestroy {
   });
 
   ngOnInit() {
-    this.api.agents().subscribe(a => {
-      this.agents.set(a);
-      this.newAgentId = (a.find(x => x.is_default && x.enabled) ?? a.find(x => x.enabled))?.id ?? '';
-    });
-    this.loadThreads();
+    this.ws.reload();  // pick up agent edits made under Settings
     this.route.paramMap.subscribe(p => this.select(p.get('id')));
   }
 
-  ngOnDestroy() { this.sub?.unsubscribe(); clearInterval(this.deskTimer); clearInterval(this.ticker); }
+  ngOnDestroy() { this.sub?.unsubscribe(); clearInterval(this.deskTimer); }
 
   constructor() {
     effect(() => {
@@ -189,13 +181,7 @@ export class ChatPage implements OnInit, OnDestroy {
     this.api.releaseDesktop(agentId, this.threadId(), note).subscribe(s => this.desk.set(s));
   }
 
-  agentName(id: string | null | undefined) { return this.agents().find(a => a.id === id)?.name ?? '—'; }
-  loadThreads() { this.api.threads().subscribe(t => this.threads.set(t)); }
-  open(id: string) { this.router.navigate(['/chat', id]); }
-
-  newThread() {
-    this.api.createThread(this.newAgentId).subscribe(t => { this.loadThreads(); this.open(t.id); });
-  }
+  agentName(id: string | null | undefined) { return this.ws.agentName(id); }
 
   select(id: string | null) {
     this.sub?.unsubscribe();
@@ -204,6 +190,7 @@ export class ChatPage implements OnInit, OnDestroy {
     this.activity.set([]);
     this.busy.set(false);
     if (!id) return;
+    if (!this.threads().some(t => t.id === id)) this.ws.reloadThreads();  // started elsewhere
     this.api.messages(id).subscribe(m => { this.messages.set(m); this.scroll(); });
     this.sub = this.api.events(id).subscribe(ev => this.onEvent(ev));
   }
@@ -211,14 +198,10 @@ export class ChatPage implements OnInit, OnDestroy {
   agentById(id: string | null | undefined) { return this.agents().find(a => a.id === id); }
 
   /** Agents seen doing something in the last few seconds animate in "while working" mode. */
-  private lastSeen = signal<Record<string, number>>({});
-  private now = signal(Date.now());
-  private ticker = setInterval(() => this.now.set(Date.now()), 1500);
-
   isActive(id: string | null | undefined) {
     if (!id) return false;
     if (this.busy() && this.thread()?.agent_id === id) return true;
-    return this.now() - (this.lastSeen()[id] ?? 0) < 6000;
+    return this.ws.isActive(id);
   }
 
   private markActive(ev: HqEvent) {
@@ -228,11 +211,7 @@ export class ChatPage implements OnInit, OnDestroy {
       const a = this.agents().find(x => x.name === ev[key]);
       if (a?.id) ids.push(a.id);
     }
-    if (ids.length) {
-      const t = Date.now();
-      this.lastSeen.update(m => ({ ...m, ...Object.fromEntries(ids.map(i => [i, t])) }));
-      this.now.set(t);
-    }
+    this.ws.touch(ids);
   }
 
   onEvent(ev: HqEvent) {
