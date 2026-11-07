@@ -111,12 +111,19 @@ async def hang_once(messages, info):
     return worker_fn(messages, info)
 
 
+async def slow_worker(messages, info):
+    """Takes longer than redis-py's default 5 s socket timeout (a real browsing task)."""
+    if not _tool_returns(messages):
+        await asyncio.sleep(7)
+    return worker_fn(messages, info)
+
+
 def alert(messages, info):
     return ModelResponse(parts=[TextPart("Handled event: " + _last_prompt(messages).split("\n\n")[1])])
 
 
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
-           "hang-once": hang_once, "alert": alert}
+           "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker}
 
 
 @pytest.fixture(autouse=True)

@@ -35,6 +35,7 @@ from pydantic_ai.providers.openai_chatgpt import (
 )
 
 from . import db
+from .broker import connect
 from .config import settings
 from .models import ModelProvider, SystemSetting
 
@@ -153,7 +154,7 @@ class AgentHQChatGPTProvider(OpenAIChatGPTProvider):
         self.provider_id = provider_id
 
     async def _refresh_locked(self) -> None:  # PydanticAI hook, called holding its own lock
-        r = aioredis.from_url(settings.redis_url)
+        r = connect(settings.redis_url)
         try:
             async with r.lock(f"ahq:lock:chatgpt-refresh:{self.provider_id}", timeout=60,
                               blocking_timeout=90):

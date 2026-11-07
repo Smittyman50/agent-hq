@@ -231,7 +231,12 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'delegation_started': this.log(ev, `${ev['from_agent'] ?? 'you'} → ${ev['to_agent']} on ${ev['worker']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg'); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;
       case 'model_fallback': this.log(ev, `${ev['agent']} → fallback model ${ev['to_model']}: ${ev['reason']}`, 'err'); break;
-      case 'delegation_finished': this.log(ev, `${ev['to_agent']} finished [${ev['result'].status}]`, 'deleg'); break;
+      case 'delegation_finished': {
+        const r = ev['result'] ?? {};
+        const why = r.status !== 'done' && r.summary ? `: ${String(r.summary).slice(0, 300)}` : '';
+        this.log(ev, `${ev['to_agent']} finished [${r.status}]${why}`, r.status === 'done' ? 'deleg' : 'err');
+        break;
+      }
     }
   }
 

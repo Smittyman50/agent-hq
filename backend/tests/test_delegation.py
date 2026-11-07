@@ -28,6 +28,16 @@ async def test_wait_delegation_relays_result_through_workers(hq):
     assert [m.role for m in hq.messages(t["id"])] == [Role.user, Role.event, Role.agent]
 
 
+async def test_delegation_longer_than_five_seconds_still_reports_back(hq):
+    # Regression: redis-py 8 times out socket reads after 5 s by default, which broke the
+    # supervisor's blocking wait for any delegate that took longer ("Timeout reading from ...").
+    await hq.start_worker(name="m1", pools=["default"])
+    await hq.start_worker(name="desk", pools=["desktop"])
+    _, _, t = await _team(hq, worker="fake:slow-worker", worker_name="Snake Eyes", worker_pool="desktop")
+    await hq.say(t["id"], "open CNN and read the main headline")
+    assert await hq.wait_agent_replies(t["id"], 1, timeout=30) == ["Report: Worker finished"]
+
+
 async def test_single_slot_worker_does_not_deadlock(hq):
     # The supervisor waits on its delegate; it must give up its slot while waiting.
     await hq.start_worker(concurrency=1)

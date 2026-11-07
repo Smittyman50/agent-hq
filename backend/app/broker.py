@@ -30,10 +30,23 @@ def _ts() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def connect(url: str, **kwargs: Any) -> aioredis.Redis:
+    """A Valkey/Redis client suited to long blocking reads.
+
+    redis-py 8 gives every socket read a 5-second timeout by default, which breaks the
+    blocking commands Agent HQ relies on: waiting for a delegated result (BLPOP for up to
+    AHQ_DELEGATE_WAIT_TIMEOUT), waiting for you to hand a desktop back, and pub/sub. So
+    reads may block as long as the command asks; dead connections are caught instead by
+    TCP keepalive and a periodic health check, and connecting still times out quickly.
+    """
+    return aioredis.from_url(url, socket_timeout=None, socket_connect_timeout=10,
+                             socket_keepalive=True, health_check_interval=30, **kwargs)
+
+
 class Broker:
     def __init__(self, url: str) -> None:
         self.url = url
-        self.r = aioredis.from_url(url, decode_responses=True)
+        self.r = connect(url, decode_responses=True)
 
     async def close(self) -> None:
         await self.r.aclose()
