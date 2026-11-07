@@ -1,7 +1,10 @@
 # Shared infrastructure for Agent HQ: run once, on one host.
 #   cd deploy/infra && cp .env.example .env && docker compose up -d
-# If you already run an MQTT broker (e.g. for Home Assistant), delete the mosquitto
-# service and point AHQ_MQTT_URL at your existing broker instead.
+#
+# Postgres and Valkey always start. The Mosquitto broker is optional (profile "mqtt"):
+#   - Using your home lab's existing broker: leave it off and point AHQ_MQTT_URL there.
+#   - Want a local broker for dev/testing: set COMPOSE_PROFILES=mqtt in .env,
+#     or run `docker compose --profile mqtt up -d`.
 name: agent-hq-infra
 
 services:
@@ -27,6 +30,8 @@ services:
     ports: ["6379:6379"]
 
   mosquitto:
+    # Optional local broker; only starts with the "mqtt" profile (see the top of this file).
+    profiles: ["mqtt"]
     image: eclipse-mosquitto:2
     restart: unless-stopped
     volumes:

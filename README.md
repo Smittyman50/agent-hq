@@ -160,14 +160,23 @@ The page can also send a test event without a broker. The bridge runs in the API
 
 ## Quick start (single machine, dev)
 
-You need Postgres, Valkey and (optionally) MQTT. The simplest route is the infra compose file:
+You need Postgres, Valkey and (optionally) MQTT. The simplest route is the infra compose file, which always starts Postgres and Valkey:
 
 ```bash
 cd deploy/infra
 cp .env.example .env                      # set the passwords
-docker compose run --rm mosquitto mosquitto_passwd -c /mosquitto/config/passwd agent-hq
 docker compose up -d
 ```
+
+MQTT is up to you:
+- **Use your home lab's broker:** give Agent HQ its own user with read access to the topics you'll subscribe to, and set `AHQ_MQTT_URL` to that broker. Nothing else to run.
+- **Run the bundled Mosquitto** (handy for dev and testing): it's behind the `mqtt` compose profile.
+
+  ```bash
+  docker compose --profile mqtt run --rm mosquitto mosquitto_passwd -c /mosquitto/config/passwd agent-hq
+  docker compose --profile mqtt up -d       # or set COMPOSE_PROFILES=mqtt in .env
+  ```
+- **No MQTT at all:** leave `AHQ_MQTT_URL` empty. Everything except event-triggered agents still works.
 
 Backend (one shell for the API, one for a worker):
 
@@ -223,7 +232,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 
 ## Deploy (Docker)
 
-1. **Infrastructure,** once, on one host: `deploy/infra/docker-compose.yml` (Postgres 17, Valkey 8, Mosquitto 2).
+1. **Infrastructure,** once, on one host: `deploy/infra/docker-compose.yml` (Postgres 17 with pgvector, Valkey 8, and optionally Mosquitto 2 via the `mqtt` profile). Keeping Postgres and Valkey together on a host dedicated to Agent HQ while sharing your lab's existing MQTT broker works well: the first two hold Agent HQ's state, and MQTT is how the rest of the lab talks to it.
 2. **Application:** `cp .env.example .env`, fill in the URLs and keys, then `docker compose up -d --build`. This starts:
    - `hq`: API, UI and MQTT bridge on port 8000
    - `worker`: pool `default`
@@ -444,7 +453,7 @@ backend/app/
   telemetry.py       OTLP -> your Collector -> Phoenix
 frontend/src/app/    chat, agents, models, memory, tools, events and system pages
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
-deploy/infra/        Postgres, Valkey and Mosquitto compose file
+deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
 ```
 
