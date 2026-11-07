@@ -114,3 +114,16 @@ async def test_screenshots_never_enter_spans(hq, tmp_path, monkeypatch):
     for s in spans():
         blob = json.dumps(dict(s.attributes), default=str)
         assert "iVBORw0KGgo" not in blob  # ...but no base64 PNG data anywhere
+
+
+async def test_spans_land_in_their_own_phoenix_project(hq):
+    """Phoenix files traces by the openinference.project.name resource attribute; without it
+    everything goes to "default"."""
+    await hq.start_worker(name="m1", pools=["default"])
+    await hq.start_worker(name="m2", pools=["gpu"])
+    t = await _team(hq)
+    await hq.say(t["id"], "check feeds")
+    await hq.wait_agent_replies(t["id"], 1)
+    await settle(hq)
+    assert spans()
+    assert {s.resource.attributes.get("openinference.project.name") for s in spans()} == {"agent-hq"}

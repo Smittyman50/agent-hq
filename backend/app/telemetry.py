@@ -64,10 +64,15 @@ def setup_telemetry(service_suffix: str = "", *, exporter=None, force: bool = Fa
     from pydantic_ai import Agent
     from pydantic_ai.models.instrumented import InstrumentationSettings
 
-    service = os.environ.get("OTEL_SERVICE_NAME", "agent-hq")
-    if service_suffix:
-        service = f"{service}-{service_suffix}"
-    provider = TracerProvider(resource=Resource.create({"service.name": service}))
+    base = os.environ.get("OTEL_SERVICE_NAME", "agent-hq")
+    service = f"{base}-{service_suffix}" if service_suffix else base
+    attrs = {"service.name": service}
+    # Phoenix files traces into the project named by this resource attribute ("default"
+    # without it). The API and every worker share one project, whatever their service name.
+    # OTEL_RESOURCE_ATTRIBUTES=openinference.project.name=... still wins if you set it.
+    if "openinference.project.name" not in os.environ.get("OTEL_RESOURCE_ATTRIBUTES", ""):
+        attrs["openinference.project.name"] = os.environ.get("PHOENIX_PROJECT_NAME") or base
+    provider = TracerProvider(resource=Resource.create(attrs))
     # Order matters: stamp job attributes, reshape for Phoenix, then export.
     provider.add_span_processor(_job_attributes_processor())
     provider.add_span_processor(OpenInferenceSpanProcessor())
