@@ -10,7 +10,7 @@ import { Icon } from './icon';
 import { Markdown } from './markdown';
 import { Workspace } from './workspace';
 
-interface Activity { ts: string; text: string; kind: string; depth: number; }
+interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
@@ -61,12 +61,22 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
                         <div class="body rich"><hq-md [text]="x.task" /></div>
                       </div>
                     }
-                    <div class="crumb-msg reply">
-                      <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" />
-                        {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
-                      <div class="body rich"><hq-md [text]="x.summary" /></div>
-                      @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
-                    </div>
+                    @if (x.finished) {
+                      <div class="crumb-msg reply">
+                        <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" />
+                          {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
+                        <div class="body rich"><hq-md [text]="x.summary" /></div>
+                        @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
+                      </div>
+                    } @else {
+                      <div class="crumb-msg reply working">
+                        <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" [active]="true" />
+                          {{ x.assignee }} <span class="muted">{{ x.status === 'queued' ? 'is queued…' : 'is working…' }}</span></div>
+                        @for (a of stepsOf(x.assignee, x.depth); track $index) {
+                          <div class="crumb-step act {{ a.kind }}"><span class="ts">{{ a.ts | date:'HH:mm:ss' }}</span> {{ a.text }}</div>
+                        } @empty { <div class="crumb-step muted">Waiting for the first step…</div> }
+                      </div>
+                    }
                   </div>
                 }
               </div>
@@ -185,6 +195,11 @@ export class ChatPage implements OnInit, OnDestroy {
     this.opened.update(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
+  /** The latest live steps of an agent working on a delegated task (this page's activity). */
+  stepsOf(agent: string, depth: number) {
+    return this.activity().filter(a => a.agent === agent && a.depth >= depth).slice(-6);
+  }
+
   /** A delegation result message, as both sides of the exchange (null for other messages). */
   exchange(m: Message) {
     const meta = (m.meta ?? {}) as Record<string, any>;
@@ -199,7 +214,8 @@ export class ChatPage implements OnInit, OnDestroy {
       requesterId: meta['requester_id'] ?? this.agents().find(a => a.name === requester)?.id ?? null,
       assigneeId: m.agent_id,
       task: meta['task'] as string | undefined,
-      status: (result.status ?? 'done') as string,
+      status: (result.status ?? meta['status'] ?? 'done') as string,
+      finished: !!meta['result'] || !meta['status'],
       summary: (result.summary ?? m.content) as string,
       details: (result.details ?? '') as string,
       background: !!meta['background'],
@@ -324,6 +340,9 @@ export class ChatPage implements OnInit, OnDestroy {
           this.scroll();
         }
         break;
+      case 'message_updated':  // e.g. a delegation thread going from working to done
+        this.messages.update(ms => ms.map(m => m.id === ev['message'].id ? ev['message'] : m));
+        break;
       case 'status': this.busy.set(ev['state'] === 'thinking'); break;
       case 'tool_call': this.log(ev, `${ev['agent']} → ${ev['tool']}(${JSON.stringify(ev['args'])})`, 'call'); break;
       case 'tool_result': this.log(ev, `${ev['agent']} ← ${ev['tool']}: ${ev['error'] ?? ev['preview']}`, ev['error'] ? 'err' : 'result'); break;
@@ -349,7 +368,8 @@ export class ChatPage implements OnInit, OnDestroy {
   }
 
   private log(ev: HqEvent, text: string, kind: string) {
-    this.activity.update(a => [...a.slice(-199), { ts: ev['ts'], text, kind, depth: ev['depth'] ?? 0 }]);
+    this.activity.update(a => [...a.slice(-199),
+      { ts: ev['ts'], text, kind, depth: ev['depth'] ?? 0, agent: ev['agent'] ?? ev['to_agent'] }]);
   }
 
   onEnter(e: Event) {

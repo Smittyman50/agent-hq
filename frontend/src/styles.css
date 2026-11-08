@@ -242,3 +242,9 @@ button.danger-link { color: var(--bad); }
 /* A provider is chosen but its model isn't yet */
 select.needs, input.needs { border-color: var(--warn); }
 .needs-hint { color: var(--warn); }
+
+/* A delegation still in progress */
+.pill.queued { color: var(--muted); }
+.pill.working { color: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
+.crumb-step { font-family: ui-monospace, monospace; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0 1px 26px; color: var(--muted); }

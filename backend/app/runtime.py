@@ -425,6 +425,22 @@ class Runtime:
         await self.broker.publish(thread_id, "message", message=json.loads(m.model_dump_json()))
         return m
 
+    async def update_message(self, message_id: str, *, content: str | None = None,
+                             **meta: Any) -> Message | None:
+        """Change a message in place (e.g. a delegation going from working to done)."""
+        with db.session() as s:
+            m = s.get(Message, message_id)
+            if m is None:
+                return None
+            if content is not None:
+                m.content = content
+            m.meta = {**(m.meta or {}), **meta}  # reassign so the JSON column is saved
+            s.add(m)
+            s.commit()
+            s.refresh(m)
+        await self.broker.publish(m.thread_id, "message_updated", message=json.loads(m.model_dump_json()))
+        return m
+
     # ------------------------------------------------------------ enqueueing
 
     async def enqueue_turn(self, thread_id: str, prompt: str, *, from_user: bool = True,
@@ -551,6 +567,8 @@ class Runtime:
                                   to_agent=assignee.name, task=job.task,
                                   background=job.background, depth=job.depth,
                                   worker=job.worker)
+        if (job.meta or {}).get("message_id"):
+            await self.update_message(job.meta["message_id"], status="working", worker=job.worker)
         try:
             result, _ = await self.run_agent(assignee, job.task, deps, as_worker=True)
             result = as_work_result(result)
@@ -570,17 +588,22 @@ class Runtime:
                                   from_agent=requester.name if requester else None,
                                   to_agent=assignee.name, result=result.model_dump(),
                                   depth=job.depth)
-        await self.save_message(
-            job.origin_thread_id, Role.event,
-            f"{assignee.name} → {requester.name if requester else 'you'}: "
-            f"[{result.status}] {result.summary}",
-            agent_id=assignee.id, kind="delegation_result", job_id=job.id,
-            result=result.model_dump(),
-            # Both sides of the exchange, so the UI can show it as a thread between the two.
-            task=job.task, requester_id=requester.id if requester else None,
-            requester=requester.name if requester else None, assignee=assignee.name,
-            background=job.background, depth=job.depth,
-            started_at=job.created_at.isoformat() if job.created_at else None)
+        text = (f"{assignee.name} → {requester.name if requester else 'you'}: "
+                f"[{result.status}] {result.summary}")
+        message_id = (job.meta or {}).get("message_id")
+        updated = message_id and await self.update_message(
+            message_id, content=text, status=result.status, result=result.model_dump(),
+            finished_at=_now().isoformat())
+        if not updated:  # a job queued before this version: no message yet
+            await self.save_message(
+                job.origin_thread_id, Role.event, text,
+                agent_id=assignee.id, kind="delegation_result", job_id=job.id,
+                result=result.model_dump(), status=result.status,
+                # Both sides of the exchange, so the UI can show it as a thread between the two.
+                task=job.task, requester_id=requester.id if requester else None,
+                requester=requester.name if requester else None, assignee=assignee.name,
+                background=job.background, depth=job.depth,
+                started_at=job.created_at.isoformat() if job.created_at else None)
         await self._capture_delegation(job, assignee, result)
         # Wake a waiting delegator, if there is one.
         await self.broker.push_result(job.id, result.model_dump())
@@ -921,11 +944,20 @@ class Runtime:
             if ctx.deps.depth + 1 > settings.max_delegation_depth:
                 return {"status": "failed", "summary": "Delegation chain is too deep."}
 
-            job = await rt._submit(Job(
+            job = Job(
                 kind=JobKind.task, origin_thread_id=ctx.deps.thread_id, requester_agent_id=me.id,
                 assignee_agent_id=target.id, parent_job_id=ctx.deps.job_id, task=task,
                 background=background, depth=ctx.deps.depth + 1,
-                chain=[*ctx.deps.chain, target.id], pool=target.pool))
+                chain=[*ctx.deps.chain, target.id], pool=target.pool)
+            # Show the exchange in the conversation right away; it's updated in place as the
+            # task starts and finishes. Created before queueing, so a fast worker can't win.
+            msg = await rt.save_message(
+                ctx.deps.thread_id, Role.event, f"{me.name} → {target.name}: {task}",
+                agent_id=target.id, kind="delegation_result", job_id=job.id, status="queued",
+                task=task, requester_id=me.id, requester=me.name, assignee=target.name,
+                background=background, depth=job.depth, started_at=_now().isoformat())
+            job.meta = {**(job.meta or {}), "message_id": msg.id}
+            job = await rt._submit(job)
             if background:
                 return {"status": "queued", "job_id": job.id,
                         "summary": f"{target.name} is working on it in the background. You will "

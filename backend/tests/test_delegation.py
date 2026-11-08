@@ -247,3 +247,38 @@ def test_old_tool_results_are_trimmed_to_fit_small_context_windows():
     assert contents[3:] == [{"text": f"{i}" * 12000} for i in (3, 4, 5)]  # the latest three kept whole
     # Tool calls and the original messages are left alone.
     assert len(out) == len(big) and isinstance(big[2].parts[0].content, dict)
+
+
+async def test_the_delegation_thread_appears_immediately_and_updates_in_place(hq, monkeypatch):
+    import asyncio
+
+    from app.broker import Broker
+
+    updates = []
+    publish = Broker.publish
+
+    async def recording(self, thread_id, type_, **data):
+        if type_ == "message_updated":
+            updates.append(data["message"]["meta"]["status"])
+        await publish(self, thread_id, type_, **data)
+
+    monkeypatch.setattr(Broker, "publish", recording)
+    await hq.start_worker(name="m1", pools=["default"])
+    await hq.start_worker(name="desk", pools=["desktop"])
+    _, _, t = await _team(hq, worker="fake:slow-worker", worker_name="Snake Eyes", worker_pool="desktop")
+    await hq.say(t["id"], "open CNN")
+    # While Snake Eyes is still working (his model takes 7 s), the thread is already there.
+    for _ in range(40):
+        events = [m for m in hq.messages(t["id"]) if m.role == Role.event]
+        if events and events[0].meta.get("status") == "working":
+            break
+        await asyncio.sleep(0.1)
+    [during] = [m for m in hq.messages(t["id"]) if m.role == Role.event]
+    assert during.meta["status"] == "working" and "result" not in during.meta
+    assert during.meta["task"] == "Please handle: open CNN" and during.meta["assignee"] == "Snake Eyes"
+    # When he finishes, the same message is updated, not a second one added.
+    await hq.wait_agent_replies(t["id"], 1, timeout=30)
+    [after] = [m for m in hq.messages(t["id"]) if m.role == Role.event]
+    assert after.id == during.id and after.meta["status"] == "done"
+    assert after.meta["result"]["summary"] == "Worker finished"
+    assert updates == ["working", "done"]
