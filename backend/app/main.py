@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .api import agents, avatars, desktop, memory as memory_api, providers, schedules, subscriptions, system, threads, tool_servers
+from .api import agents, avatars, desktop, memory as memory_api, providers, schedules, subagents as subagents_api, subscriptions, system, threads, tool_servers
 from .broker import Broker
 from .config import settings
 from .db import init_db
@@ -87,7 +87,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app = FastAPI(title="Agent HQ", lifespan=lifespan_, **_fastapi_kwargs())
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
-    for r in (agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, tool_servers.router, threads.router, subscriptions.router,
+    for r in (agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
               system.router):
         app.include_router(r)
 

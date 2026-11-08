@@ -1,7 +1,7 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent } from './api.service';
+import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits } from './api.service';
 import { ModelPicker } from './model-picker';
 import { Avatar } from './avatar';
 
@@ -89,6 +89,61 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <fieldset>
+          <legend>Sub-agents <small>temporary helpers this agent creates for parts of a task</small></legend>
+          <div class="seg">
+            @for (m of modes; track m.value) {
+              <label class="seg-opt" [class.on]="d.subagent_mode === m.value">
+                <input type="radio" name="submode" [value]="m.value" [(ngModel)]="d.subagent_mode"> {{ m.label }}</label>
+            }
+          </div>
+          <p class="hint inline-hint">{{ modeHint(d.subagent_mode) }}</p>
+          @if (d.subagent_mode !== 'off') {
+            <div class="limit-grid">
+              <label>At once<input type="number" min="1" max="10" name="sl_conc" [(ngModel)]="d.subagent_limits.concurrent"></label>
+              @if (d.subagent_mode === 'allowed') {
+                <label>Per task<input type="number" min="1" max="20" name="sl_task" [(ngModel)]="d.subagent_limits.per_task"></label>
+                <label>Per day<input type="number" min="1" max="200" name="sl_day" [(ngModel)]="d.subagent_limits.per_day"></label>
+              }
+              <label>Minutes each<input type="number" min="1" max="240" name="sl_min" [(ngModel)]="d.subagent_limits.max_minutes"></label>
+              <label>Model requests each<input type="number" min="1" max="500" name="sl_req" [(ngModel)]="d.subagent_limits.max_requests"></label>
+            </div>
+            @if (d.subagent_mode === 'ask') {
+              <p class="hint inline-hint">For requests these are the starting point; you set the real limits when you approve.</p>
+            }
+
+            <div class="sub-label">Models sub-agents may use</div>
+            @for (m of d.subagent_limits.models; track $index) {
+              <div class="chip-row"><span class="chip">{{ refLabel(m.provider_id, m.model) }}</span>
+                <button type="button" class="ghost small" (click)="d.subagent_limits.models.splice($index, 1)">Remove</button></div>
+            } @empty {
+              <p class="hint inline-hint">None listed: sub-agents use this agent's own model
+                ({{ d.model ? refLabel(d.provider_id, d.model) : 'not set' }}).</p>
+            }
+            <hq-model-picker label="Add model" [providers]="providers()" [optional]="true" noneLabel="Choose…"
+              [(providerId)]="addProvider" [(modelName)]="addModel" />
+            <div class="actions tight"><button type="button" class="ghost small" [disabled]="!addModel"
+              (click)="addSubModel(d)">Add model</button></div>
+
+            <div class="sub-label">Tools sub-agents may have</div>
+            @if (subTools(d).length) {
+              <label class="check"><input type="checkbox" [checked]="d.subagent_limits.tool_server_ids === null"
+                (change)="toggleAllTools(d)"> All of this agent's tools</label>
+              @if (d.subagent_limits.tool_server_ids !== null) {
+                @for (t of subTools(d); track t.id) {
+                  <label class="check"><input type="checkbox" [checked]="d.subagent_limits.tool_server_ids.includes(t.id!)"
+                    (change)="toggle(d.subagent_limits.tool_server_ids, t.id!)"> {{ t.name }}</label>
+                }
+              }
+            } @else {
+              <p class="hint inline-hint">This agent has no non-desktop tools to share. Desktops are never given to
+                sub-agents (two agents can't drive one desktop).</p>
+            }
+            <p class="hint inline-hint">Sub-agents can't delegate or create sub-agents, and are refused when they'd
+              duplicate an agent you've defined. Team-wide caps are under Settings → Sub-agents.</p>
+          }
+        </fieldset>
+
+        <fieldset>
           <legend>Vision model <small>looks at the desktop for this agent</small></legend>
           <p class="hint inline-hint">Optional. When set, this agent never receives screenshots itself: it gets
             look / locate / click_on tools and this model does the looking. Needs a desktop tool server.
@@ -150,7 +205,43 @@ export class AgentsPage implements OnInit {
   pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
   others = computed(() => this.agents().filter(a => a.id !== this.draft()?.id && a.enabled));
 
+  modes = [
+    { value: 'off', label: 'Off' },
+    { value: 'ask', label: 'Ask me first' },
+    { value: 'allowed', label: 'Allowed within limits' },
+  ] as const;
+  addProvider: string | null = null;
+  addModel = '';
+
   ngOnInit() { this.load(); }
+
+  modeHint(mode: string) {
+    if (mode === 'ask') return 'The agent can send you a request (which sub-agents, why, how much). It can only create them after you approve, within what you approve.';
+    if (mode === 'allowed') return 'The agent may create sub-agents on its own, within these limits.';
+    return 'This agent can\'t create sub-agents.';
+  }
+
+  refLabel(providerId: string | null, model: string) {
+    const p = this.providers().find(x => x.id === providerId);
+    return p ? `${model} @ ${p.name}` : model;
+  }
+
+  addSubModel(d: AgentDef) {
+    if (!this.addModel) return;
+    if (!d.subagent_limits.models.some(m => m.provider_id === this.addProvider && m.model === this.addModel)) {
+      d.subagent_limits.models.push({ provider_id: this.addProvider, model: this.addModel });
+    }
+    this.addModel = '';
+  }
+
+  subTools(d: AgentDef) {
+    return this.servers().filter(t => d.tool_server_ids.includes(t.id!) && !t.desktop);
+  }
+
+  toggleAllTools(d: AgentDef) {
+    d.subagent_limits.tool_server_ids = d.subagent_limits.tool_server_ids === null
+      ? this.subTools(d).map(t => t.id!) : null;
+  }
 
   load() {
     this.api.agents().subscribe(a => this.agents.set(a));
@@ -161,6 +252,9 @@ export class AgentsPage implements OnInit {
   edit(a: AgentDef | null) {
     this.error.set('');
     const d = a ? structuredClone(a) : blankAgent();
+    d.subagent_mode ??= 'off';
+    d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
+    d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
     this.draft.set(d);
   }

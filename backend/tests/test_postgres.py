@@ -47,3 +47,39 @@ async def test_delegation_and_history_on_postgres(pg_hq):
     await hq.say(t2["id"], "two")
     replies = await hq.wait_agent_replies(t2["id"], 2)
     assert replies[1].startswith("I have no team. (turn 2")  # history persisted in Postgres
+
+
+def test_upgrade_adds_new_columns_on_postgres(postgres_url, tmp_path, monkeypatch):
+    """An existing Postgres database (from before sub-agents) gets the new columns,
+    including the enum-typed one, without manual ALTER TABLEs."""
+    import sqlalchemy as sa
+
+    from app import db
+    from app.config import reload_settings
+    from app.models import AgentDef, ModelProvider
+
+    monkeypatch.setenv("AHQ_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AHQ_DB_URL", postgres_url)
+    reload_settings()
+    db.reset_engine()
+    db.init_db()
+    eng = db.engine()
+    with eng.begin() as c:
+        c.execute(sa.text("DELETE FROM agentdef WHERE name = 'Old'"))
+        for col in ("subagent_mode", "subagent_limits", "is_subagent", "parent_agent_id",
+                    "spawned_by_job_id", "expires_at", "retired"):
+            c.execute(sa.text(f'ALTER TABLE agentdef DROP COLUMN IF EXISTS "{col}"'))
+        c.execute(sa.text('ALTER TABLE modelprovider DROP COLUMN IF EXISTS "max_concurrent"'))
+        c.execute(sa.text("DROP TYPE IF EXISTS subagentmode"))
+        c.execute(sa.text("INSERT INTO agentdef (id, name, description, pronouns, instructions, model, "
+                          "vision_model, vision_coords, vision_zoom, fallback_model, pool, tool_server_ids, "
+                          "delegates, is_default, memory_enabled, avatar_version, avatar_animated, enabled, "
+                          "created_at, updated_at) VALUES ('old1', 'Old', '', '', '', 'x', '', "
+                          "'relative_1000', true, '', 'default', '[]', '[]', false, true, 0, false, true, "
+                          "now(), now())"))
+    db.reset_engine()
+    db.init_db()
+    with db.session() as s:
+        a = s.get(AgentDef, "old1")
+        assert a.subagent_mode == "off" and a.is_subagent is False and a.retired is False
+        assert all(p.max_concurrent == 0 for p in s.exec(sa.select(ModelProvider)).scalars())

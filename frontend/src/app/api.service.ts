@@ -25,6 +25,66 @@ export interface AgentDef {
   memory_enabled: boolean;
   avatar_version?: number;
   avatar_animated?: boolean;
+  subagent_mode: SubagentMode;
+  subagent_limits: SubagentLimits;
+}
+
+export type SubagentMode = 'off' | 'ask' | 'allowed';
+export interface ModelRef { provider_id: string | null; model: string; }
+export interface SubagentLimits {
+  concurrent: number; per_task: number; per_day: number; max_minutes: number; max_requests: number;
+  models: ModelRef[];
+  tool_server_ids: string[] | null;   // null = all of the agent's own (except desktops)
+}
+export function defaultSubagentLimits(): SubagentLimits {
+  return { concurrent: 1, per_task: 2, per_day: 5, max_minutes: 10, max_requests: 25, models: [],
+    tool_server_ids: null };
+}
+
+export interface SubagentPlan {
+  role: string; purpose: string; provider_id: string | null; model: string; label: string;
+  tools: string[]; tool_server_ids: string[]; est_minutes: number;
+}
+export interface SubagentEstimate {
+  subagents: { role: string; model: string; model_details: string; runs_on: string; est_minutes: number;
+    provider_slots: number; slots_free_now: number | null;
+    ledger: { runs: number; avg_seconds?: number; avg_requests?: number; avg_tokens?: number; days?: number } }[];
+  total_minutes: number; peak_concurrent: number; wall_minutes: number;
+  overlaps: { role: string; closest_agent: string; score: number }[];
+  overlap_check: boolean;
+}
+export interface SubagentGrant {
+  count: number; concurrent: number; max_minutes: number; max_requests: number; hours: number;
+  models: ModelRef[]; tool_server_ids: string[];
+}
+export interface SubagentRequest {
+  id: string; agent_id: string; agent: string; thread_id: string; thread_title: string; thread_owner: string;
+  why: string; why_not_existing_agents: string; subagents: SubagentPlan[]; hours: number;
+  estimate: SubagentEstimate; status: 'pending' | 'approved' | 'denied' | 'expired';
+  grant: SubagentGrant | null; used: number; note: string; expires_at: string | null;
+  decided_at: string | null; created_at: string; limits: SubagentLimits | null;
+}
+export interface Decision {
+  approve: boolean; note?: string; count?: number; concurrent?: number; max_minutes?: number;
+  max_requests?: number; hours?: number; models?: ModelRef[]; tool_server_ids?: string[];
+}
+export interface SubagentCaps {
+  max_live: number; max_per_day: number; similarity_threshold: number; max_pending_per_agent: number;
+  request_ttl_hours: number; notify_mqtt: boolean;
+}
+export interface UsageGroup {
+  runs: number; failed: number; requests: number; input_tokens: number; output_tokens: number;
+  seconds: number; avg_seconds: number; avg_tokens: number;
+}
+export interface UsageReport {
+  days: number; total: UsageGroup | null; subagents: UsageGroup | null;
+  by_agent: (UsageGroup & { agent: string; subagent_runs: number })[];
+  by_model: (UsageGroup & { provider: string; model: string })[];
+  by_day: (UsageGroup & { day: string })[];
+}
+export interface LiveSubagents {
+  live: { id: string; name: string; parent: string; model: string; expires_at: string | null }[];
+  today: number; caps: SubagentCaps;
 }
 
 export interface ToolServer {
@@ -79,14 +139,14 @@ export interface ChatGPTStatus {
 
 export interface ProviderInfo {
   id: string; name: string; kind: ProviderKind; base_url: string | null;
-  has_api_key: boolean; enabled: boolean; created_at: string;
+  has_api_key: boolean; max_concurrent: number; enabled: boolean; created_at: string;
   chatgpt: ChatGPTStatus | null;   // ChatGPT plan providers only
 }
 
 /** What the editor sends. api_key: undefined = keep, '' = clear, value = replace. */
 export interface ProviderIn {
   id?: string; name: string; kind: ProviderKind; base_url: string | null;
-  api_key?: string; enabled: boolean;
+  api_key?: string; max_concurrent: number; enabled: boolean;
 }
 
 export interface ModelInfo { id: string; details: string; }
@@ -142,7 +202,8 @@ export function blankAgent(): AgentDef {
   return { name: '', description: '', pronouns: '', instructions: '', provider_id: null, model: '',
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
     fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
-    tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };
+    tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
+    subagent_mode: 'off', subagent_limits: defaultSubagentLimits() };
 }
 
 export function blankSubscription(agent_id = ''): Subscription {
@@ -191,7 +252,8 @@ export class Api {
   }
   clearProviderKey(p: ProviderInfo) {
     return this.http.put<ProviderInfo>(`/api/providers/${p.id}`,
-      { name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '' });
+      { name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '',
+        max_concurrent: p.max_concurrent });
   }
   deleteProvider(id: string) { return this.http.delete(`/api/providers/${id}`); }
   providerModels(id: string) { return this.http.get<ModelInfo[]>(`/api/providers/${id}/models`); }
@@ -252,6 +314,19 @@ export class Api {
   testEvent(topic: string, payload: string) {
     return this.http.post<{ queued_jobs: string[] }>('/api/subscriptions/test', { topic, payload });
   }
+
+  subagentRequests(status?: string) {
+    return this.http.get<SubagentRequest[]>('/api/subagent-requests', { params: status ? { status } : {} });
+  }
+  subagentRequest(id: string) { return this.http.get<SubagentRequest>(`/api/subagent-requests/${id}`); }
+  pendingRequests() { return this.http.get<{ pending: number }>('/api/subagent-requests/pending-count'); }
+  decideRequest(id: string, d: Decision) {
+    return this.http.post<SubagentRequest>(`/api/subagent-requests/${id}/decide`, d);
+  }
+  subagentCaps() { return this.http.get<SubagentCaps>('/api/settings/subagents'); }
+  saveSubagentCaps(c: SubagentCaps) { return this.http.put<SubagentCaps>('/api/settings/subagents', c); }
+  liveSubagents() { return this.http.get<LiveSubagents>('/api/subagents/live'); }
+  usage(days: number) { return this.http.get<UsageReport>('/api/usage', { params: { days } }); }
 
   workers() { return this.http.get<WorkerInfo[]>('/api/system/workers'); }
   queues() { return this.http.get<QueueInfo[]>('/api/system/queues'); }

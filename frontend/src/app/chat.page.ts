@@ -8,13 +8,14 @@ import { Api, DesktopState, HqEvent, Message } from './api.service';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Markdown } from './markdown';
+import { RequestCard } from './request-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation">
@@ -39,21 +40,28 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
         }
         <div class="messages" #scroller>
           @for (m of messages(); track m.id) {
-            @if (exchange(m); as x) {
+            @if (m.meta['kind'] === 'subagent_request' && m.meta['request_id']) {
+              <hq-request-card [requestId]="$any(m.meta['request_id'])" [version]="$any(m.meta['status']) + ':' + $any(m.meta['used'])" />
+            } @else if (exchange(m); as x) {
               <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
                 <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">
                   <span class="crumb-avatars">
                     <hq-avatar [agent]="agentById(x.requesterId)" [size]="20" />
-                    <hq-avatar [agent]="agentById(x.assigneeId)" [size]="20" />
+                    <hq-avatar [agent]="x.assigneeAvatar" [size]="20" />
                   </span>
-                  <span class="crumb-title">{{ x.requester }} <span class="muted">↔</span> {{ x.assignee }}</span>
+                  <span class="crumb-title">{{ x.requester }} <span class="muted">↔</span> {{ x.subagent ? x.role : x.assignee }}</span>
+                  @if (x.subagent) { <span class="pill sub" [title]="x.model">sub-agent</span> }
                   <span class="pill {{ x.status }}">{{ x.status }}</span>
-                  <span class="muted crumb-sub">{{ x.background ? 'background task' : 'delegated task' }}
+                  <span class="muted crumb-sub">{{ x.subagent ? x.model : (x.background ? 'background task' : 'delegated task') }}
                     · {{ m.created_at | date:'h:mm a' }}</span>
                   <hq-icon name="chevron" [size]="14" class="crumb-chevron" />
                 </button>
                 @if (isOpen(m.id)) {
                   <div class="crumb-body">
+                    @if (x.subagent && x.why) {
+                      <div class="crumb-note muted">Created by {{ x.requester }} because: {{ x.why }}
+                        @if (x.tools.length) { · tools: {{ x.tools.join(', ') }} } · limit {{ x.maxMinutes }} min</div>
+                    }
                     @if (x.task) {
                       <div class="crumb-msg">
                         <div class="who"><hq-avatar [agent]="agentById(x.requesterId)" [size]="18" />
@@ -63,14 +71,14 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                     }
                     @if (x.finished) {
                       <div class="crumb-msg reply">
-                        <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" />
+                        <div class="who"><hq-avatar [agent]="x.assigneeAvatar" [size]="18" />
                           {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
                         <div class="body rich"><hq-md [text]="x.summary" /></div>
                         @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
                       </div>
                     } @else {
                       <div class="crumb-msg reply working">
-                        <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" [active]="true" />
+                        <div class="who"><hq-avatar [agent]="x.assigneeAvatar" [size]="18" [active]="true" />
                           {{ x.assignee }} <span class="muted">{{ x.status === 'queued' ? 'is queued…' : 'is working…' }}</span></div>
                         @for (a of stepsOf(x.assignee, x.depth); track $index) {
                           <div class="crumb-step act {{ a.kind }}"><span class="ts">{{ a.ts | date:'HH:mm:ss' }}</span> {{ a.text }}</div>
@@ -209,10 +217,18 @@ export class ChatPage implements OnInit, OnDestroy {
     const names = /^(.+?) → (.+?): \[/.exec(m.content);
     const assignee = meta['assignee'] ?? names?.[1] ?? this.agentName(m.agent_id);
     const requester = meta['requester'] ?? names?.[2] ?? 'you';
+    const subagent = !!meta['subagent'];
     return {
-      requester, assignee,
+      requester, assignee, subagent,
+      role: (meta['subagent_role'] ?? assignee) as string,
+      model: (meta['model'] ?? '') as string,
+      why: (meta['why_not_existing_agents'] ?? '') as string,
+      tools: (meta['tools'] ?? []) as string[],
+      maxMinutes: meta['max_minutes'] as number | undefined,
       requesterId: meta['requester_id'] ?? this.agents().find(a => a.name === requester)?.id ?? null,
-      assigneeId: m.agent_id,
+      assigneeId: subagent ? null : m.agent_id,
+      // Sub-agents aren't in the agent list: show initials of their role.
+      assigneeAvatar: subagent ? ({ name: meta['subagent_role'] ?? assignee } as any) : this.agentById(m.agent_id),
       task: meta['task'] as string | undefined,
       status: (result.status ?? meta['status'] ?? 'done') as string,
       finished: !!meta['result'] || !meta['status'],
@@ -346,16 +362,23 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'status': this.busy.set(ev['state'] === 'thinking'); break;
       case 'tool_call': this.log(ev, `${ev['agent']} → ${ev['tool']}(${JSON.stringify(ev['args'])})`, 'call'); break;
       case 'tool_result': this.log(ev, `${ev['agent']} ← ${ev['tool']}: ${ev['error'] ?? ev['preview']}`, ev['error'] ? 'err' : 'result'); break;
-      case 'job_queued': this.log(ev, `queued ${ev['kind']} for ${this.agentName(ev['agent_id'])} on pool ${ev['pool']}`, 'queue'); break;
+      case 'job_queued': {
+        const who = this.agentById(ev['agent_id'])?.name ?? 'a sub-agent';
+        this.log(ev, `queued ${ev['kind']} for ${who} on pool ${ev['pool']}`, 'queue');
+        break;
+      }
       case 'job_retry': this.log(ev, `job ${ev['job_id']} retried on ${ev['worker']} (attempt ${ev['attempt']})`, 'err'); break;
       case 'delegation_started': this.log(ev, `${ev['from_agent'] ?? 'you'} → ${ev['to_agent']} on ${ev['worker']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg'); break;
       case 'agent_tools': {
         const servers: string[] = ev['servers'] ?? [];
         if (!servers.length && !ev['depth']) break;  // a supervisor without tools is normal
         this.log(ev, servers.length ? `${ev['agent']} has tools from ${servers.join(', ')}`
+                                    : ev['subagent'] ? `${ev['agent']} has no tools (none were given to it)`
                                     : `${ev['agent']} has no tool servers (Settings → Agents → Tools)`, 'queue');
         break;
       }
+      case 'subagent_spawned': this.log(ev, `${ev['agent']} created sub-agent ${ev['subagent']} on ${ev['model']}`, 'deleg'); break;
+      case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); this.ws.refreshPending(); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;
       case 'model_fallback': this.log(ev, `${ev['agent']} → fallback model ${ev['to_model']}: ${ev['reason']}`, 'err'); break;
       case 'delegation_finished': {

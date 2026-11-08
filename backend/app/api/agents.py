@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models import AgentDef, ModelProvider, Subscription, ToolServer, _now
+from ..models import (AgentDef, ModelProvider, Subscription, SubagentMode, ToolServer, _now,
+                      default_subagent_limits)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -34,6 +35,38 @@ class AgentIn(BaseModel):
     desktop_url: str | None = None
     is_default: bool = False
     enabled: bool = True
+    # Sub-agents: off | ask | allowed, and the limits that apply (see models.default_subagent_limits).
+    subagent_mode: SubagentMode = SubagentMode.off
+    subagent_limits: dict[str, Any] | None = None
+
+
+LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),
+                "max_minutes": (1, 240), "max_requests": (1, 500)}
+
+
+def _check_limits(s: Session, body: AgentIn) -> dict[str, Any]:
+    lim = {**default_subagent_limits(), **(body.subagent_limits or {})}
+    for k, (lo, hi) in LIMIT_RANGES.items():
+        try:
+            v = int(lim[k])
+        except (TypeError, ValueError):
+            raise HTTPException(422, f"sub-agent limit {k} must be a number") from None
+        if not lo <= v <= hi:
+            raise HTTPException(422, f"sub-agent limit {k} must be between {lo} and {hi}")
+        lim[k] = v
+    models = []
+    for m in lim.get("models") or []:
+        if not (m or {}).get("model"):
+            continue
+        if m.get("provider_id") and not s.get(ModelProvider, m["provider_id"]):
+            raise HTTPException(422, "a sub-agent model's provider no longer exists")
+        models.append({"provider_id": m.get("provider_id"), "model": m["model"]})
+    lim["models"] = models
+    ids = lim.get("tool_server_ids")
+    if ids is not None:
+        # Only tools the agent has itself.
+        lim["tool_server_ids"] = [i for i in ids if i in body.tool_server_ids]
+    return {k: lim[k] for k in default_subagent_limits()}
 
 
 def _clear_other_defaults(s: Session, keep_id: str) -> None:
@@ -65,15 +98,19 @@ def _check_name(s: Session, name: str, own_id: str | None = None) -> None:
 
 
 @router.get("", response_model=list[AgentDef])
-def list_agents(s: Session = Depends(get_session)):
-    return s.exec(select(AgentDef).order_by(AgentDef.name)).all()
+def list_agents(include_subagents: bool = False, s: Session = Depends(get_session)):
+    """Your agents. Sub-agents (temporary, made by agents) only with include_subagents."""
+    q = select(AgentDef).order_by(AgentDef.name)
+    if not include_subagents:
+        q = q.where(AgentDef.is_subagent == False)  # noqa: E712
+    return s.exec(q).all()
 
 
 @router.post("", response_model=AgentDef, status_code=201)
 def create_agent(body: AgentIn, s: Session = Depends(get_session)):
     _check_name(s, body.name)
     _check_provider(s, body)
-    a = AgentDef(**body.model_dump())
+    a = AgentDef(**{**body.model_dump(), "subagent_limits": _check_limits(s, body)})
     s.add(a)
     if a.is_default:
         _clear_other_defaults(s, a.id)
@@ -88,7 +125,7 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
     Provider API keys and ChatGPT sign-ins are never exported. Avatars are included as base64."""
     from .avatars import export_avatar
 
-    agents = s.exec(select(AgentDef)).all()
+    agents = s.exec(select(AgentDef).where(AgentDef.is_subagent == False)).all()  # noqa: E712
     servers = s.exec(select(ToolServer)).all()
     providers = s.exec(select(ModelProvider)).all()
     by_id = {a.id: a.name for a in agents}
@@ -100,7 +137,10 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
         "agents": [
             {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
                                      "provider_id", "vision_provider_id", "fallback_provider_id",
-                                     "avatar_version", "avatar_animated"}),
+                                     "avatar_version", "avatar_animated", "subagent_limits",
+                                     "is_subagent", "parent_agent_id", "spawned_by_job_id",
+                                     "expires_at", "retired"}),
+             "subagent_limits": _portable_limits(a, prov_by_id, srv_by_id),
              "avatar": export_avatar(s, a.id),
              "provider": prov_by_id.get(a.provider_id),
              "vision_provider": prov_by_id.get(a.vision_provider_id),
@@ -115,6 +155,25 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
             for sub in s.exec(select(Subscription)).all()
         ],
     }
+
+
+def _portable_limits(a: AgentDef, prov_by_id: dict, srv_by_id: dict) -> dict[str, Any]:
+    lim = {**default_subagent_limits(), **(a.subagent_limits or {})}
+    lim["models"] = [{"provider": prov_by_id.get(m.get("provider_id")), "model": m.get("model")}
+                     for m in lim.get("models") or []]
+    ids = lim.pop("tool_server_ids", None)
+    lim["tools"] = None if ids is None else [srv_by_id[i] for i in ids if i in srv_by_id]
+    return lim
+
+
+def _local_limits(lim: dict[str, Any] | None, providers: dict, servers: dict) -> dict[str, Any]:
+    lim = dict(lim or {})
+    lim["models"] = [{"provider_id": providers.get(m.get("provider")) if m.get("provider") else m.get("provider_id"),
+                      "model": m.get("model")} for m in lim.get("models") or [] if m.get("model")]
+    if "tools" in lim:
+        tools = lim.pop("tools")
+        lim["tool_server_ids"] = None if tools is None else [servers[n] for n in tools if n in servers]
+    return {**default_subagent_limits(), **lim}
 
 
 @router.post("/import")
@@ -146,13 +205,16 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         for k, v in a.items():
             if k not in ("tools", "delegates", "provider", "provider_id", "vision_provider",
                          "vision_provider_id", "fallback_provider", "fallback_provider_id",
-                         "avatar", "avatar_version", "avatar_animated") and hasattr(row, k):
+                         "avatar", "avatar_version", "avatar_animated", "subagent_limits",
+                         "is_subagent", "parent_agent_id", "spawned_by_job_id", "expires_at",
+                         "retired") and hasattr(row, k):
                 setattr(row, k, v)
         row.provider_id = providers.get(a.get("provider")) if a.get("provider") else None
         row.vision_provider_id = providers.get(a.get("vision_provider")) if a.get("vision_provider") else None
         row.fallback_provider_id = (providers.get(a.get("fallback_provider"))
                                     if a.get("fallback_provider") else None)
         row.tool_server_ids = [servers[n] for n in a.get("tools", []) if n in servers]
+        row.subagent_limits = _local_limits(a.get("subagent_limits"), providers, servers)
         row.updated_at = _now()
         s.add(row)
         if a.get("avatar"):
@@ -201,7 +263,9 @@ def update_agent(agent_id: str, body: AgentIn, s: Session = Depends(get_session)
         raise HTTPException(404)
     _check_name(s, body.name, agent_id)
     _check_provider(s, body)
-    for k, v in body.model_dump().items():
+    if a.is_subagent:
+        raise HTTPException(409, "sub-agents are temporary and can't be edited")
+    for k, v in {**body.model_dump(), "subagent_limits": _check_limits(s, body)}.items():
         setattr(a, k, v)
     a.updated_at = _now()
     s.add(a)

@@ -23,6 +23,11 @@ class Settings:
     # MQTT broker for incoming events, e.g. mqtt://agent-hq:secret@broker:1883 (mqtts:// for TLS).
     # Leave empty to disable the MQTT bridge.
     mqtt_url: str = field(default_factory=lambda: _env("MQTT_URL", ""))
+    # Where Agent HQ publishes notifications for you (sub-agent requests and decisions),
+    # on the same broker as AHQ_MQTT_URL. JSON payloads; see the README.
+    mqtt_notify_topic: str = field(default_factory=lambda: _env("MQTT_NOTIFY_TOPIC", "agent-hq/notifications"))
+    # Optional address of the web UI, e.g. http://shockwave:8000, used for links in notifications.
+    public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "").rstrip("/"))
     mqtt_max_payload: int = field(default_factory=lambda: int(_env("MQTT_MAX_PAYLOAD", "4000")))
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).

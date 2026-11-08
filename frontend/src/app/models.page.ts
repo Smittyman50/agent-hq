@@ -24,7 +24,7 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
       @for (p of providers(); track p.id) {
         <button class="row" [class.active]="draft()?.id === p.id" [class.muted]="!p.enabled" (click)="edit(p)">
           <span class="name">{{ p.name }} <span class="pill">{{ kindLabel(p.kind) }}</span></span>
-          <span class="sub">{{ p.kind === 'chatgpt'
+          <span class="sub">@if (p.max_concurrent) { {{ p.max_concurrent }} slot{{ p.max_concurrent === 1 ? '' : 's' }} · }{{ p.kind === 'chatgpt'
             ? (p.chatgpt?.connected ? p.chatgpt?.account || 'signed in' : 'not signed in')
             : (p.base_url || 'default endpoint') }}</span>
         </button>
@@ -54,6 +54,10 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
             <p class="hint inline-hint">A key is stored. <a href="" (click)="$event.preventDefault(); clearKey()">Remove it</a></p>
           }
         }
+        <label>Max concurrent requests <small>slots: how many model calls may run at once across all workers (0 = no limit)</small>
+          <input name="slots" type="number" min="0" max="64" [(ngModel)]="d.max_concurrent"></label>
+        <p class="hint inline-hint">Extra requests wait their turn. Set it to what this server's GPU can serve at once
+          (often 1–2 for a single Ollama box) so sub-agents can't swamp it.</p>
         @if (d.id && current()?.kind === 'chatgpt') {
           <div class="signin">
             @if (current()?.chatgpt?.connected) {
@@ -126,8 +130,9 @@ export class ModelsPage implements OnInit {
     this.error.set(''); this.testing.set(''); this.models.set([]);
     this.signinUrl.set(''); this.callback = '';
     this.current.set(p);
-    this.draft.set(p ? { id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '' }
-                     : { name: '', kind: 'ollama', base_url: '', enabled: true, api_key: '' });
+    this.draft.set(p ? { id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '',
+                         max_concurrent: p.max_concurrent ?? 0 }
+                     : { name: '', kind: 'ollama', base_url: '', enabled: true, api_key: '', max_concurrent: 0 });
   }
 
   save() {

@@ -57,6 +57,11 @@ import { Workspace } from './workspace';
       </nav>
 
       <div class="side-foot">
+        <a class="nav-item" routerLink="/requests" routerLinkActive="on"
+           [title]="ws.pendingRequests() ? ws.pendingRequests() + ' request(s) waiting for you' : 'Requests'">
+          <span class="icon-badge"><hq-icon name="inbox" />
+            @if (ws.pendingRequests()) { <span class="badge">{{ ws.pendingRequests() }}</span> }</span>
+          <span class="label">Requests</span></a>
         <a class="nav-item" routerLink="/schedules" routerLinkActive="on" title="Scheduler">
           <hq-icon name="schedule" /><span class="label">Scheduler</span></a>
         <a class="nav-item" routerLink="/settings" routerLinkActive="on" title="Settings">

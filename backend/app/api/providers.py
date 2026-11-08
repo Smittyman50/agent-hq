@@ -28,6 +28,8 @@ class ProviderIn(BaseModel):
     base_url: str | None = None
     # None = keep the stored key; "" = clear it; anything else = replace it.
     api_key: str | None = None
+    # Slots: most model requests at once across all workers (0 = no limit). None = keep.
+    max_concurrent: int | None = None
     enabled: bool = True
 
 
@@ -37,6 +39,7 @@ class ProviderOut(BaseModel):
     kind: ProviderKind
     base_url: str | None
     has_api_key: bool
+    max_concurrent: int = 0
     enabled: bool
     created_at: datetime
     # ChatGPT plan providers only: {connected, account, plan_usage, connected_at}
@@ -45,13 +48,15 @@ class ProviderOut(BaseModel):
 
 def out(p: ModelProvider) -> ProviderOut:
     return ProviderOut(id=p.id, name=p.name, kind=p.kind, base_url=p.base_url,
-                       has_api_key=bool(p.api_key), enabled=p.enabled, created_at=p.created_at,
+                       has_api_key=bool(p.api_key), max_concurrent=p.max_concurrent or 0, enabled=p.enabled, created_at=p.created_at,
                        chatgpt=chatgpt.status(p) if p.kind == ProviderKind.chatgpt else None)
 
 
 def _validate(s: Session, body: ProviderIn, own_id: str | None = None) -> None:
     if not body.name.strip():
         raise HTTPException(422, "name is required")
+    if body.max_concurrent is not None and body.max_concurrent < 0:
+        raise HTTPException(422, "max concurrent requests can't be negative (0 = no limit)")
     if body.kind == ProviderKind.openai_compatible and not (body.base_url or "").strip():
         raise HTTPException(422, "an OpenAI-compatible provider needs a base URL")
     other = s.exec(select(ModelProvider).where(ModelProvider.name == body.name)).first()
@@ -64,6 +69,8 @@ def _apply(p: ModelProvider, body: ProviderIn) -> None:
     p.base_url = (body.base_url or "").strip() or None
     if body.api_key is not None:
         p.api_key = body.api_key.strip() or None
+    if body.max_concurrent is not None:
+        p.max_concurrent = max(0, body.max_concurrent)
     if p.kind == ProviderKind.chatgpt:
         p.base_url, p.api_key = None, None  # signs in instead; always api.openai.com
     elif p.oauth:

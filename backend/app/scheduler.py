@@ -258,6 +258,9 @@ async def scheduler_loop(rt, tick: float = SCHEDULER_TICK) -> None:
     while True:
         try:
             await run_due(rt)
+            from . import subagents
+
+            subagents.sweep()  # retire expired sub-agents, lapse old requests and grants
         except asyncio.CancelledError:
             raise
         except Exception:

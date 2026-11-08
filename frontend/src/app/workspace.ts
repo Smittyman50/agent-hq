@@ -14,6 +14,8 @@ export class Workspace {
   agents = signal<AgentDef[]>([]);
   threads = signal<Thread[]>([]);
   enabledAgents = computed(() => this.agents().filter(a => a.enabled));
+  /** Sub-agent requests waiting for you (the sidebar badge). */
+  pendingRequests = signal(0);
 
   private lastSeen = signal<Record<string, number>>({});
   private now = signal(Date.now());
@@ -21,6 +23,12 @@ export class Workspace {
   constructor() {
     this.reload();
     setInterval(() => this.now.set(Date.now()), 1500);
+    this.refreshPending();
+    setInterval(() => this.refreshPending(), 20000);
+  }
+
+  refreshPending() {
+    this.api.pendingRequests().subscribe({ next: r => this.pendingRequests.set(r.pending), error: () => {} });
   }
 
   reload() {

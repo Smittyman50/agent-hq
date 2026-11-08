@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import enum
+import json
+import logging
+
+from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import settings
@@ -27,9 +32,57 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
     SQLModel.metadata.create_all(engine())
+    add_missing_columns()
     from . import memory
 
     memory.init_storage()
+
+
+log = logging.getLogger("agent_hq.db")
+
+
+def _default_value(col):
+    """A column's Python default as a plain value, or None if it has none we can use."""
+    d = col.default
+    if d is None:
+        return None
+    value = d.arg
+    if callable(value):
+        try:
+            value = value(None) if getattr(d, "is_callable", False) else value()
+        except TypeError:
+            value = value()
+    if isinstance(value, enum.Enum):
+        value = value.name  # SQLAlchemy stores enum names
+    return value
+
+
+def add_missing_columns() -> None:
+    """Add columns that newer versions introduced to tables that already exist.
+
+    create_all() makes new tables but never changes existing ones, so an upgrade would
+    otherwise need manual ALTER TABLEs. Columns are added as nullable and existing rows
+    get the column's default.
+    """
+    eng = engine()
+    insp = inspect(eng)
+    existing_tables = set(insp.get_table_names())
+    for table in SQLModel.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = col.type.compile(dialect=eng.dialect)
+            with eng.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl}'))
+                value = _default_value(col)
+                if value is not None:
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value)
+                    conn.execute(text(f'UPDATE "{table.name}" SET "{col.name}" = :v'), {"v": value})
+            log.info("database upgraded: added %s.%s", table.name, col.name)
 
 
 def get_session() -> Iterator[Session]:

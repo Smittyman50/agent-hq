@@ -50,7 +50,12 @@ def build_model_for(provider_id: str | None, model: str, who: str) -> Model:
         raise ValueError(f"{who}'s model provider no longer exists")
     if not provider.enabled:
         raise ValueError(f"model provider '{provider.name}' is disabled")
-    return build_provider_model(provider, model)
+    built = build_provider_model(provider, model)
+    if provider.max_concurrent and provider.max_concurrent > 0:
+        from .slots import SlotLimitedModel
+
+        return SlotLimitedModel(built, provider.id, provider.max_concurrent)
+    return built
 
 
 def build_agent_model(agent: AgentDef) -> Model:

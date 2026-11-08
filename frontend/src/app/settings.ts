@@ -7,6 +7,8 @@ import { Icon } from './icon';
 export const SETTINGS_SECTIONS = [
   { path: 'agents', label: 'Agents', icon: 'agents' },
   { path: 'models', label: 'Model providers', icon: 'models' },
+  { path: 'subagents', label: 'Sub-agents', icon: 'subagents' },
+  { path: 'usage', label: 'Usage', icon: 'usage' },
   { path: 'memory', label: 'Memory', icon: 'memory' },
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'events', label: 'Events', icon: 'events' },

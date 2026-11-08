@@ -122,8 +122,55 @@ def alert(messages, info):
     return ModelResponse(parts=[TextPart("Handled event: " + _last_prompt(messages).split("\n\n")[1])])
 
 
+def spawner(spawns: int = 1, role: str = "Feed reader"):
+    """Uses spawn_subagent `spawns` times (if it has the tool), then reports every result."""
+    def fn(messages, info):
+        tools = {t.name for t in info.function_tools}
+        prompt = _last_prompt(messages)
+        returns = [r for r in reversed(_tool_returns(messages)) if r.tool_name == "spawn_subagent"]
+        if "spawn_subagent" not in tools:
+            return ModelResponse(parts=[TextPart("I can't create sub-agents.")])
+        if prompt.startswith("[Sub-agent request") and "denied" in prompt:
+            return ModelResponse(parts=[TextPart("Understood, I'll do it myself.")])
+        if len(returns) < spawns:
+            return ModelResponse(parts=[ToolCallPart("spawn_subagent", {
+                "role": role, "task": f"Read part {len(returns) + 1} of: {prompt[:80]}",
+                "why_not_existing_agents": "Nobody on the team reads feeds in parallel."})])
+        return ModelResponse(parts=[TextPart(" | ".join(
+            f"{r.content.get('status')}: {r.content.get('summary')}" for r in returns))])
+    return fn
+
+
+def requester(messages, info):
+    """Asks for sub-agents; once approved, spawns one; reports what happened."""
+    prompt = _last_prompt(messages)
+    returns = _tool_returns(messages)
+    if prompt.startswith("[Sub-agent request"):
+        return spawner(1)(messages, info)
+    if not returns:
+        return ModelResponse(parts=[ToolCallPart("request_subagents", {
+            "why": "Twelve feeds to read before the morning brief; in parallel it's faster.",
+            "why_not_existing_agents": "No existing agent reads feeds; this is a one-off.",
+            "subagents": [{"role": "Feed reader", "purpose": "Read six feeds and list headlines",
+                           "est_minutes": 5}], "hours": 2})])
+    return ModelResponse(parts=[TextPart(f"Request: {returns[-1].content['status']}")])
+
+
+RETRY = {"calls": 0}
+
+
+def retrying(messages, info):
+    """Calls a tool that doesn't exist first (costs a second model request)."""
+    if not _tool_returns(messages) and not any(
+            p.part_kind == "retry-prompt" for m in messages for p in getattr(m, "parts", [])):
+        return ModelResponse(parts=[ToolCallPart("no_such_tool", {})])
+    return worker_fn(messages, info)
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
-           "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker}
+           "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
+           "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
+           "requester": requester, "retrying": retrying}
 
 
 @pytest.fixture(autouse=True)

@@ -426,6 +426,56 @@ The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a
 
 Monthly schedules can be set for days 1 to 28 only, so they happen every month. For "the last day of the month" or anything else unusual, use a custom cron expression.
 
+## Sub-agents
+
+Agents can create temporary **sub-agents** for parts of their own task (say, reading twelve feeds in parallel). It's off for every agent until you turn it on, per agent, under **Settings → Agents → Sub-agents**:
+
+- **Off** (the default): the agent has no sub-agent tools at all.
+- **Ask me first:** the agent gets `request_subagents`. It sends you a request, like a staffing request: which sub-agents, what each is for, why it needs them, why none of your existing agents fits, which model and tools each needs, and how long. You decide; it can only create them after you approve, and only within what you approve.
+- **Allowed within limits:** the agent may create sub-agents itself, within the limits set on it.
+
+**Limits, all enforced in code:**
+- **Per agent:** how many at once, per task and per day, minutes each, and model requests each. Also which models sub-agents may use (empty = the agent's own model) and which of its tool servers they may have.
+- **Team-wide** (**Settings → Sub-agents**): running at once and created per day across all agents, open requests per agent, and how long an unanswered request stays open.
+- **Enforcement:** every spawn is checked under a Valkey lock, so several workers can't race past a limit. A sub-agent's run stops at its request limit (PydanticAI `UsageLimits`) and its time limit, and the sub-agent retires as soon as it reports back. Anything left over (a crashed worker, say) is retired by a sweep when it expires.
+- **No nesting:** sub-agents can't delegate or create sub-agents of their own.
+- **No desktops:** sub-agents are never given a desktop tool server, since two agents can't drive one desktop.
+
+**No duplicates of agents you've defined.** If an existing agent is meant for the work, the agent should delegate to it instead. This is enforced three ways:
+- **A rule** in the agent's instructions, which names your agents.
+- **A required explanation:** `why_not_existing_agents` must be filled in.
+- **A refusal check:** a sub-agent whose role reuses an agent's name is always refused. With an embedding model set (Settings → Memory), the role and task are also compared with every agent's description, and anything above the similarity setting (Settings → Sub-agents, default 0.78) is refused. The refusal tells the agent which agent to delegate to.
+
+On requests, near misses show up as warnings for you, and approving them is your call.
+
+**Requests.** A request appears in three places:
+- **In the conversation:** an approval card with the agent's reasoning and the system's own estimate. The estimate covers, for each sub-agent: the model and its size (from the provider's model list), whether it runs on your hardware or a cloud plan, free provider slots, and the usage ledger's averages for that model. It also gives the total model-minutes and the expected wall time.
+- **In the Requests inbox:** in the sidebar, with a badge for pending requests.
+- **On MQTT**, if `AHQ_MQTT_URL` is set (see below).
+
+You can approve as asked or change the terms first: the number of sub-agents, how many at once, minutes, model requests, models, tools, and how long the approval lasts. You can also deny it, with or without a note.
+
+An approval is a grant for that agent in that conversation, and it expires. Your decision wakes the conversation:
+- **If the conversation is the agent's own,** it carries on with (or without) the sub-agents.
+- **If the agent asked while working on a task delegated to it,** the conversation's owner is told and delegates the task again.
+
+**MQTT notifications.** New requests and your decisions are published as JSON to `AHQ_MQTT_NOTIFY_TOPIC` (default `agent-hq/notifications`) on the broker in `AHQ_MQTT_URL`, using a client ID of their own. You can turn this off under Settings → Sub-agents. Set `AHQ_PUBLIC_URL` (for example `http://shockwave:8000`) to include a link to the request.
+
+```json
+{"type": "subagent_request", "request_id": "…", "agent": "Duke", "why": "…",
+ "subagents": [{"role": "Feed reader", "purpose": "…", "label": "qwen3:14b @ Einstein Ollama", "est_minutes": 5}],
+ "total_minutes": 5, "hours": 2, "link": "http://shockwave:8000/requests?id=…", "at": "…"}
+{"type": "subagent_decision", "request_id": "…", "agent": "Duke", "status": "approved", "grant": {…}, "note": "…"}
+```
+
+**In the chat,** a sub-agent's work shows as a crumb marked *sub-agent*, with its role and model. Expand it for the task, the reason it was created, and its report. Sub-agents never appear in your agent lists, the New chat menu, teams or exports.
+
+### Provider slots and the usage ledger
+
+- **Slots:** each model provider has **Max concurrent requests** (Settings → Model providers; 0 = no limit). It caps how many model calls run against that provider at once, across every worker, so a burst of agents and sub-agents queues instead of swamping a GPU box. Slots are leases in Valkey that are renewed while a call runs, so a crashed worker can't hold one for more than 90 seconds.
+- **The ledger:** every agent run (chat turn, delegated task or sub-agent task) is recorded with its model, model requests, tokens and wall-clock time. **Settings → Usage** totals these by agent (sub-agent runs count under the agent that created them), by model and by day. Request estimates use the same numbers.
+- **Daily budgets** aren't built yet, on purpose: watch the real numbers here first.
+
 ## Avatars
 
 Each agent can also have **pronouns** (he/him, she/her, they/them…). Teammates see them in the roster and with delegated results, so a supervisor refers to them correctly.
@@ -516,7 +566,8 @@ The API process reports as `agent-hq` and workers as `agent-hq-worker`, both in 
 
 ```
 backend/app/
-  models.py          ModelProvider, AgentDef, ToolServer, Thread, Message, Job, Subscription tables
+  models.py          ModelProvider, AgentDef, ToolServer, Thread, Message, Job, Subscription,
+                     SubagentRequest, UsageRecord tables
   runtime.py         builds agents from rows; turns; delegation; report-back
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
@@ -524,6 +575,8 @@ backend/app/
   vision.py          look / locate / click_on via a per-agent vision model
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
+  subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
+  slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
   llm.py             model providers: build an agent's model; list a provider's models
@@ -531,7 +584,8 @@ backend/app/
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
 frontend/src/app/    app shell (sidebar of conversations), chat, and the Settings pages
-                     (agents, model providers, memory, tools, events, system); icons from Lucide (ISC)
+                     (agents, model providers, sub-agents, usage, memory, tools, events, system),
+                     the Requests inbox and the Scheduler; icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
@@ -542,7 +596,8 @@ examples/            example crew (providers, agents, pools, tools, subscription
 ## Next steps worth building
 
 - **Approvals:** mark tools as needing approval (PydanticAI `requires_approval` / LangGraph interrupts) and show approve/deny cards in chat before anything changes a system. This also makes reruns after a crash safe.
-- **Schedules:** a `Schedule` table (cron + agent + prompt + conversation). A scheduled run is just a turn job, so it reports back the same way.
 - **Outbound MQTT:** a small MCP server that lets agents publish status or commands back to the lab.
-- **Schema migrations:** add Alembic once you have data you want to keep through schema changes.
+- **Schema migrations:** new columns on existing tables are added automatically at startup; add Alembic once you need renames or data changes.
+- **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
+- **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Auth:** put the UI behind your reverse proxy or step-ca mTLS before exposing it beyond the LAN.

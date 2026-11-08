@@ -46,8 +46,32 @@ class ModelProvider(SQLModel, table=True):
     # ChatGPT plan providers: the Sign in with ChatGPT registration and tokens
     # (client_id, access/refresh/id tokens, granted scopes). Never returned by the API.
     oauth: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    # Slots: at most this many model requests to this provider at once, across every
+    # worker (0 = no limit). Extra requests wait their turn. Use it to keep a GPU box from
+    # being swamped when several agents and sub-agents run together.
+    max_concurrent: int = 0
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class SubagentMode(str, Enum):
+    off = "off"          # can't create sub-agents
+    ask = "ask"          # may ask you; spawns only within limits you approve
+    allowed = "allowed"  # may spawn within its own limits (set in the agent's settings)
+
+
+def default_subagent_limits() -> dict[str, Any]:
+    return {
+        "concurrent": 1,      # sub-agents of this agent alive at once
+        "per_task": 2,        # sub-agents per job (one turn or one delegated task)
+        "per_day": 5,         # sub-agents per day (UTC)
+        "max_minutes": 10,    # a sub-agent's run is stopped after this long
+        "max_requests": 25,   # model requests a sub-agent may make
+        # [{"provider_id", "model"}] sub-agents may run on. Empty = the agent's own model.
+        "models": [],
+        # Tool servers sub-agents may use: a subset of the agent's own. None = all of them.
+        "tool_server_ids": None,
+    }
 
 
 class AgentDef(SQLModel, table=True):
@@ -91,6 +115,17 @@ class AgentDef(SQLModel, table=True):
     # Bumped on every avatar upload; 0 = no avatar. The UI uses it to bust image caches.
     avatar_version: int = 0
     avatar_animated: bool = False
+    # Sub-agents: off (default), ask (needs your approval), allowed (within limits).
+    subagent_mode: SubagentMode = SubagentMode.off
+    subagent_limits: dict[str, Any] = Field(default_factory=default_subagent_limits,
+                                            sa_column=Column(JSON))
+    # Set on sub-agents themselves: temporary agents created by another agent for one task.
+    # They are hidden from agent lists, can't delegate or spawn, and retire when done.
+    is_subagent: bool = Field(default=False, index=True)
+    parent_agent_id: str | None = Field(default=None, index=True)
+    spawned_by_job_id: str | None = None
+    expires_at: datetime | None = None
+    retired: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -243,6 +278,53 @@ class SystemSetting(SQLModel, table=True):
 
     key: str = Field(primary_key=True)
     value: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class SubagentRequest(SQLModel, table=True):
+    """An agent asking you for sub-agents (like an FTE request): what, why, how much."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    agent_id: str = Field(foreign_key="agentdef.id", index=True)
+    thread_id: str = Field(foreign_key="thread.id", index=True)
+    job_id: str | None = None
+    why: str = Field(default="", sa_column=Column(Text, default=""))
+    why_not_existing_agents: str = Field(default="", sa_column=Column(Text, default=""))
+    # [{role, purpose, model, provider_id, tools, est_minutes}]
+    subagents: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    hours: float = 4  # how long the agent wants the grant for
+    # The system's own estimate of the cost: models, sizes, where they run, ledger averages.
+    estimate: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # pending | approved | denied | expired
+    status: str = Field(default="pending", index=True)
+    # What you approved: {count, concurrent, max_minutes, max_requests, models, tool_server_ids}
+    grant: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    used: int = 0
+    note: str = Field(default="", sa_column=Column(Text, default=""))  # your note to the agent
+    message_id: str | None = None
+    expires_at: datetime | None = None  # grant end (approved) or when an unanswered request lapses
+    decided_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class UsageRecord(SQLModel, table=True):
+    """The ledger: one row per agent run (a turn, a delegated task or a sub-agent task)."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    at: datetime = Field(default_factory=_now, index=True)
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    is_subagent: bool = False
+    parent_agent_id: str | None = None   # for sub-agents: the agent that created them
+    job_id: str | None = None
+    thread_id: str | None = None
+    provider_id: str | None = None
+    provider_name: str = ""
+    model: str = ""
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    seconds: float = 0
+    ok: bool = True
 
 
 class MemoryKind(str, Enum):
