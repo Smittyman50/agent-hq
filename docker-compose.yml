@@ -35,6 +35,17 @@ services:
     environment:
       AHQ_WORKER_NAME: worker-desktop
 
+  # Text-only web tools: RSS/Atom feeds, readable pages, and search via your SearXNG.
+  # Register in the UI (Settings -> Tools): HTTP, http://web-reader:8800/mcp, untick
+  # "Prefix tool names", leave "Controls an agent desktop" unticked.
+  web-reader:
+    build: ./webreader
+    restart: unless-stopped
+    environment:
+      SEARXNG_URL: ${SEARXNG_URL:-}                     # e.g. http://searxng.home.arpa:8888
+      WEBREADER_ALLOW_HOSTS: ${WEBREADER_ALLOW_HOSTS:-}   # internal hosts agents may read
+      WEBREADER_MAX_CHARS: ${WEBREADER_MAX_CHARS:-12000}
+
   # One service per agent desktop. Copy this block (desktop-2, port 3002, ...) to add more.
   # In the UI, register two HTTP tool servers (tick "Controls an agent desktop" on both):
   #   http://desktop-1:8765/mcp   screenshots, mouse, keyboard

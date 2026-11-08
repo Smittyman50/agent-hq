@@ -1,0 +1,27 @@
+# SearXNG: a private metasearch engine for Agent HQ's web reader (search_web).
+# Run it on any host in the lab:
+#   cd deploy/searxng && cp .env.example .env   # set SEARXNG_SECRET (openssl rand -hex 32)
+#   docker compose up -d
+# Then set SEARXNG_URL=http://<this-host>:8888 in Agent HQ's .env and restart web-reader.
+# Check it: curl 'http://<this-host>:8888/search?q=proxmox&format=json'  (403 = JSON not enabled)
+name: searxng
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    ports: ["8888:8080"]
+    env_file: [.env]
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8888/}
+    volumes:
+      - ./config:/etc/searxng:rw          # settings.yml (JSON output on, limiter off)
+      - searxng-cache:/var/cache/searxng
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "1" }
+
+volumes:
+  searxng-cache:

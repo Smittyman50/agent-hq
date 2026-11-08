@@ -1,0 +1,22 @@
+# SearXNG settings for Agent HQ: everything else stays at SearXNG's defaults.
+use_default_settings: true
+
+general:
+  instance_name: "Agent HQ search"
+
+server:
+  # Set through SEARXNG_SECRET in .env (it overrides this placeholder).
+  secret_key: "set-SEARXNG_SECRET-in-.env"
+  # A private instance on your LAN: no bot limiter (it would need Valkey and would
+  # throttle your own agents), not advertised as public.
+  limiter: false
+  public_instance: false
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  # The web reader asks for JSON; SearXNG refuses formats not listed here (HTTP 403).
+  formats:
+    - html
+    - json

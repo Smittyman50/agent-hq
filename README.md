@@ -228,6 +228,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
+- web reader: feeds (and finding a site's feed), readable pages without clutter, paging of long pages, redirects, robots.txt, SearXNG search, refusing LAN addresses unless allowed, and an agent reading a feed through Agent HQ
 - ChatGPT plan providers: the full sign-in by pasted callback (PKCE, state, single use, declined consent), tokens never returned or exported, model listing, an agent turn on the plan through the Responses API (`store: false`, `stream: true`, no unsupported fields), and two workers refreshing at once without ever reusing a refresh token
 - import and export
 
@@ -297,6 +298,36 @@ Register MCP servers on the **Settings → Tools** page:
 - **stdio:** a command plus arguments, which is launched **on whichever worker runs the agent**, so it must be installed there
 
 Click **Test connection** to list the server's tools (this connects from the API host), then tick the server on any agent. Tool names are prefixed with the server name by default (`proxmox_list_vms`) so they never collide.
+
+The worker image is a slim Python image without `npx` or `uvx`, so published servers you'd normally start with those commands are easier to run as their own container and register over HTTP, the way the web reader below does.
+
+### Web reader: feeds, pages and search
+
+The `web-reader` service (in `docker-compose.yml`, code in `webreader/`) gives agents text-only web tools. It's much faster and cheaper than driving a browser, and works fine with small local models:
+
+| Tool | What it returns |
+|---|---|
+| `read_feed(url, limit)` | The newest items of an RSS or Atom feed: title, link, date, short summary. A site's address works too if its page links to a feed. |
+| `fetch_page(url, offset)` | A page's readable content as Markdown (the article or documentation, without menus, ads or scripts). Long pages come back in parts: call again with `next_offset`. |
+| `search_web(query, limit, time_range, categories)` | Results from **your own SearXNG**: titles, links, snippets. Only offered when `SEARXNG_URL` is set. |
+
+Register it under **Settings → Tools**: HTTP, `http://web-reader:8800/mcp`, untick **Prefix tool names**, leave **Controls an agent desktop** unticked. Then tick it on your researcher. A good split is for the researcher to use feeds, pages and search first, and delegate to the desktop agent only for pages that need a login, JavaScript, or actually looking at them (charts, dashboards).
+
+**Behaviour:**
+- `fetch_page` honours `robots.txt` (`WEBREADER_RESPECT_ROBOTS=false` to turn that off) and returns at most `WEBREADER_MAX_CHARS` (12,000) characters per call.
+- Downloads are capped at 5 MB, and redirects are followed hop by hop.
+- **LAN addresses are refused by default.** Agents read untrusted web content, and a page could try to talk one into probing your network. To let agents read specific internal sites, list them in `WEBREADER_ALLOW_HOSTS` (for example `wiki.home.arpa`).
+
+**Search with SearXNG.** `deploy/searxng/` runs a private SearXNG on any host:
+
+```bash
+cd deploy/searxng
+cp .env.example .env          # set SEARXNG_SECRET: openssl rand -hex 32
+docker compose up -d
+curl 'http://localhost:8888/search?q=proxmox&format=json'   # JSON back = ready (403 = JSON not enabled)
+```
+
+Its `config/settings.yml` turns on JSON output, which the web reader needs, and turns off the bot limiter, which would otherwise throttle your own agents on a private instance. Then set `SEARXNG_URL=http://<that-host>:8888` in Agent HQ's `.env` and run `docker compose up -d web-reader`. Agents see `search_web` the next time they start a job.
 
 ## Model providers
 
@@ -482,7 +513,9 @@ backend/app/
 frontend/src/app/    app shell (sidebar of conversations), chat, and the Settings pages
                      (agents, model providers, memory, tools, events, system); icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
+webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
+deploy/searxng/      a private SearXNG for the web reader's search (JSON on, limiter off)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
 ```
 

@@ -15,6 +15,18 @@
   ],
   "tool_servers": [
     {
+      "name": "web",
+      "description": "Web reader: RSS/Atom feeds, readable pages, SearXNG search (text only)",
+      "transport": "http",
+      "url": "http://web-reader:8800/mcp",
+      "command": null,
+      "args": [],
+      "env": {},
+      "prefix_tools": false,
+      "desktop": false,
+      "enabled": true
+    },
+    {
       "name": "desktop1",
       "description": "Desktop container desktop-1 (screenshot, click, type, open_url)",
       "transport": "http",
@@ -54,7 +66,8 @@
       "desktop_url": null,
       "is_default": true,
       "enabled": true,
-      "pool": "default"
+      "pool": "default",
+      "pronouns": "he/him"
     },
     {
       "name": "Scarlett",
@@ -62,7 +75,9 @@
       "instructions": "You are Scarlett, a research scout. Prefer text sources. When the answer requires seeing a page visually (graphs, dashboards), delegate to Snake Eyes with precise instructions. Return findings with sources.",
       "provider": "Ollama (GPU server)",
       "model": "gpt-oss:20b",
-      "tools": [],
+      "tools": [
+        "web"
+      ],
       "delegates": [
         "Snake Eyes"
       ],
@@ -71,7 +86,8 @@
       "enabled": true,
       "pool": "default",
       "fallback_provider": "OpenAI",
-      "fallback_model": "gpt-4.1"
+      "fallback_model": "gpt-4.1",
+      "pronouns": "she/her"
     },
     {
       "name": "Snake Eyes",
@@ -93,7 +109,8 @@
       "vision_coords": "relative_1000",
       "vision_zoom": true,
       "fallback_provider": "OpenAI",
-      "fallback_model": "gpt-4.1"
+      "fallback_model": "gpt-4.1",
+      "pronouns": "he/him"
     }
   ],
   "subscriptions": [
