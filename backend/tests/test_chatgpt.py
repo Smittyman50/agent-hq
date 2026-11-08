@@ -89,13 +89,12 @@ class FakeOpenAI:
         if request.headers.get("authorization") != f"Bearer {self.access_token}":
             return httpx2.Response(401, json={"error": {"message": "bad token"}})
         if url == "https://api.openai.com/v1/models":
-            return httpx2.Response(200, json={"object": "list", "data": [
-                {"id": "gpt-6.1-sol", "object": "model", "created": 0, "owned_by": "openai",
-                 "visibility": "list", "display_name": "GPT-6.1 Sol"},
-                {"id": "internal-x", "object": "model", "created": 0, "owned_by": "openai",
-                 "visibility": "hidden"},
-                {"id": "gpt-6.1-mini", "object": "model", "created": 0, "owned_by": "openai",
-                 "visibility": "list", "display_name": "GPT-6.1 mini"}]})
+            # Plan usage's shape (documented under "Models and inference"): a `models` array
+            # of {slug, display_name, visibility}, unlike the regular API's `data` of {id}.
+            return httpx2.Response(200, json={"models": [
+                {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list"},
+                {"slug": "internal-x", "display_name": "Internal", "visibility": "hide"},
+                {"slug": "gpt-6.1-mini", "display_name": "GPT-6.1 mini", "visibility": "list"}]})
         if url == "https://api.openai.com/v1/responses":
             body = json.loads(request.content)
             self.responses.append(body)
@@ -271,8 +270,8 @@ async def test_workers_never_spend_the_same_refresh_token(hq, openai_fake):
         row = r
     openai_fake.access_ttl = 3600
     a, b = chatgpt.make_provider(row), chatgpt.make_provider(row)
-    out = await asyncio.gather(a.client.models.list(), b.client.models.list())
-    assert all(len(page.data) == 3 for page in out)
+    out = await asyncio.gather(a.client.get("/models", cast_to=object), b.client.get("/models", cast_to=object))
+    assert all(len(body["models"]) == 3 for body in out)
     assert openai_fake.refreshes == 1  # one refresh; the other worker adopted the stored result
     assert openai_fake.reused == 0  # and nobody ever sent a spent refresh token
     with db.session() as s:

@@ -180,19 +180,29 @@ def build_model(p: ModelProvider, model_name: str):
 
 
 async def list_models(p: ModelProvider) -> list[dict]:
-    """The models this ChatGPT plan offers, in OpenAI's order (only those meant for pickers)."""
+    """The models this ChatGPT plan offers, in OpenAI's order (only those meant for pickers).
+
+    Plan usage answers GET /v1/models with {"models": [{"slug", "display_name", "visibility"}]},
+    not the regular API's {"data": [{"id"}]}. The slug is what goes in a request's `model`.
+    """
     provider = make_provider(p)
     try:
-        page = await provider.client.models.list()
-        out = []
-        for m in page.data:
-            extra = m.model_extra or {}
-            if extra.get("visibility", "list") != "list":
-                continue
-            out.append({"id": m.id, "details": extra.get("display_name") or ""})
-        return out
+        body = await provider.client.get("/models", cast_to=object)
     finally:
         await provider.client.close()
+    if not isinstance(body, dict):
+        raise UserError(f"unexpected model list from OpenAI: {str(body)[:200]}")
+    entries = body.get("models")
+    if entries is None:
+        entries = body.get("data") or []  # the regular API's shape, just in case
+    out = []
+    for m in entries:
+        if not isinstance(m, dict) or m.get("visibility", "list") != "list":
+            continue
+        slug = m.get("slug") or m.get("id")
+        if slug:
+            out.append({"id": slug, "details": m.get("display_name") or ""})
+    return out
 
 
 # --------------------------------------------------------------------------- sign-in
