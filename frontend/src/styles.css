@@ -238,3 +238,7 @@ button.danger-link { color: var(--bad); }
 .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; vertical-align: top; }
 .md th { background: rgba(255,255,255,.04); font-weight: 600; }
 .md td { overflow-wrap: normal; min-width: 7.5em; }
+
+/* A provider is chosen but its model isn't yet */
+select.needs, input.needs { border-color: var(--warn); }
+.needs-hint { color: var(--warn); }

@@ -128,6 +128,8 @@ Operating rules:
   results than were asked for, say how many and stop there.
 - If a team member fails at the same task twice, don't keep re-delegating it: report what
   happened and what you'd suggest instead.
+- Keep the user's actual question in the task. If it's about what something looks like (a
+  picture, a chart, a screen), ask for the image itself to be examined, not only the text.
 """
 
 
@@ -225,8 +227,19 @@ Seeing the screen:
 - You cannot see screenshots yourself. Use `look` to ask questions about what is on the
   screen, and `locate` / `click_on` to act on things by describing them.
 - For web pages, prefer the browser_* tools when you have them: call `browser_snapshot`
-  to read the page as text and act on elements by their ref. Use `look` only for things
-  that are genuinely visual, such as charts and graphs."""
+  to read the page as text and act on elements by their ref. Use `look` for things that
+  are genuinely visual: charts and graphs, and photos or illustrations, especially when
+  the question is what something looks like. Scroll the image into view first, then ask
+  `look` a specific question about it."""
+
+NO_VISION_RULES = """\
+Images: no vision model is set for you. Unless your own model can view the screenshots
+your tools return, you can only read text (page snapshots, alt text, captions). If a task
+depends on what an image, photo, chart or the screen looks like and you can't view it,
+report status "partial": give what the text says (captions and alt text count) and state
+plainly that answering fully needs a vision model, which the user can set for you under
+Settings → Agents. Don't report that something isn't there just because the text doesn't
+mention it."""
 
 ESCALATE_RULES = """\
 If the task is beyond you (you keep failing, or it needs stronger reasoning), call
@@ -611,6 +624,8 @@ class Runtime:
                         for ts, desk in toolsets]
             instructions.append(VISION_RULES)
             toolsets.append((self._vision_toolset(), None))
+        elif any(desk for _, desk in toolsets):
+            instructions.append(NO_VISION_RULES)
         if has_fallback(agent) and not on_fallback:
             instructions.append(ESCALATE_RULES)
             toolsets.append((self._escalate_toolset(), None))

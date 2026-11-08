@@ -73,7 +73,8 @@ def ollama_root(p: ModelProvider) -> str:
 
 def build_provider_model(p: ModelProvider, model_name: str) -> Model:
     if not model_name:
-        raise ValueError(f"no model selected for provider '{p.name}'")
+        raise ValueError(f"no model selected for provider '{p.name}'. Open Settings → Agents, "
+                         "pick a model from that provider's list and save")
     key = p.api_key or None
     if p.kind == ProviderKind.ollama:
         from pydantic_ai.models.ollama import OllamaModel

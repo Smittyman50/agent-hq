@@ -22,11 +22,21 @@ let nextId = 0;
         @if (providerId()) {
           <small>{{ status() }} <a href="" (click)="$event.preventDefault(); load()">refresh</a></small>
         } @else if (!optional()) { <small>a PydanticAI spec, e.g. openai:gpt-4.1</small> }
-        <input [ngModel]="modelName()" (ngModelChange)="modelName.set($event)" [attr.list]="listId"
-          [disabled]="optional() && !providerId() && !modelName()"
-          [placeholder]="providerId() ? 'pick or type a model name' : (optional() ? '' : 'provider:model')"></label>
+        @if (useList()) {
+          <select [ngModel]="modelName()" (ngModelChange)="pick($event)" [class.needs]="!modelName()">
+            <option value="" disabled>Choose a model…</option>
+            @for (m of models(); track m.id) { <option [value]="m.id">{{ m.id }}</option> }
+            <option [value]="OTHER">Other (type a name)…</option>
+          </select>
+        } @else {
+          <input [ngModel]="modelName()" (ngModelChange)="modelName.set($event)" [attr.list]="listId"
+            [disabled]="optional() && !providerId() && !modelName()" [class.needs]="providerId() && !modelName()"
+            [placeholder]="providerId() ? 'type a model name' : (optional() ? '' : 'provider:model')">
+        }</label>
     </div>
-    @if (details(); as d) { <p class="hint inline-hint">{{ d }}</p> }
+    @if (providerId() && !modelName()) {
+      <p class="hint inline-hint needs-hint">Choose a {{ label().toLowerCase() }} for this provider before saving.</p>
+    } @else if (details(); as d) { <p class="hint inline-hint">{{ d }}</p> }
     <datalist [id]="listId">
       @for (m of models(); track m.id) { <option [value]="m.id">{{ m.details }}</option> }
     </datalist>
@@ -45,13 +55,28 @@ export class ModelPicker {
   listId = `models-${nextId++}`;
   models = signal<ModelInfo[]>([]);
   status = signal('');
+  readonly OTHER = '__other__';
+  /** Typing a name instead of choosing from the list (e.g. a model the server doesn't list). */
+  typing = signal(false);
+
+  /** A dropdown when the provider listed its models and the current name is one of them. */
+  useList() {
+    const name = this.modelName();
+    return !!this.providerId() && !this.typing() && this.models().length > 0 &&
+      (!name || this.models().some(m => m.id === name));
+  }
+
+  pick(value: string) {
+    if (value === this.OTHER) { this.typing.set(true); return; }
+    this.modelName.set(value);
+  }
 
   constructor() {
     effect(() => { this.providerId(); this.load(); });
   }
 
   setProvider(id: string | null) {
-    if (id !== this.providerId()) this.modelName.set('');
+    if (id !== this.providerId()) { this.modelName.set(''); this.typing.set(false); }
     this.providerId.set(id);
   }
 

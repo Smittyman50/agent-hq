@@ -44,9 +44,14 @@ def _clear_other_defaults(s: Session, keep_id: str) -> None:
 
 
 def _check_provider(s: Session, body: AgentIn) -> None:
-    for pid in (body.provider_id, body.vision_provider_id, body.fallback_provider_id):
+    for pid, model, what in ((body.provider_id, body.model, "model"),
+                             (body.vision_provider_id, body.vision_model, "vision model"),
+                             (body.fallback_provider_id, body.fallback_model, "fallback model")):
         if pid and not s.get(ModelProvider, pid):
             raise HTTPException(422, "model provider not found")
+        # A provider with no model chosen fails at run time ("no model selected").
+        if pid and not model.strip():
+            raise HTTPException(422, f"choose a {what} from the provider's list (or set its provider to none)")
     if body.vision_coords not in ("relative_1000", "pixels"):
         raise HTTPException(422, "vision_coords must be relative_1000 or pixels")
 

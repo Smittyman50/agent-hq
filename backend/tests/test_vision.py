@@ -164,3 +164,36 @@ def test_crop_zoom_maps_back():
     w, h = Image.open(io.BytesIO(crop)).size
     assert left + w / scale <= 1280.5 and top + h / scale <= 720.5  # stays on screen
     assert scale > 1  # enlarged for the second look
+
+
+async def test_desktop_agents_know_whether_they_can_see_images(hq, tmp_path, monkeypatch):
+    # Regression (trace 2026-11-08): with no vision model, Snake Eyes searched the page text
+    # for "gun", found nothing and reported that, when the answer was in the photo.
+    from .conftest import _instructions
+
+    seen = []
+    SCRIPTS["rules"] = lambda messages, info: (seen.append(_instructions(messages)),
+                                               ModelResponse(parts=[TextPart("ok")]))[1]
+    await hq.start_worker()
+    srv = (await hq.http.post("/api/tool-servers", json={
+        "name": "desk", "transport": "stdio", "command": sys.executable,
+        "args": [str(FAKE_DESKTOP)], "desktop": True})).json()
+    blind = await hq.agent(name="Blind", model="fake:rules", tool_server_ids=[srv["id"]])
+    sighted = await hq.agent(name="Sighted", model="fake:rules", tool_server_ids=[srv["id"]],
+                             vision_model="fake:vision")
+    for a in (blind, sighted):
+        t = await hq.thread(a["id"])
+        await hq.say(t["id"], "what does the gun in the photo look like?")
+        await hq.wait_agent_replies(t["id"], 1)
+    assert "no vision model is set for you" in seen[0] and 'report status "partial"' in seen[0]
+    assert "photos or illustrations" not in seen[0]
+    assert "photos or illustrations, especially when" in seen[1] and "no vision model" not in seen[1]
+
+
+async def test_a_provider_without_a_model_is_refused(hq):
+    p = (await hq.http.post("/api/providers", json={"name": "ChatGPT Plus", "kind": "chatgpt"})).json()
+    r = await hq.http.post("/api/agents", json={"name": "Duke", "provider_id": p["id"], "model": ""})
+    assert r.status_code == 422 and "choose a model" in r.json()["detail"]
+    r = await hq.http.post("/api/agents", json={"name": "Duke", "provider_id": p["id"], "model": "gpt-6.1",
+                                                "fallback_provider_id": p["id"]})
+    assert r.status_code == 422 and "fallback model" in r.json()["detail"]
