@@ -562,7 +562,12 @@ class Runtime:
             f"{assignee.name} → {requester.name if requester else 'you'}: "
             f"[{result.status}] {result.summary}",
             agent_id=assignee.id, kind="delegation_result", job_id=job.id,
-            result=result.model_dump())
+            result=result.model_dump(),
+            # Both sides of the exchange, so the UI can show it as a thread between the two.
+            task=job.task, requester_id=requester.id if requester else None,
+            requester=requester.name if requester else None, assignee=assignee.name,
+            background=job.background, depth=job.depth,
+            started_at=job.created_at.isoformat() if job.created_at else None)
         await self._capture_delegation(job, assignee, result)
         # Wake a waiting delegator, if there is one.
         await self.broker.push_result(job.id, result.model_dump())

@@ -198,3 +198,24 @@ button.danger-link { color: var(--bad); }
   .settings-nav { width: 180px; }
   .sidebar:not(.collapsed) { width: 230px; }
 }
+
+/* Delegations between agents: a collapsed thread "crumb" that expands to the exchange */
+.crumb { align-self: flex-start; max-width: min(880px, 92%); }
+.crumb-head { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px 5px 6px; border-radius: 16px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text); font-size: 12.5px; cursor: pointer; }
+.crumb-head:hover { border-color: var(--accent); }
+.crumb-avatars { display: inline-flex; }
+.crumb-avatars hq-avatar + hq-avatar { margin-left: -6px; }
+.crumb-title { font-weight: 600; }
+.crumb-sub { font-size: 12px; }
+.crumb .pill { margin-left: 0; text-transform: capitalize; }
+.pill.done { color: var(--ok); border-color: var(--ok); }
+.pill.partial { color: var(--warn); border-color: var(--warn); }
+.pill.failed { color: var(--bad); border-color: var(--bad); }
+.crumb-chevron { color: var(--muted); transition: transform .15s ease; }
+.crumb.open .crumb-chevron { transform: rotate(90deg); }
+.crumb-body { margin: 6px 0 2px 14px; padding: 4px 0 4px 14px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.crumb-msg .who { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); margin-bottom: 3px; }
+.crumb-msg .body { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 11px; border-radius: 9px; background: var(--panel2); font-size: 13px; line-height: 1.45; }
+.crumb-msg.reply .body { background: #1d2a36; }
+.crumb-msg .body.details { margin-top: 6px; color: var(--muted); }

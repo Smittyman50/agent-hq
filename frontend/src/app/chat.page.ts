@@ -38,12 +38,45 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
         }
         <div class="messages" #scroller>
           @for (m of messages(); track m.id) {
+            @if (exchange(m); as x) {
+              <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
+                <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">
+                  <span class="crumb-avatars">
+                    <hq-avatar [agent]="agentById(x.requesterId)" [size]="20" />
+                    <hq-avatar [agent]="agentById(x.assigneeId)" [size]="20" />
+                  </span>
+                  <span class="crumb-title">{{ x.requester }} <span class="muted">↔</span> {{ x.assignee }}</span>
+                  <span class="pill {{ x.status }}">{{ x.status }}</span>
+                  <span class="muted crumb-sub">{{ x.background ? 'background task' : 'delegated task' }}
+                    · {{ m.created_at | date:'h:mm a' }}</span>
+                  <hq-icon name="chevron" [size]="14" class="crumb-chevron" />
+                </button>
+                @if (isOpen(m.id)) {
+                  <div class="crumb-body">
+                    @if (x.task) {
+                      <div class="crumb-msg">
+                        <div class="who"><hq-avatar [agent]="agentById(x.requesterId)" [size]="18" />
+                          {{ x.requester }} <span class="muted">→ {{ x.assignee }}</span></div>
+                        <div class="body">{{ x.task }}</div>
+                      </div>
+                    }
+                    <div class="crumb-msg reply">
+                      <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" />
+                        {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
+                      <div class="body">{{ x.summary }}</div>
+                      @if (x.details) { <div class="body details">{{ x.details }}</div> }
+                    </div>
+                  </div>
+                }
+              </div>
+            } @else {
             <div class="msg {{ m.role }}">
               @if (m.role === 'agent') {
                 <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}</div>
               } @else if (m.role === 'event') { <div class="who">activity</div> }
               <div class="body">{{ m.content }}</div>
             </div>
+            }
           }
         </div>
         <div class="resizer" title="Drag to resize the message box (double-click to reset)"
@@ -139,6 +172,35 @@ export class ChatPage implements OnInit, OnDestroy {
     return req;
   });
   draft = '';
+
+  // Delegations between agents show as collapsed threads; these are the expanded ones.
+  private opened = signal<Set<string>>(new Set());
+  isOpen(id: string) { return this.opened().has(id); }
+  toggle(id: string) {
+    this.opened.update(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  /** A delegation result message, as both sides of the exchange (null for other messages). */
+  exchange(m: Message) {
+    const meta = (m.meta ?? {}) as Record<string, any>;
+    if (m.role !== 'event' || meta['kind'] !== 'delegation_result') return null;
+    const result = meta['result'] ?? {};
+    // Older messages only have "Scarlett → Duke: [done] summary" text.
+    const names = /^(.+?) → (.+?): \[/.exec(m.content);
+    const assignee = meta['assignee'] ?? names?.[1] ?? this.agentName(m.agent_id);
+    const requester = meta['requester'] ?? names?.[2] ?? 'you';
+    return {
+      requester, assignee,
+      requesterId: meta['requester_id'] ?? this.agents().find(a => a.name === requester)?.id ?? null,
+      assigneeId: m.agent_id,
+      task: meta['task'] as string | undefined,
+      status: (result.status ?? 'done') as string,
+      summary: (result.summary ?? m.content) as string,
+      details: (result.details ?? '') as string,
+      background: !!meta['background'],
+      depth: Math.max(1, Number(meta['depth'] ?? 1)),
+    };
+  }
 
   // The message box's height: drag the line above it to resize; remembered per browser.
   readonly DEFAULT_COMPOSER = 76;

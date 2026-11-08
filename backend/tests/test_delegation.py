@@ -26,6 +26,11 @@ async def test_wait_delegation_relays_result_through_workers(hq):
     assert task.assignee_agent_id == w["id"] and task.origin_thread_id == t["id"]
     assert task.status == JobStatus.done and task.worker == "w1"
     assert [m.role for m in hq.messages(t["id"])] == [Role.user, Role.event, Role.agent]
+    # The delegation is saved with both sides, for the UI's collapsible thread.
+    meta = hq.messages(t["id"])[1].meta
+    assert meta["kind"] == "delegation_result" and meta["task"] == "Please handle: check the RSS feeds"
+    assert (meta["requester"], meta["assignee"], meta["result"]["status"]) == ("Lead", "Alpha", "done")
+    assert meta["requester_id"] and meta["depth"] == 1
 
 
 async def test_delegation_longer_than_five_seconds_still_reports_back(hq):
