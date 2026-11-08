@@ -70,6 +70,7 @@ async def test_delegated_results_are_attributed_and_tools_announced(hq, monkeypa
     assert seen["result"]["from"] == "Scarlett" and seen["result"]["status"] == "done"
     assert "Scarlett's report to you, not your own work" in seen["result"]["note"]
     assert "Never present a team" in seen["rules"]
+    assert "Never invent" in seen["rules"]
     # Pronouns, when set, reach the delegator in the roster and with the result.
     assert "- Scarlett: Does research (pronouns: she/her)" in seen["rules"]
     assert "Refer to Scarlett as she/her." in seen["result"]["note"]
@@ -200,3 +201,44 @@ async def test_example_crew_imports_as_data(hq):
     assert {agents[n]["id"] for n in ("Scarlett", "Snake Eyes")} == set(agents["Duke"]["delegates"])
     assert len(agents["Snake Eyes"]["tool_server_ids"]) == 2
     assert agents["Snake Eyes"]["vision_model"] and agents["Snake Eyes"]["fallback_provider_id"]
+
+
+async def test_a_plain_text_answer_from_a_delegate_is_kept(hq):
+    # Regression (trace 2026-11-08): Scarlett found three articles but wrote them as a text
+    # table instead of calling the result tool; the run "failed" and her work was lost.
+    from pydantic_ai.messages import ModelResponse, TextPart
+
+    from .conftest import SCRIPTS
+
+    SCRIPTS["texter"] = lambda messages, info: ModelResponse(parts=[TextPart(
+        "| # | Title |\n|---|---|\n| 1 | 5 Docker Containers You Need for a Home AI Lab |")])
+    await hq.start_worker()
+    _, _, t = await _team(hq, worker="fake:texter", worker_name="Scarlett")
+    await hq.say(t["id"], "find articles")
+    [reply] = await hq.wait_agent_replies(t["id"], 1)
+    assert reply.startswith("Report: | # | Title |") and "5 Docker Containers" in reply
+    task = [j for j in hq.jobs() if j.kind == JobKind.task][0]
+    assert task.status == JobStatus.done and task.result["status"] == "done"
+
+
+def test_old_tool_results_are_trimmed_to_fit_small_context_windows():
+    from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+
+    from app.runtime import trim_old_tool_results
+
+    def run(n, size):
+        msgs = [ModelRequest(parts=[UserPromptPart("research this")])]
+        for i in range(n):
+            msgs.append(ModelResponse(parts=[ToolCallPart("fetch_page", {"url": f"u{i}"}, tool_call_id=f"c{i}")]))
+            msgs.append(ModelRequest(parts=[ToolReturnPart("fetch_page", {"text": f"{i}" * size}, tool_call_id=f"c{i}")]))
+        return msgs
+
+    small = run(3, 1000)
+    assert trim_old_tool_results(small) == small  # under budget: untouched
+    big = run(6, 12000)
+    out = trim_old_tool_results(big)
+    contents = [p.content for m in out if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert all(isinstance(c, str) and "shortened from" in c and len(c) < 1400 for c in contents[:3])
+    assert contents[3:] == [{"text": f"{i}" * 12000} for i in (3, 4, 5)]  # the latest three kept whole
+    # Tool calls and the original messages are left alone.
+    assert len(out) == len(big) and isinstance(big[2].parts[0].content, dict)

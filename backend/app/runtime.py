@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 from contextvars import ContextVar
@@ -43,7 +44,9 @@ from pydantic_ai import (
     RunContext,
     WrapperToolset,
 )
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
 from redis.exceptions import LockError
 from sqlmodel import select
 
@@ -120,6 +123,11 @@ Operating rules:
   own words ("I asked Scarlett to check the feeds; she found..."). Never present a team
   member's result, or their failure, as if you had done it yourself. If they failed, say
   so, and suggest a next step if you can.
+- Report only what your team actually returned (or what you know yourself). Never invent
+  articles, sources, links, quotes, figures or dates to fill a gap. If you got fewer
+  results than were asked for, say how many and stop there.
+- If a team member fails at the same task twice, don't keep re-delegating it: report what
+  happened and what you'd suggest instead.
 """
 
 
@@ -257,6 +265,7 @@ Long-term memory:
 - Relevant memories may be listed below. Treat them as leads to verify, not facts.
 - Use `remember` for things worth knowing next time (how the environment is set up, what
   fixed a problem, the user's preferences). One clear, self-contained statement each.
+  Never use it for notes about the task you're doing now or how you plan to answer.
 - Use `forget` when you find a memory is wrong or outdated, `confirm` when you verify one,
   and `recall` to search for more."""
 
@@ -268,6 +277,51 @@ def has_fallback(agent: AgentDef) -> bool:
 DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools are paused. "
                   "Do not retry. Report that you are waiting for the user to hand the desktop "
                   "back; you will be woken when they do.")
+
+
+def as_work_result(output: Any) -> WorkResult:
+    """A delegated agent's output as a WorkResult (it may have answered in plain text)."""
+    if isinstance(output, WorkResult):
+        return output
+    text = str(output).strip()
+    if not text:
+        return WorkResult(status="failed", summary="Finished without reporting anything.")
+    return WorkResult(status="done", summary=text)
+
+
+# Older tool results beyond these limits are shortened before each model call, so a long
+# research run (searches, pages) doesn't overflow a local model's context window.
+KEEP_RECENT_TOOL_RESULTS = 3
+TRIM_TOOL_RESULT_TO = 1200
+TRIM_WHEN_OVER_CHARS = 40_000
+
+
+def trim_old_tool_results(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """PydanticAI history processor: shorten all but the latest few large tool results."""
+    def size(c: Any) -> int:
+        return len(c) if isinstance(c, str) else len(json.dumps(c, default=str))
+
+    returns = [(i, j) for i, m in enumerate(messages) if isinstance(m, ModelRequest)
+               for j, p in enumerate(m.parts) if isinstance(p, ToolReturnPart)]
+    total = sum(size(messages[i].parts[j].content) for i, j in returns)
+    if total <= TRIM_WHEN_OVER_CHARS:
+        return messages
+    old = returns[:-KEEP_RECENT_TOOL_RESULTS] if KEEP_RECENT_TOOL_RESULTS else returns
+    by_msg: dict[int, list[int]] = {}
+    for i, j in old:
+        by_msg.setdefault(i, []).append(j)
+    out = list(messages)
+    for i, parts_idx in by_msg.items():
+        parts = list(out[i].parts)
+        for j in parts_idx:
+            p = parts[j]
+            text = p.content if isinstance(p.content, str) else json.dumps(p.content, default=str)
+            if len(text) > TRIM_TOOL_RESULT_TO:
+                parts[j] = dataclasses.replace(p, content=text[:TRIM_TOOL_RESULT_TO] + (
+                    f"… [shortened from {len(text)} characters to save space; call the tool "
+                    "again if you need the rest]"))
+        out[i] = dataclasses.replace(out[i], parts=parts)
+    return out
 
 
 def attributed(name: str, result: dict, pronouns: str = "") -> dict:
@@ -486,6 +540,7 @@ class Runtime:
                                   worker=job.worker)
         try:
             result, _ = await self.run_agent(assignee, job.task, deps, as_worker=True)
+            result = as_work_result(result)
             update_job(job.id, status=JobStatus.done, result=result.model_dump(),
                        finished_at=_now())
         except Exception as e:
@@ -569,7 +624,11 @@ class Runtime:
             name=agent.name,
             instructions="\n\n".join(instructions),
             deps_type=RunDeps,
-            output_type=WorkResult if as_worker else str,
+            # Delegated agents should hand in a WorkResult, but small models often just write
+            # their answer as text; accept that too rather than throwing the work away.
+            output_type=[WorkResult, str] if as_worker else str,
+            retries=3,  # a malformed tool call or result gets a few tries, not one
+            capabilities=[ProcessHistory(trim_old_tool_results)],
             toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker,
                                       desktop_server_id=desk) for t, desk in toolsets],
         )

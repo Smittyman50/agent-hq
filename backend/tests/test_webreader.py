@@ -183,6 +183,12 @@ async def test_search_through_searxng(reader):
                                "snippet": "New kernel and ZFS 2.4", "published": "2026-11-04T10:00:00",
                                "engines": ["duckduckgo", "brave"]}]
     assert any("time_range=week" in p for p in Site.seen)
+    # Mistakes small models make with the arguments still work: "category" instead of
+    # "categories", and category names SearXNG doesn't have.
+    Site.seen.clear()
+    out = await _call(reader, "search_web", query="proxmox", category="technology", time_range="all")
+    assert len(out["results"]) == 2
+    assert any("categories=it" in p and "time_range" not in p for p in Site.seen)
 
 
 async def test_private_addresses_are_refused_by_default_and_search_needs_searxng(site):

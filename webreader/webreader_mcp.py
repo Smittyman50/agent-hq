@@ -226,14 +226,32 @@ async def fetch_page(url: str, offset: int = 0) -> dict[str, Any]:
     return out
 
 
-async def search_web(query: str, limit: int = 8, time_range: str = "", categories: str = "general") -> dict[str, Any]:
+# SearXNG's category names, plus words models tend to use instead.
+CATEGORIES = {"general", "news", "it", "science", "files", "music", "videos", "images", "map", "social media"}
+CATEGORY_ALIASES = {"tech": "it", "technology": "it", "computing": "it", "software": "it", "web": "general",
+                    "all": "general", "any": "general", "articles": "general", "blogs": "general",
+                    "blog": "general", "article": "news", "social": "social media"}
+
+
+def _categories(value: str) -> str:
+    out = []
+    for c in (value or "").lower().replace(";", ",").split(","):
+        c = CATEGORY_ALIASES.get(c.strip(), c.strip())
+        if c in CATEGORIES and c not in out:
+            out.append(c)
+    return ",".join(out) or "general"
+
+
+async def search_web(query: str, limit: int = 8, time_range: str = "", categories: str = "general",
+                     category: str = "") -> dict[str, Any]:
     """Search the web (through the lab's SearXNG). Returns titles, links and snippets;
     use fetch_page to read a result.
 
     time_range: "" (any time), "day", "week", "month" or "year".
-    categories: "general", "news", "it", "science", ...
+    categories: "general" (default, best for articles and blogs), "news", "it" (technology),
+    or "science". Comma-separate to combine, e.g. "general,it".
     """
-    params = {"q": query, "format": "json", "categories": categories or "general"}
+    params = {"q": query, "format": "json", "categories": _categories(category or categories)}
     if time_range in ("day", "week", "month", "year"):
         params["time_range"] = time_range
     try:
