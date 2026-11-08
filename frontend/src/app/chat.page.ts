@@ -7,13 +7,14 @@ import { Subscription } from 'rxjs';
 import { Api, DesktopState, HqEvent, Message } from './api.service';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
+import { Markdown } from './markdown';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation">
@@ -57,14 +58,14 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
                       <div class="crumb-msg">
                         <div class="who"><hq-avatar [agent]="agentById(x.requesterId)" [size]="18" />
                           {{ x.requester }} <span class="muted">→ {{ x.assignee }}</span></div>
-                        <div class="body">{{ x.task }}</div>
+                        <div class="body rich"><hq-md [text]="x.task" /></div>
                       </div>
                     }
                     <div class="crumb-msg reply">
                       <div class="who"><hq-avatar [agent]="agentById(x.assigneeId)" [size]="18" />
                         {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
-                      <div class="body">{{ x.summary }}</div>
-                      @if (x.details) { <div class="body details">{{ x.details }}</div> }
+                      <div class="body rich"><hq-md [text]="x.summary" /></div>
+                      @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
                     </div>
                   </div>
                 }
@@ -74,7 +75,11 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
               @if (m.role === 'agent') {
                 <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}</div>
               } @else if (m.role === 'event') { <div class="who">activity</div> }
-              <div class="body">{{ m.content }}</div>
+              @if (m.role === 'agent') {
+                <div class="body rich"><hq-md [text]="m.content" /></div>
+              } @else {
+                <div class="body">{{ m.content }}</div>
+              }
             </div>
             }
           }
