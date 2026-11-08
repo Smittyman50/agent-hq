@@ -248,3 +248,32 @@ select.needs, input.needs { border-color: var(--warn); }
 .pill.working { color: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .45; } }
 .crumb-step { font-family: ui-monospace, monospace; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0 1px 26px; color: var(--muted); }
+
+/* Scheduler */
+.page-wrap { display: flex; flex-direction: column; height: 100%; }
+.page-wrap > .crumbs hq-icon { color: var(--accent); }
+.page-wrap > .split { flex: 1; min-height: 0; height: auto; }
+.side-foot { display: flex; flex-direction: column; gap: 2px; }
+.list .row .sub + .sub { margin-top: 1px; }
+.editor fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; margin: 0 0 14px; }
+.editor fieldset legend { padding: 0 6px; color: var(--muted); }
+.editor h3 { font-size: 14px; margin: 18px 0 8px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.seg button { background: transparent; color: var(--muted); border-radius: 0; padding: 6px 12px; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--panel2); color: var(--text); }
+.when-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.when-row label { margin: 0; }
+.when-row label.grow { flex: 1; min-width: 260px; }
+.when-row input[type=number] { width: 80px; }
+.when-row select, .when-row input[type=time] { width: auto; min-width: 120px; }
+.days { display: flex; gap: 4px; }
+.days button { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 6px 9px; border-radius: 6px; }
+.days button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.preview { margin: 10px 0 0; font-size: 13px; }
+.checks { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 12px; }
+.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.check input { width: auto; margin: 0; }
+.mono { font-family: ui-monospace, monospace; }
+.run { display: flex; gap: 10px; align-items: center; font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.run .pill { min-width: 62px; text-align: center; text-transform: capitalize; margin-left: 0; }

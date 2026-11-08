@@ -24,6 +24,9 @@ class Settings:
     # Leave empty to disable the MQTT bridge.
     mqtt_url: str = field(default_factory=lambda: _env("MQTT_URL", ""))
     mqtt_max_payload: int = field(default_factory=lambda: int(_env("MQTT_MAX_PAYLOAD", "4000")))
+    # Run scheduled agent tasks from this API process (on by default; safe with several API
+    # processes, since each run is claimed with a lock).
+    scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))
     # How deep a delegation chain may go (A -> B -> C ...) before it is refused.
     max_delegation_depth: int = field(default_factory=lambda: int(_env("MAX_DELEGATION_DEPTH", "4")))
     # A waiting delegation switches to background mode after this many seconds.

@@ -57,6 +57,8 @@ import { Workspace } from './workspace';
       </nav>
 
       <div class="side-foot">
+        <a class="nav-item" routerLink="/schedules" routerLinkActive="on" title="Scheduler">
+          <hq-icon name="schedule" /><span class="label">Scheduler</span></a>
         <a class="nav-item" routerLink="/settings" routerLinkActive="on" title="Settings">
           <hq-icon name="settings" /><span class="label">Settings</span></a>
       </div>

@@ -55,6 +55,24 @@ export interface Message {
 
 export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'chatgpt';
 
+export type Frequency = 'hourly' | 'daily' | 'weekly' | 'monthly' | 'cron';
+
+export interface ScheduleIn {
+  name: string; agent_id: string; task: string; frequency: Frequency;
+  interval_hours: number; minute: number; hour: number; weekdays: number[]; day_of_month: number;
+  cron: string; timezone: string; enabled: boolean; skip_if_running: boolean;
+}
+
+export interface ScheduleRun {
+  at: string; trigger: 'schedule' | 'manual'; status: string; job_id?: string; thread_id?: string;
+  skipped?: boolean; reason?: string; late?: boolean;
+}
+
+export interface ScheduleInfo extends ScheduleIn {
+  id: string; summary: string; agent_name: string | null; thread_id: string | null;
+  next_run_at: string | null; last_run_at: string | null; last_status: string | null; runs: ScheduleRun[];
+}
+
 export interface ChatGPTStatus {
   connected: boolean; account: string | null; plan_usage: boolean; connected_at: string | null;
 }
@@ -142,6 +160,14 @@ export class Api {
   private http = inject(HttpClient);
 
   agents() { return this.http.get<AgentDef[]>('/api/agents'); }
+  schedules() { return this.http.get<ScheduleInfo[]>('/api/schedules'); }
+  createSchedule(s: ScheduleIn) { return this.http.post<ScheduleInfo>('/api/schedules', s); }
+  updateSchedule(id: string, s: ScheduleIn) { return this.http.put<ScheduleInfo>(`/api/schedules/${id}`, s); }
+  deleteSchedule(id: string) { return this.http.delete(`/api/schedules/${id}`); }
+  runSchedule(id: string) { return this.http.post<ScheduleInfo>(`/api/schedules/${id}/run`, {}); }
+  previewSchedule(s: Partial<ScheduleIn>) {
+    return this.http.post<{ cron: string; summary: string; next: string[] }>('/api/schedules/preview', s);
+  }
   saveAgent(a: AgentDef): Observable<AgentDef> {
     return a.id ? this.http.put<AgentDef>(`/api/agents/${a.id}`, a)
                 : this.http.post<AgentDef>('/api/agents', a);

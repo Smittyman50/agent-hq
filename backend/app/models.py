@@ -144,6 +144,34 @@ class Thread(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
 
 
+class Schedule(SQLModel, table=True):
+    """A task an agent runs on a schedule. Each run is a turn in the schedule's own
+    conversation, so results show up in the sidebar like any chat."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str
+    agent_id: str = Field(foreign_key="agentdef.id", index=True)
+    task: str = Field(default="", sa_column=Column(Text, default=""))
+    # hourly | daily | weekly | monthly | cron. The friendly fields below are kept so the
+    # editor can show them again; `cron` is what actually drives the schedule.
+    frequency: str = "daily"
+    interval_hours: int = 1          # hourly: every N hours
+    minute: int = 0
+    hour: int = 9
+    weekdays: list[int] = Field(default_factory=lambda: [1], sa_column=Column(JSON))  # 0=Sun … 6=Sat
+    day_of_month: int = 1
+    cron: str = "0 9 * * *"
+    timezone: str = "UTC"            # IANA name, e.g. America/New_York
+    enabled: bool = True
+    skip_if_running: bool = True     # don't start a run while the previous one is still going
+    thread_id: str | None = None     # the conversation runs are posted to (created on first run)
+    next_run_at: datetime | None = Field(default=None, index=True)  # UTC
+    last_run_at: datetime | None = None
+    # Recent runs, newest first: [{at, job_id, trigger, skipped?}] (status comes from the job).
+    runs: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
+
+
 class Role(str, Enum):
     user = "user"
     agent = "agent"
