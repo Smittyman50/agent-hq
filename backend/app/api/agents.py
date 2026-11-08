@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 class AgentIn(BaseModel):
     name: str
     description: str = ""
+    pronouns: str = ""
     instructions: str = ""
     provider_id: str | None = None
     model: str = ""

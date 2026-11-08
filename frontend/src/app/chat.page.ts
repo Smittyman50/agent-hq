@@ -46,21 +46,23 @@ interface Activity { ts: string; text: string; kind: string; depth: number; }
             </div>
           }
         </div>
+        <div class="resizer" title="Drag to resize the message box (double-click to reset)"
+             (pointerdown)="startResize($event)" (dblclick)="setComposerHeight(DEFAULT_COMPOSER)"></div>
+        <form class="composer" (ngSubmit)="send()" [style.height.px]="composerHeight()">
+          <textarea name="draft" [(ngModel)]="draft" placeholder="Message…  (Enter to send, Shift+Enter for a new line)"
+            (keydown.enter)="onEnter($event)"></textarea>
+          <button type="submit" [disabled]="!draft.trim()">Send</button>
+        </form>
         @if (activity().length) {
           <details class="activity" open>
             <summary>Live activity ({{ activity().length }})</summary>
             @for (a of activity(); track $index) {
-              <div class="act {{ a.kind }}" [style.padding-left.px]="8 + a.depth * 16">
+              <div class="act {{ a.kind }}" [style.padding-left.px]="8 + a.depth * 16" [title]="a.text">
                 <span class="ts">{{ a.ts | date:'HH:mm:ss' }}</span> {{ a.text }}
               </div>
             }
           </details>
         }
-        <form class="composer" (ngSubmit)="send()">
-          <textarea name="draft" [(ngModel)]="draft" rows="2" placeholder="Message…"
-            (keydown.enter)="onEnter($event)"></textarea>
-          <button type="submit" [disabled]="!draft.trim()">Send</button>
-        </form>
       } @else {
         <div class="start">
           <hq-icon name="logo" [size]="40" />
@@ -137,6 +139,38 @@ export class ChatPage implements OnInit, OnDestroy {
     return req;
   });
   draft = '';
+
+  // The message box's height: drag the line above it to resize; remembered per browser.
+  readonly DEFAULT_COMPOSER = 76;
+  composerHeight = signal(this.loadComposerHeight());
+
+  startResize(e: PointerEvent) {
+    e.preventDefault();
+    const startY = e.clientY, startH = this.composerHeight();
+    const box = (e.target as HTMLElement).closest('.conversation') as HTMLElement | null;
+    const max = Math.max(120, (box?.clientHeight ?? 800) * 0.7);
+    const move = (ev: PointerEvent) =>
+      this.composerHeight.set(Math.round(Math.min(max, Math.max(56, startH + startY - ev.clientY))));
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      this.setComposerHeight(this.composerHeight());
+    };
+    document.body.classList.add('resizing');
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  setComposerHeight(h: number) {
+    this.composerHeight.set(h);
+    try { localStorage.setItem('ahq.composerHeight', String(h)); } catch { /* ignore */ }
+  }
+
+  private loadComposerHeight() {
+    try { return Number(localStorage.getItem('ahq.composerHeight')) || this.DEFAULT_COMPOSER; }
+    catch { return this.DEFAULT_COMPOSER; }
+  }
 
   desktopAgents = computed(() => this.agents().filter(a => a.desktop_url));
   thread = computed(() => this.threads().find(t => t.id === this.threadId()));

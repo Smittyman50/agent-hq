@@ -51,7 +51,12 @@ import { Avatar } from './avatar';
             }
           </div>
         </div>
-        <label>Name<input name="name" [(ngModel)]="d.name" required></label>
+        <div class="model-row">
+          <label>Name<input name="name" [(ngModel)]="d.name" required></label>
+          <label>Pronouns <small>how teammates refer to them</small>
+            <input name="pronouns" [(ngModel)]="d.pronouns" placeholder="e.g. he/him, she/her, they/them" list="pronoun-list"></label>
+          <datalist id="pronoun-list"><option value="he/him"><option value="she/her"><option value="they/them"><option value="it/its"></datalist>
+        </div>
         <label>Description <small>shown to other agents deciding whom to delegate to</small>
           <input name="description" [(ngModel)]="d.description"></label>
         <label>Instructions

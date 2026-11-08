@@ -7,8 +7,11 @@ import { inject } from '@angular/core';
  * Lucide (ISC license, https://lucide.dev), plus Agent HQ's own logo mark.
  */
 const ICONS: Record<string, string> = {
-  logo: '<circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/>'
-      + '<path d="M11 7 6 16"/><path d="m13 7 5 9"/><path d="M7.2 18h9.6"/><circle cx="12" cy="13.5" r="1.4"/>',
+  // Agent HQ's mark (also public/favicon.svg): a blue team of three around a red hub.
+  logo: '<g style="stroke:#5aa9e6"><circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="18" r="2.2"/>'
+      + '<circle cx="19" cy="18" r="2.2"/><path d="M11 7 6 16"/><path d="m13 7 5 9"/><path d="M7.2 18h9.6"/></g>'
+      + '<g style="stroke:#e5534b"><path d="M12 7.2v4.4"/><path d="m6.9 16.9 3.6-2.3"/><path d="m17.1 16.9-3.6-2.3"/></g>'
+      + '<circle cx="12" cy="13.4" r="1.9" style="stroke:#e5534b;fill:#e5534b"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',

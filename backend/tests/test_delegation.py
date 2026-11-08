@@ -61,13 +61,18 @@ async def test_delegated_results_are_attributed_and_tools_announced(hq, monkeypa
 
     SCRIPTS["boss-inspect"] = inspecting_boss
     await hq.start_worker()
-    _, _, t = await _team(hq, boss="fake:boss-inspect", worker_name="Scarlett")
+    w = await hq.agent(name="Scarlett", description="Does research", model="fake:worker", pronouns="she/her")
+    b = await hq.agent(name="Lead", description="Supervisor", model="fake:boss-inspect", delegates=[w["id"]])
+    t = await hq.thread(b["id"])
     await hq.say(t["id"], "check the feeds")
     await hq.wait_agent_replies(t["id"], 1)
     # The delegator is told whose report this is, and to say so.
     assert seen["result"]["from"] == "Scarlett" and seen["result"]["status"] == "done"
     assert "Scarlett's report to you, not your own work" in seen["result"]["note"]
     assert "Never present a team" in seen["rules"]
+    # Pronouns, when set, reach the delegator in the roster and with the result.
+    assert "- Scarlett: Does research (pronouns: she/her)" in seen["rules"]
+    assert "Refer to Scarlett as she/her." in seen["result"]["note"]
     # Each run announces which tool servers the agent has (none here), so a missing
     # browser shows up in the activity log instead of as "I can't browse".
     tools = [e for e in events if e["type"] == "agent_tools"]

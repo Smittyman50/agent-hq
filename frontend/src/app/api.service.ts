@@ -6,6 +6,7 @@ export interface AgentDef {
   id?: string;
   name: string;
   description: string;
+  pronouns?: string;       // how teammates refer to this agent, e.g. he/him
   instructions: string;
   provider_id: string | null;
   model: string;
@@ -120,7 +121,7 @@ export interface Job {
 export interface HqEvent { type: string; [k: string]: any; }
 
 export function blankAgent(): AgentDef {
-  return { name: '', description: '', instructions: '', provider_id: null, model: '',
+  return { name: '', description: '', pronouns: '', instructions: '', provider_id: null, model: '',
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
     fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true };

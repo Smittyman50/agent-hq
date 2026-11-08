@@ -378,6 +378,8 @@ Changing the embedding model re-embeds existing memories in the background.
 
 ## Avatars
 
+Each agent can also have **pronouns** (he/him, she/her, they/them…). Teammates see them in the roster and with delegated results, so a supervisor refers to them correctly.
+
 Give each agent a face on the **Settings → Agents** page: **Upload avatar** accepts a GIF (animated is fine), PNG, JPEG or WebP image up to 3 MB (`AHQ_AVATAR_MAX_BYTES`). Avatars appear in the agent list, the conversation list, the chat header, next to each reply, and on desktop-help banners. Agents without one get their initials on a colour derived from their name.
 
 - **Storage:** images are kept in the database, so every machine serves the same ones, and they're included in agent export and import.

@@ -270,18 +270,20 @@ DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools 
                   "back; you will be woken when they do.")
 
 
-def attributed(name: str, result: dict) -> dict:
+def attributed(name: str, result: dict, pronouns: str = "") -> dict:
     """A delegate's result, labelled so the delegator relays it as theirs, not its own."""
+    refer = f" Refer to {name} as {pronouns.strip()}." if pronouns.strip() else ""
     return {"from": name, **result,
             "note": f"This is {name}'s report to you, not your own work. Tell whoever asked "
-                    f"you that you delegated this to {name} and what {name} reported."}
+                    f"you that you delegated this to {name} and what {name} reported.{refer}"}
 
 
 def team_roster(agent: AgentDef) -> str:
     team = allowed_delegates(agent)
     if not team:
         return ""
-    lines = [f"- {t.name}: {t.description or '(no description)'}" for t in team]
+    lines = [f"- {t.name}: {t.description or '(no description)'}"
+             + (f" (pronouns: {t.pronouns.strip()})" if t.pronouns.strip() else "") for t in team]
     return GENERIC_RULES + "\nTeam members you can delegate to:\n" + "\n".join(lines)
 
 
@@ -519,7 +521,9 @@ class Runtime:
         return (f"[Background job {job.id} finished]\n"
                 f"{assignee.name} was asked: {job.task}\n"
                 f"Result: {result.model_dump_json()}\n\n"
-                f"Report this outcome to the user now as {assignee.name}'s work: say you had "
+                + (f"({assignee.name}'s pronouns: {assignee.pronouns.strip()})\n"
+                   if assignee.pronouns.strip() else "")
+                + f"Report this outcome to the user now as {assignee.name}'s work: say you had "
                 f"asked {assignee.name} and what they reported, in your own words. Do not start "
                 "new work unless the result requires it.")
 
@@ -851,11 +855,11 @@ class Runtime:
             async with released_slot():
                 result = await rt.broker.wait_result(job.id, settings.delegate_wait_timeout)
             if result is not None:
-                return attributed(target.name, result)
+                return attributed(target.name, result, target.pronouns)
             # Taking too long: convert to a background job so the result still gets reported.
             job = update_job(job.id, background=True)
             if job.status in (JobStatus.done, JobStatus.failed) and job.result:
-                return attributed(target.name, job.result)
+                return attributed(target.name, job.result, target.pronouns)
             return {"status": "queued", "job_id": job.id,
                     "summary": f"{target.name} is still working after "
                     f"{int(settings.delegate_wait_timeout)}s. It now runs in the background; you "

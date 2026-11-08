@@ -55,6 +55,8 @@ class AgentDef(SQLModel, table=True):
     name: str = Field(index=True, unique=True)
     # Shown to other agents when they decide whom to delegate to.
     description: str = Field(default="", sa_column=Column(Text, default=""))
+    # How teammates refer to this agent, e.g. "he/him", "she/her", "they/them".
+    pronouns: str = ""
     # The system instructions for this agent.
     instructions: str = Field(default="", sa_column=Column(Text, default=""))
     # The model provider (a ModelProvider row) and a model name it offers, e.g. "qwen3:14b".
