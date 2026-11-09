@@ -60,7 +60,7 @@ import { Avatar } from './avatar';
         <label>Description <small>shown to other agents deciding whom to delegate to</small>
           <input name="description" [(ngModel)]="d.description"></label>
         <label>Instructions
-          <textarea name="instructions" rows="10" [(ngModel)]="d.instructions"
+          <textarea name="instructions" rows="18" [(ngModel)]="d.instructions"
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
         <hq-model-picker label="Model" [providers]="providers()"
           [(providerId)]="d.provider_id" [(modelName)]="d.model" />
