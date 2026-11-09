@@ -31,7 +31,8 @@ export interface AgentDef {
 }
 
 export type LearningMode = 'off' | 'propose' | 'auto';
-export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number; last_used_at: string | null; }
+export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number;
+  up?: number; down?: number; last_used_at: string | null; }
 export interface SkillVersion { id: string; version: number; title: string; when_to_use: string; body: string;
   tools: string[]; script: string | null; created_by: string; note: string; created_at: string; }
 export interface Skill {
@@ -249,6 +250,32 @@ export function blankServer(): ToolServer {
     env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
 }
 
+export interface MessageFeedback { rating: 'up' | 'down'; comment: string; }
+
+export interface LearningSettings {
+  reflect: 'off' | 'signals' | 'every_job';
+  provider_id: string | null;
+  model: string;
+  on_feedback: boolean;
+  on_correction: boolean;
+  on_failure: boolean;
+  min_tool_calls: number;
+  wait_minutes: number;
+  feedback_wait_minutes: number;
+  max_per_day: number;
+  lessons_to_memory: boolean;
+}
+
+export interface Reflection {
+  id: string; job_id: string; thread_id: string; agent_id: string; agent_name: string;
+  reasons: string[]; status: 'waiting' | 'running' | 'done' | 'skipped' | 'failed';
+  due_at: string; summary: string; proposal_ids: string[]; memory_ids: string[];
+  model: string; error: string | null; created_at: string; started_at: string | null; finished_at: string | null;
+  proposals: { id: string; name: string; title: string; status: string; revision: boolean }[];
+}
+
+export interface ReflectionLog { reflections: Reflection[]; ran_today: number; max_per_day: number; }
+
 @Injectable({ providedIn: 'root' })
 export class Api {
   private http = inject(HttpClient);
@@ -363,6 +390,15 @@ export class Api {
   decideSkillProposal(id: string, d: { approve: boolean; note?: string; title?: string; when_to_use?: string; body?: string; scope?: string }) {
     return this.http.post<SkillProposal>(`/api/skill-proposals/${id}/decide`, d);
   }
+
+  rateMessage(id: string, rating: 'up' | 'down' | null, comment = '') {
+    return this.http.post<{ id: string; feedback: MessageFeedback | null }>(`/api/messages/${id}/feedback`, { rating, comment });
+  }
+  learningSettings() { return this.http.get<LearningSettings>('/api/learning/settings'); }
+  saveLearningSettings(x: LearningSettings) { return this.http.put<LearningSettings>('/api/learning/settings', x); }
+  reflections(limit = 50) { return this.http.get<ReflectionLog>('/api/learning/reflections', { params: { limit } }); }
+  runReflection(id: string) { return this.http.post(`/api/learning/reflections/${id}/run`, {}); }
+  cancelReflection(id: string) { return this.http.delete(`/api/learning/reflections/${id}`); }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

@@ -148,7 +148,7 @@ def finish_job(job_id: str | None, outcome: str) -> None:
 
 
 def stats(skill_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    """{skill id: {uses, done, partial, failed, last_used_at}}"""
+    """{skill id: {uses, done, partial, failed, up, down, last_used_at}}"""
     with db.session() as s:
         q = select(SkillUse)
         if skill_ids is not None:
@@ -157,9 +157,11 @@ def stats(skill_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for u in rows:
         g = out.setdefault(u.skill_id, {"uses": 0, "done": 0, "partial": 0, "failed": 0,
-                                        "pending": 0, "last_used_at": None})
+                                        "pending": 0, "up": 0, "down": 0, "last_used_at": None})
         g["uses"] += 1
         g[u.outcome] = g.get(u.outcome, 0) + 1
+        if u.rating in ("up", "down"):
+            g[u.rating] += 1
         if g["last_used_at"] is None or u.at > g["last_used_at"]:
             g["last_used_at"] = u.at
     return out

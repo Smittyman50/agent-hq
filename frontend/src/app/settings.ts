@@ -11,6 +11,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'usage', label: 'Usage', icon: 'usage' },
   { path: 'memory', label: 'Memory', icon: 'memory' },
   { path: 'skills', label: 'Skills', icon: 'skills' },
+  { path: 'learning', label: 'Learning', icon: 'learning' },
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'events', label: 'Events', icon: 'events' },
   { path: 'system', label: 'System', icon: 'system' },

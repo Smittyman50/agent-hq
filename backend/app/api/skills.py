@@ -21,7 +21,7 @@ def _names() -> dict[str, str]:
 
 def _out(k: Skill, st: dict | None = None, names: dict | None = None) -> dict[str, Any]:
     g = (st or {}).get(k.id) or {"uses": 0, "done": 0, "partial": 0, "failed": 0, "pending": 0,
-                                 "last_used_at": None}
+                                 "up": 0, "down": 0, "last_used_at": None}
     finished = g["done"] + g["partial"] + g["failed"]
     return {**k.model_dump(), "agent": (names or {}).get(k.agent_id or "", ""), "stats": g,
             "success_rate": round(g["done"] / finished, 2) if finished else None}

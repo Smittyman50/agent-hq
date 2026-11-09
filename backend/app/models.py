@@ -231,6 +231,7 @@ class SkillProposal(SQLModel, table=True):
     script: str | None = None
     scope: str = "team"
     reason: str = Field(default="", sa_column=Column(Text, default=""))
+    source: str = "agent"  # agent (propose_skill) | reflection (looking back at a job)
     agent_id: str = Field(index=True)
     agent_name: str = ""
     thread_id: str | None = None
@@ -254,7 +255,46 @@ class SkillUse(SQLModel, table=True):
     job_id: str | None = Field(default=None, index=True)
     thread_id: str | None = None
     outcome: str = Field(default="pending", index=True)  # pending | done | partial | failed
+    rating: str | None = None  # your rating of the reply that came out of the job: up | down
     at: datetime = Field(default_factory=_now)
+
+
+class Feedback(SQLModel, table=True):
+    """Your 👍 / 👎 on an agent's reply, with an optional note (what it should have done)."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    message_id: str = Field(index=True)
+    thread_id: str = Field(index=True)
+    job_id: str | None = Field(default=None, index=True)
+    agent_id: str | None = Field(default=None, index=True)
+    rating: str = "up"  # up | down
+    comment: str = Field(default="", sa_column=Column(Text, default=""))
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class Reflection(SQLModel, table=True):
+    """An agent looking back at a finished job to learn from it: new or better skills
+    (as proposals, under its learning mode) and lessons for its memory."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    job_id: str = Field(index=True)
+    thread_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    # Why it's worth a look: ["failed", "6 tool calls", "you rated it down", ...]
+    reasons: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # waiting | running | done | skipped | failed
+    status: str = Field(default="waiting", index=True)
+    due_at: datetime = Field(default_factory=_now, index=True)
+    summary: str = Field(default="", sa_column=Column(Text, default=""))
+    proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    memory_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    model: str = ""
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=_now)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class ToolApproval(SQLModel, table=True):

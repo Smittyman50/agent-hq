@@ -52,7 +52,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import approvals, db, skills, slots, subagents
+from . import approvals, db, learning, skills, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -115,6 +115,31 @@ class RunDeps:
     depth: int = 0              # 0 = the agent you are chatting with
     chain: list[str] = field(default_factory=list)  # agent IDs in the current chain
     job_id: str | None = None   # the job being executed
+    # The tool calls made in this run, kept with the job so a reflection can see them.
+    trace: list[dict] = field(default_factory=list)
+
+
+def _brief(value: Any, n: int = 300) -> str:
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+    except Exception:
+        text = str(value)
+    return text if len(text) <= n else text[:n] + "…"
+
+
+def save_trace(job_id: str | None, trace: list[dict]) -> None:
+    """Keep a job's tool calls (the last 60, abbreviated) with the job."""
+    if not job_id or not trace:
+        return
+    try:
+        with db.session() as s:
+            job = s.get(Job, job_id)
+            if job is not None:
+                job.meta = {**(job.meta or {}), "trace": trace[-60:], "tool_calls": len(trace)}
+                s.add(job)
+                s.commit()
+    except Exception as e:  # never let bookkeeping break a run
+        log.warning("could not save the tool trace of job %s: %s", job_id, e)
 
 
 GENERIC_RULES = """\
@@ -468,12 +493,16 @@ class ObservedToolset(WrapperToolset):
             return DESKTOP_PAUSED
         await self.broker.publish(d.thread_id, "tool_call", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, args=tool_args, depth=d.depth)
+        step = {"tool": name, "args": _brief(tool_args)}
+        d.trace.append(step)
         try:
             result = await super().call_tool(name, tool_args, ctx, tool)
         except Exception as e:
+            step["error"] = _brief(str(e))
             await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
                                       agent_id=d.agent_id, tool=name, error=str(e), depth=d.depth)
             raise
+        step["result"] = _brief(result)
         await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, preview=str(result)[:500],
                                   depth=d.depth)
@@ -548,6 +577,7 @@ class Runtime:
             raise LookupError(f"thread {thread_id} not found")
         owner = load_agent(thread.agent_id)
         if from_user:
+            learning.user_said(thread_id, prompt)  # a correction? the last job gets a look
             await self.save_message(thread_id, Role.user, prompt)
         elif event_text:
             await self.save_message(thread_id, Role.event, event_text, **meta)
@@ -610,7 +640,10 @@ class Runtime:
         history = ModelMessagesTypeAdapter.validate_python(state.get("history") or [])
         deps = RunDeps(thread_id=thread_id, agent_id=agent.id, depth=0, chain=[agent.id],
                        job_id=state.get("job_id"))
-        reply, messages = await self.run_agent(agent, state["prompt"], deps, history=history)
+        try:
+            reply, messages = await self.run_agent(agent, state["prompt"], deps, history=history)
+        finally:
+            save_trace(deps.job_id, deps.trace)
         return {"reply": reply,
                 "history": ModelMessagesTypeAdapter.dump_python(messages, mode="json")}
 
@@ -629,9 +662,11 @@ class Runtime:
                 {"agent_id": job.assignee_agent_id, "prompt": job.task, "job_id": job.id},
                 config={"configurable": {"thread_id": thread_id}})
             reply = out["reply"]
-            await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id)
+            await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id,
+                                    job_id=job.id)
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
             skills.finish_job(job.id, "done")
+            learning.job_finished(job.id, "done")
             if (job.meta or {}).get("kind") == "mqtt":
                 await self._capture_event(job, reply)
         except Exception as e:
@@ -639,6 +674,7 @@ class Runtime:
             await self.save_message(thread_id, Role.event, f"Error: {e}", kind="error")
             update_job(job.id, status=JobStatus.failed, error=str(e), finished_at=_now())
             skills.finish_job(job.id, "failed")
+            learning.job_finished(job.id, "failed")
         finally:
             keeper.cancel()
             with contextlib.suppress(LockError):
@@ -675,7 +711,10 @@ class Runtime:
             await self._finish_task(job, result)
             return
         try:
-            result, _ = await self.run_agent(assignee, job.task, deps, as_worker=True)
+            try:
+                result, _ = await self.run_agent(assignee, job.task, deps, as_worker=True)
+            finally:
+                save_trace(job.id, deps.trace)
             result = as_work_result(result)
             update_job(job.id, status=JobStatus.done, result=result.model_dump(),
                        finished_at=_now())
@@ -688,6 +727,7 @@ class Runtime:
 
     async def _finish_task(self, job: Job, result: WorkResult) -> None:
         skills.finish_job(job.id, result.status)
+        learning.job_finished(job.id, result.status)
         assignee = load_agent(job.assignee_agent_id)
         requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
         await self.broker.publish(job.origin_thread_id, "delegation_finished", job_id=job.id,
@@ -1191,65 +1231,80 @@ class Runtime:
                 only_for_me: true for a skill only you should see (default: the whole team).
             """
             me = load_agent(ctx.deps.agent_id)
-            mode = skills.mode_of(me)
-            if mode == LearningMode.off:
-                return {"status": "refused", "summary": "You can't propose skills."}
-            base = None
-            if revise:
-                base = skills.find(revise, me)
-                if base is None:
-                    return {"status": "refused", "summary": f"There's no skill named {revise!r} to revise."}
-                name = base.name
-            elif skills.find(name) is not None:
-                return {"status": "refused", "summary": f"A skill named {name} exists; pass revise={name!r} "
-                        "to improve it, or choose another name."}
-            why = skills.check_fields(name, title, when_to_use, steps)
-            if why:
-                return {"status": "refused", "summary": f"Not proposed: {why}."}
-            with db.session() as s:
-                open_ = s.exec(select(SkillProposal).where(SkillProposal.agent_id == me.id,
-                                                           SkillProposal.status == "pending")).all()
-            if any(p.name == name for p in open_):
-                return {"status": "refused", "summary": f"You already have a proposal for {name} waiting."}
-            if len(open_) >= 5:
-                return {"status": "refused", "summary": "You have 5 proposals waiting; wait for the user."}
-            p = SkillProposal(skill_id=base.id if base else None, name=name, title=title, when_to_use=when_to_use,
-                              body=steps, tools=list(tools or []), script=script,
-                              scope="agent" if only_for_me else (base.scope if base else "team"),
-                              reason=reason.strip(), agent_id=me.id, agent_name=me.name,
-                              thread_id=ctx.deps.thread_id, job_id=ctx.deps.job_id,
-                              base_version=base.version if base else None)
-            what = f"an improvement to the skill {name}" if base else f"a new skill: {title}"
-            if mode == LearningMode.auto:
-                k = skills.apply_proposal(p, by=me.name)
-                p.status, p.decided_at, p.skill_id = "applied", _now(), k.id
-                msg = await rt.save_message(ctx.deps.thread_id, Role.event,
-                                            f"{me.name} added {what} (learning mode: auto)",
-                                            agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
-                                            status="applied", agent=me.name, depth=ctx.deps.depth)
-                p.message_id = msg.id
-                with db.session() as s:
-                    s.add(p)
-                    s.commit()
-                await subagents.notify({"type": "skill_applied", "proposal_id": p.id, "agent": me.name,
-                                        "skill": name, "version": k.version})
-                return {"status": "applied", "summary": f"Saved {name} (version {k.version})."}
-            msg = await rt.save_message(ctx.deps.thread_id, Role.event, f"{me.name} proposes {what}",
+            return await rt.submit_skill_proposal(
+                me, name=name, title=title, when_to_use=when_to_use, steps=steps, reason=reason,
+                revise=revise, tools=tools, script=script, only_for_me=only_for_me,
+                thread_id=ctx.deps.thread_id, job_id=ctx.deps.job_id, depth=ctx.deps.depth)
+
+        tools = [load_skill, list_skills] + ([propose_skill] if learning != LearningMode.off else [])
+        return FunctionToolset(tools, id="skills")
+
+    async def submit_skill_proposal(self, me: AgentDef, *, name: str, title: str, when_to_use: str,
+                                    steps: str, reason: str, revise: str | None = None,
+                                    tools: list[str] | None = None, script: str | None = None,
+                                    only_for_me: bool = False, thread_id: str,
+                                    job_id: str | None = None, depth: int = 0,
+                                    source: str = "agent") -> dict:
+        """A new skill or an improvement, from an agent's propose_skill or a reflection:
+        sent for your review, or applied at once in auto mode."""
+        via_note = " (from looking back at this conversation)" if source == "reflection" else ""
+        mode = skills.mode_of(me)
+        if mode == LearningMode.off:
+            return {"status": "refused", "summary": "You can't propose skills."}
+        base = None
+        if revise:
+            base = skills.find(revise, me)
+            if base is None:
+                return {"status": "refused", "summary": f"There's no skill named {revise!r} to revise."}
+            name = base.name
+        elif skills.find(name) is not None:
+            return {"status": "refused", "summary": f"A skill named {name} exists; pass revise={name!r} "
+                    "to improve it, or choose another name."}
+        why = skills.check_fields(name, title, when_to_use, steps)
+        if why:
+            return {"status": "refused", "summary": f"Not proposed: {why}."}
+        with db.session() as s:
+            open_ = s.exec(select(SkillProposal).where(SkillProposal.agent_id == me.id,
+                                                       SkillProposal.status == "pending")).all()
+        if any(p.name == name for p in open_):
+            return {"status": "refused", "summary": f"You already have a proposal for {name} waiting."}
+        if len(open_) >= 5:
+            return {"status": "refused", "summary": "You have 5 proposals waiting; wait for the user."}
+        p = SkillProposal(skill_id=base.id if base else None, name=name, title=title, when_to_use=when_to_use,
+                          body=steps, tools=list(tools or []), script=script,
+                          scope="agent" if only_for_me else (base.scope if base else "team"),
+                          reason=reason.strip(), source=source, agent_id=me.id, agent_name=me.name,
+                          thread_id=thread_id, job_id=job_id,
+                          base_version=base.version if base else None)
+        what = f"an improvement to the skill {name}" if base else f"a new skill: {title}"
+        if mode == LearningMode.auto:
+            k = skills.apply_proposal(p, by=me.name)
+            p.status, p.decided_at, p.skill_id = "applied", _now(), k.id
+            msg = await self.save_message(thread_id, Role.event,
+                                        f"{me.name} added {what} (learning mode: auto){via_note}",
                                         agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
-                                        status="pending", agent=me.name, depth=ctx.deps.depth)
+                                        status="applied", agent=me.name, depth=depth)
             p.message_id = msg.id
             with db.session() as s:
                 s.add(p)
                 s.commit()
-            await rt.broker.publish(ctx.deps.thread_id, "skill_proposed", proposal_id=p.id,
-                                    agent=me.name, skill=name, depth=ctx.deps.depth)
-            await subagents.notify({"type": "skill_proposal", "proposal_id": p.id, "agent": me.name,
-                                    "skill": name, "title": title, "revision": bool(base),
-                                    "reason": reason, "link": subagents.link(f"/requests/skills?skill={p.id}")})
-            return {"status": "pending", "summary": "Sent to the user for review. Carry on with the task."}
-
-        tools = [load_skill, list_skills] + ([propose_skill] if learning != LearningMode.off else [])
-        return FunctionToolset(tools, id="skills")
+            await subagents.notify({"type": "skill_applied", "proposal_id": p.id, "agent": me.name,
+                                    "skill": name, "version": k.version})
+            return {"status": "applied", "summary": f"Saved {name} (version {k.version}).", "proposal_id": p.id}
+        msg = await self.save_message(thread_id, Role.event, f"{me.name} proposes {what}{via_note}",
+                                    agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
+                                    status="pending", agent=me.name, depth=depth)
+        p.message_id = msg.id
+        with db.session() as s:
+            s.add(p)
+            s.commit()
+        await self.broker.publish(thread_id, "skill_proposed", proposal_id=p.id,
+                                agent=me.name, skill=name, depth=depth)
+        await subagents.notify({"type": "skill_proposal", "proposal_id": p.id, "agent": me.name,
+                                "skill": name, "title": title, "revision": bool(base),
+                                "reason": reason, "link": subagents.link(f"/requests/skills?skill={p.id}")})
+        return {"status": "pending", "summary": "Sent to the user for review. Carry on with the task.",
+                "proposal_id": p.id}
 
     async def decide_skill_proposal(self, proposal_id: str, approve: bool, *, note: str = "",
                                     edits: dict[str, Any] | None = None, by: str = "you") -> SkillProposal:

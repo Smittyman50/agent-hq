@@ -4,7 +4,7 @@ import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Api, DesktopState, HqEvent, Message } from './api.service';
+import { Api, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Markdown } from './markdown';
@@ -101,6 +101,27 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
               } @else if (m.role === 'event') { <div class="who">activity</div> }
               @if (m.role === 'agent') {
                 <div class="body rich"><hq-md [text]="m.content" /></div>
+                @if (m.meta?.['job_id']) {
+                  <div class="rate" [class.rated]="!!fb(m)">
+                    <button type="button" class="rate-btn" [class.on]="fb(m)?.rating === 'up'"
+                      [title]="fb(m)?.rating === 'up' ? 'Clear your rating' : 'Good reply'" (click)="rate(m, 'up')">
+                      <hq-icon name="thumbs-up" [size]="14" /></button>
+                    <button type="button" class="rate-btn down" [class.on]="fb(m)?.rating === 'down'"
+                      [title]="fb(m)?.rating === 'down' ? 'Clear your rating' : 'Not right: say what it should have done'"
+                      (click)="rate(m, 'down')"><hq-icon name="thumbs-down" [size]="14" /></button>
+                    @if (fb(m)?.comment && noteFor() !== m.id) {
+                      <button type="button" class="rate-note" title="Edit your note" (click)="openNote(m)">“{{ fb(m)!.comment }}”</button>
+                    }
+                  </div>
+                  @if (noteFor() === m.id) {
+                    <form class="rate-form" (ngSubmit)="saveNote(m)">
+                      <input name="ratenote" [(ngModel)]="noteDraft" autofocus
+                        [placeholder]="'What should ' + agentName(m.agent_id) + ' have done? (optional; it learns from this)'">
+                      <button type="submit">Save</button>
+                      <button type="button" class="ghost" (click)="noteFor.set(null)">Skip</button>
+                    </form>
+                  }
+                }
               } @else {
                 <div class="body">{{ m.content }}</div>
               }
@@ -201,6 +222,34 @@ export class ChatPage implements OnInit, OnDestroy {
     return req;
   });
   draft = '';
+
+  // Your 👍 / 👎 on replies; a 👎 opens a note: what the agent should have done.
+  noteFor = signal<string | null>(null);
+  noteDraft = '';
+  fb(m: Message): MessageFeedback | null { return (m.meta?.['feedback'] as MessageFeedback) ?? null; }
+  rate(m: Message, rating: 'up' | 'down') {
+    const clear = this.fb(m)?.rating === rating;
+    const next = clear ? null : rating;
+    const comment = clear ? '' : (rating === 'down' ? (this.fb(m)?.comment ?? '') : '');
+    this.applyFeedback(m.id, next ? { rating: next, comment } : null);
+    this.api.rateMessage(m.id, next, comment).subscribe({ error: () => this.reload() });
+    if (next === 'down') this.openNote(m); else if (this.noteFor() === m.id) this.noteFor.set(null);
+  }
+  openNote(m: Message) { this.noteDraft = this.fb(m)?.comment ?? ''; this.noteFor.set(m.id); }
+  saveNote(m: Message) {
+    const rating = this.fb(m)?.rating ?? 'down';
+    const comment = this.noteDraft.trim();
+    this.applyFeedback(m.id, { rating, comment });
+    this.api.rateMessage(m.id, rating, comment).subscribe({ error: () => this.reload() });
+    this.noteFor.set(null);
+  }
+  private reload() {
+    const id = this.threadId();
+    if (id) this.api.messages(id).subscribe(m => this.messages.set(m));
+  }
+  private applyFeedback(id: string, feedback: MessageFeedback | null) {
+    this.messages.update(ms => ms.map(x => x.id === id ? { ...x, meta: { ...(x.meta ?? {}), feedback } } : x));
+  }
 
   // Delegations between agents show as collapsed threads; these are the expanded ones.
   private opened = signal<Set<string>>(new Set());

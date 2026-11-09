@@ -24,6 +24,7 @@ function blankSkill(): Skill {
           <span class="sub"><code>{{ k.name }}</code> · v{{ k.version }}
             · {{ k.stats?.uses ? (k.stats!.uses + ' use' + (k.stats!.uses === 1 ? '' : 's')) : 'unused' }}
             @if (k.success_rate !== null && k.success_rate !== undefined) { · {{ (k.success_rate * 100).toFixed(0) }}% done }
+            @if (k.stats?.up || k.stats?.down) { · 👍 {{ k.stats!.up }} 👎 {{ k.stats!.down }} }
             @if (k.scope === 'agent') { · {{ k.agent }} only }</span>
         </button>
       } @empty { <p class="hint">No skills yet. Agents propose them as they learn (Requests inbox), or write one here.</p> }
@@ -35,7 +36,8 @@ function blankSkill(): Skill {
           @if (d.status === 'retired') { <span class="pill failed">retired</span> }</h2>
         @if (d.id && d.stats) {
           <p class="muted small">Used {{ d.stats.uses }} time(s): {{ d.stats.done }} done, {{ d.stats.partial }} partial,
-            {{ d.stats.failed }} failed @if (d.stats.last_used_at) { · last {{ d.stats.last_used_at | date:'MMM d, h:mm a' }} }
+            {{ d.stats.failed }} failed @if (d.stats.up || d.stats.down) { · you rated 👍 {{ d.stats.up }} 👎 {{ d.stats.down }} }
+            @if (d.stats.last_used_at) { · last {{ d.stats.last_used_at | date:'MMM d, h:mm a' }} }
             · created by {{ d.created_by }}</p>
         }
         <div class="limit-grid two">

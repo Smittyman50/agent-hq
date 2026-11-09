@@ -218,12 +218,48 @@ def proposer(revise: str | None = None):
     return fn
 
 
+def busy(calls: int = 3):
+    """Calls list_skills `calls` times (tool calls that cost nothing), then replies."""
+    def fn(messages, info):
+        n = len([r for r in _tool_returns(messages) if r.tool_name == "list_skills"])
+        if n < calls and "list_skills" in {t.name for t in info.function_tools}:
+            return ModelResponse(parts=[ToolCallPart("list_skills", {"query": f"pass {n + 1}"})])
+        return ModelResponse(parts=[TextPart(f"Done after {n} looks: {_last_prompt(messages)[:40]}")])
+    return fn
+
+
+REFLECTED: list[str] = []
+
+
+def reflector(messages, info):
+    """Looks back: a lesson from your 👎 note or correction, a skill after multi-step work."""
+    prompt = _last_prompt(messages)
+    REFLECTED.append(prompt)
+    why = prompt.split("\n", 1)[0]
+    lessons, ideas = [], []
+    m = re.search(r"you rated it 👎: “([^”]+)”", why)
+    if m:
+        lessons.append({"text": f"Mike wants: {m.group(1)}", "kind": "preference"})
+    c = re.search(r"you corrected it: “([^”]+)”", why)
+    if c:
+        lessons.append({"text": f"Correction from Mike: {c.group(1)}", "kind": "preference"})
+    if "tool calls" in why:
+        ideas.append({"name": "survey_skills", "title": "Survey the team's skills",
+                      "when_to_use": "When asked which skills the team has.",
+                      "steps": "1. Call list_skills.\n2. Call it again with a narrower query.\n3. Summarise.",
+                      "reason": "It took several calls to get right today."})
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
+        "summary": "I looked back at this.", "skills": ideas, "lessons": lessons})])
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
            "requester": requester, "retrying": retrying,
            "coder": coder(1), "coder-2": coder(2),
-           "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups")}
+           "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups"),
+           "busy": busy(3), "reflector": reflector,
+           "echo": lambda m, i: ModelResponse(parts=[TextPart(f"You said: {_last_prompt(m)[:80]}")])}
 
 
 @pytest.fixture(autouse=True)
