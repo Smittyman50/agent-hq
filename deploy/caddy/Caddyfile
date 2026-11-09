@@ -7,7 +7,7 @@
 # Caddy gets the certificate, renews it before it expires (step-ca's default lifetime is
 # 24 hours), and redirects http:// to https://.
 {
-	email {$ACME_EMAIL:admin@home.arpa}
+	email {$ACME_EMAIL}
 	acme_ca {$ACME_CA}
 	acme_ca_root /etc/caddy/root_ca.crt
 }
