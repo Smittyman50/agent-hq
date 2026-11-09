@@ -328,6 +328,7 @@ async def pg_mem(hq, pglite_url, monkeypatch):
     SQLModel.metadata.drop_all(db.engine())
     db.init_db()
     assert memory.pgvector_enabled()
+    hq.sign_in()
     yield hq
 
 

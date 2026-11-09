@@ -1,0 +1,2 @@
+# your step-ca root certificate (copy it here; see the README)
+root_ca.crt

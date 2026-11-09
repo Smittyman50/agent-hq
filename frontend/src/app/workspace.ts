@@ -1,6 +1,7 @@
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { AgentDef, Api, Thread } from './api.service';
+import { Session } from './session';
 
 /**
  * State the sidebar and the chat page share: agents, conversations, and which agents
@@ -20,11 +21,22 @@ export class Workspace {
   private lastSeen = signal<Record<string, number>>({});
   private now = signal(Date.now());
 
+  private session = inject(Session);
+
   constructor() {
-    this.reload();
+    // Load (and keep polling) only while signed in; clear everything on sign-out.
+    effect(() => {
+      if (this.session.user()) {
+        this.reload();
+        this.refreshPending();
+      } else {
+        this.agents.set([]);
+        this.threads.set([]);
+        this.pendingRequests.set(0);
+      }
+    });
     setInterval(() => this.now.set(Date.now()), 1500);
-    this.refreshPending();
-    setInterval(() => this.refreshPending(), 20000);
+    setInterval(() => { if (this.session.user()) this.refreshPending(); }, 20000);
   }
 
   refreshPending() {

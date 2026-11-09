@@ -139,9 +139,12 @@ async def test_job_survives_worker_crash(hq):
     await hq.say(t["id"], "survive this")
 
     import asyncio
-    for _ in range(100):  # wait until A has picked the task up
+
+    from tests.conftest import HANG
+
+    for _ in range(200):  # wait until A is inside the (hanging) model call, not just started
         jobs = hq.jobs()
-        if len(jobs) == 2 and jobs[1].status == JobStatus.running:
+        if len(jobs) == 2 and jobs[1].status == JobStatus.running and HANG["calls"] >= 1:
             break
         await asyncio.sleep(0.05)
     await a.stop(graceful=False)  # crash: no ack

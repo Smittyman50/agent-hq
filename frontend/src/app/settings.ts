@@ -13,6 +13,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'events', label: 'Events', icon: 'events' },
   { path: 'system', label: 'System', icon: 'system' },
+  { path: 'security', label: 'Security', icon: 'lock' },
 ];
 
 /** Settings: a breadcrumb, the list of sections, and the selected section's page. */

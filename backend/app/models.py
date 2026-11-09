@@ -273,6 +273,59 @@ class Job(SQLModel, table=True):
     finished_at: datetime | None = None
 
 
+class User(SQLModel, table=True):
+    """A person who can sign in to the web UI. (Agents and workers never sign in.)"""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    username: str = Field(index=True, sa_column_kwargs={"unique": True})
+    password_hash: str
+    # TOTP two-factor: base32 secret once confirmed; pending_totp holds one being set up.
+    totp_secret: str | None = None
+    pending_totp: str | None = None
+    is_admin: bool = True
+    created_at: datetime = Field(default_factory=_now)
+    password_changed_at: datetime = Field(default_factory=_now)
+    last_login_at: datetime | None = None
+
+
+class AuthSession(SQLModel, table=True):
+    """A signed-in browser. The cookie holds a random token; only its hash is stored."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    token_hash: str = Field(index=True, sa_column_kwargs={"unique": True})
+    user_id: str = Field(foreign_key="user.id", index=True)
+    created_at: datetime = Field(default_factory=_now)
+    last_seen_at: datetime = Field(default_factory=_now)
+    expires_at: datetime
+    ip: str = ""
+    user_agent: str = ""
+
+
+class ApiToken(SQLModel, table=True):
+    """A personal API token for scripts (Authorization: Bearer ahq_...). Hash only."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    name: str
+    prefix: str = Field(index=True)  # the visible part, e.g. ahq_3f9a1c2b, to tell tokens apart
+    token_hash: str = Field(sa_column_kwargs={"unique": True})
+    created_at: datetime = Field(default_factory=_now)
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class AuthEvent(SQLModel, table=True):
+    """Sign-in audit log: logins, failures, lockouts, password/2FA/token changes."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    at: datetime = Field(default_factory=_now, index=True)
+    kind: str = Field(index=True)
+    username: str = ""
+    ip: str = ""
+    user_agent: str = ""
+    detail: str = ""
+
+
 class SystemSetting(SQLModel, table=True):
     """Small key/value store for settings edited in the UI (e.g. memory settings)."""
 

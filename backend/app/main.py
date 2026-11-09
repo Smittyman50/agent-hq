@@ -11,10 +11,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .api import auth as auth_api
 from .api import agents, avatars, desktop, memory as memory_api, providers, schedules, subagents as subagents_api, subscriptions, system, threads, tool_servers
 from .broker import Broker
 from .config import settings
@@ -32,6 +33,9 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 async def lifespan(app: FastAPI):
     setup_telemetry()
     init_db()
+    from .auth import ensure_setup_code
+
+    ensure_setup_code()  # with no account yet, log a one-time code for creating yours
     broker = Broker(settings.redis_url)
     app.state.broker = broker
     async with contextlib.AsyncExitStack() as stack:
@@ -85,15 +89,22 @@ def _fastapi_kwargs() -> dict:
 
 def create_app(lifespan_=lifespan) -> FastAPI:
     app = FastAPI(title="Agent HQ", lifespan=lifespan_, **_fastapi_kwargs())
+    # Sign-in is required for /api and /ws (see app/auth.py). Added before CORS so CORS
+    # wraps it and even 401s carry CORS headers for the dev server.
+    app.add_middleware(auth_api.AuthMiddleware)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
-                       allow_methods=["*"], allow_headers=["*"])
-    for r in (agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
+                       allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
+    for r in (auth_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
               system.router):
         app.include_router(r)
 
     @app.get("/api/health")
     def health():
         return {"ok": True}
+
+    @app.get("/api/{path:path}", include_in_schema=False)
+    def api_not_found(path: str):
+        raise HTTPException(404, "No such API endpoint")
 
     # Serve the built Angular app (copied into backend/static by the Dockerfile).
     if STATIC_DIR.is_dir():

@@ -1,0 +1,43 @@
+# HTTPS front door for Agent HQ, with certificates from your step-ca over ACME.
+#
+#   AHQ_SITE   the name you browse to, e.g. shockwave.home.arpa (set in .env)
+#   ACME_CA    your step-ca's ACME directory, e.g. https://ca.home.arpa/acme/acme/directory
+#   root_ca.crt  your step-ca root certificate, next to this file (step ca root root_ca.crt)
+#
+# Caddy gets the certificate, renews it before it expires (step-ca's default lifetime is
+# 24 hours), and redirects http:// to https://.
+{
+	email {$ACME_EMAIL:admin@home.arpa}
+	acme_ca {$ACME_CA}
+	acme_ca_root /etc/caddy/root_ca.crt
+}
+
+{$AHQ_SITE} {
+	encode zstd gzip
+
+	# Agent desktops: /desktops/desktop-1/ -> the desktop-1 container, only for someone
+	# signed in to Agent HQ. Each desktop sets SUBFOLDER=/desktops/<its name>/ to match.
+	@desktop_bare path_regexp ^/desktops/desktop-[0-9]+$
+	redir @desktop_bare {path}/ 308
+
+	@desktop path_regexp desktop ^/desktops/(desktop-[0-9]+)/
+	handle @desktop {
+		forward_auth hq:8000 {
+			uri /api/auth/verify
+			copy_headers X-Ahq-User
+			# Ask about the sign-in only; never pass the desktop's WebSocket upgrade along.
+			header_up -Upgrade
+			header_up -Connection
+		}
+		reverse_proxy {re.desktop.1}:3000 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else: the Agent HQ UI, API and live-update WebSockets.
+	handle {
+		reverse_proxy hq:8000 {
+			flush_interval -1
+		}
+	}
+}

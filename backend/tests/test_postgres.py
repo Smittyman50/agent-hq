@@ -20,6 +20,7 @@ async def pg_hq(hq, postgres_url, monkeypatch):
     from sqlmodel import SQLModel
     SQLModel.metadata.drop_all(db.engine())
     db.init_db()
+    hq.sign_in()
     async with contextlib.AsyncExitStack() as stack:
         hq.pg_savers = [await stack.enter_async_context(open_checkpointer()) for _ in range(2)]
         yield hq

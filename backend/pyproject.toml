@@ -19,6 +19,8 @@ dependencies = [
   "tzdata",                     # time zones for schedules, even on slim images
   "aiomqtt>=2.3",
   "pillow>=10",
+  "argon2-cffi>=23",            # password hashing
+  "segno>=1.6",                 # QR code for setting up two-factor sign-in
   "python-multipart>=0.0.9",
   "opentelemetry-sdk>=1.25",
   "opentelemetry-exporter-otlp-proto-http>=1.25",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,44 @@ from pathlib import Path
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(f"AHQ_{name}", default)
+
+
+HOST_HOSTNAME_FILE = Path("/etc/host_hostname")  # the Docker host's /etc/hostname, mounted read-only
+_CONTAINER_ID = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _in_container(hostname: str) -> bool:
+    return Path("/.dockerenv").exists() or bool(_CONTAINER_ID.match(hostname))
+
+
+def _host_name() -> str:
+    """The machine's name: AHQ_HOST_NAME, else the Docker host's mounted /etc/hostname."""
+    name = _env("HOST_NAME", "").strip()
+    if not name:
+        try:
+            if HOST_HOSTNAME_FILE.is_file():
+                name = HOST_HOSTNAME_FILE.read_text().strip()
+        except OSError:
+            name = ""
+    return name.split(".")[0]  # shockwave.home.arpa -> shockwave
+
+
+def default_worker_name() -> str:
+    """A readable name that stays unique when a service is scaled.
+
+    AHQ_WORKER_NAME wins if set. Outside a container the machine's hostname is used, as
+    before. In a container the hostname is the container ID, so the name becomes
+    <AHQ_WORKER_PREFIX>-<host>-<last 4 of the container ID>, e.g. worker-shockwave-7090:
+    which service, which machine, and which replica.
+    """
+    explicit = _env("WORKER_NAME", "").strip()
+    if explicit:
+        return explicit
+    hostname = socket.gethostname()
+    if not _in_container(hostname):
+        return hostname
+    parts = [_env("WORKER_PREFIX", "worker").strip(), _host_name(), hostname[-4:]]
+    return "-".join(p for p in parts if p)
 
 
 @dataclass
@@ -45,7 +84,8 @@ class Settings:
     claim_idle_ms: int = field(default_factory=lambda: int(_env("CLAIM_IDLE_MS", "60000")))
     max_attempts: int = field(default_factory=lambda: int(_env("MAX_ATTEMPTS", "3")))
     # Worker identity and pools (used by `python -m app.worker` and by the embedded worker).
-    worker_name: str = field(default_factory=lambda: _env("WORKER_NAME", socket.gethostname()))
+    # See default_worker_name(): AHQ_WORKER_NAME, or e.g. worker-shockwave-7090 in Docker.
+    worker_name: str = field(default_factory=default_worker_name)
     worker_pools: list[str] = field(
         default_factory=lambda: [p.strip() for p in _env("WORKER_POOLS", "default").split(",") if p.strip()])
     worker_concurrency: int = field(default_factory=lambda: int(_env("WORKER_CONCURRENCY", "4")))

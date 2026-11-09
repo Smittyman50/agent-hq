@@ -253,7 +253,27 @@ class Harness:
         self.app.state.runtime = self.runtime
         self.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
                                       base_url="http://test")
+        self.sign_in()
+        self.anon = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                      base_url="http://test")
         self.workers: list[Worker] = []
+
+    def sign_in(self) -> None:
+        """Every API call needs a sign-in: the tests use an API token for an account
+        "tester". Call again after switching to another database."""
+        from app import auth
+        from app.models import User
+
+        with db.session() as s:
+            user = s.exec(select(User).where(User.username == "tester")).first()
+            if user is None:
+                user = User(username="tester", password_hash=auth.hash_password("correct horse battery"))
+                s.add(user)
+                s.commit()
+                s.refresh(user)
+        self.user = user
+        _, self.token = auth.create_token(user, "tests", None)
+        self.http.headers["Authorization"] = f"Bearer {self.token}"
 
     async def start_worker(self, name="w1", pools=("default",), concurrency=4,
                            claim_idle_ms=60000, checkpointer=None) -> Worker:
@@ -303,4 +323,5 @@ class Harness:
             await w.stop(graceful=False)
             await w.broker.close()
         await self.http.aclose()
+        await self.anon.aclose()
         await self.broker.close()

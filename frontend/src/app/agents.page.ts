@@ -172,7 +172,7 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <label>Desktop viewer URL <small>optional KasmVNC/noVNC address for this agent's desktop</small>
-          <input name="desktop_url" [(ngModel)]="d.desktop_url" placeholder="http://shockwave:3001"></label>
+          <input name="desktop_url" [(ngModel)]="d.desktop_url" placeholder="/desktops/desktop-1/"></label>
         <div class="inline">
           <label class="check"><input type="checkbox" name="is_default" [(ngModel)]="d.is_default"> Default chat agent</label>
           <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>

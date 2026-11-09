@@ -4,12 +4,14 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Workspace } from './workspace';
+import { Session } from './session';
 
 /** The app shell: conversations in the sidebar, Settings at its foot. */
 @Component({
   imports: [RouterOutlet, RouterLink, RouterLinkActive, DatePipe, Avatar, Icon],
   selector: 'app-root',
   template: `
+    @if (session.user()) {
     <aside class="sidebar" [class.collapsed]="collapsed()">
       <div class="side-brand">
         <a routerLink="/chat" class="brand" title="Agent HQ"><hq-icon name="logo" [size]="24" />
@@ -66,13 +68,17 @@ import { Workspace } from './workspace';
           <hq-icon name="schedule" /><span class="label">Scheduler</span></a>
         <a class="nav-item" routerLink="/settings" routerLinkActive="on" title="Settings">
           <hq-icon name="settings" /><span class="label">Settings</span></a>
+        <button class="nav-item" (click)="session.logout()" [title]="'Sign out ' + session.user()?.username">
+          <hq-icon name="logout" /><span class="label">Sign out <span class="muted">{{ session.user()?.username }}</span></span></button>
       </div>
     </aside>
+    }
     <main><router-outlet /></main>
   `,
 })
 export class App {
   ws = inject(Workspace);
+  session = inject(Session);
   menu = signal(false);
   query = signal('');
   collapsed = signal(this.loadCollapsed());

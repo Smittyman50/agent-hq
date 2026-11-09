@@ -11,19 +11,28 @@ x-app: &app
   build: .
   restart: unless-stopped
   env_file: [.env]
+  # The host's name, for readable worker names like worker-shockwave-7090. (Or set
+  # AHQ_HOST_NAME in .env, e.g. on Docker Desktop, where this file doesn't exist.)
+  volumes: ["/etc/hostname:/etc/host_hostname:ro"]
 
 services:
   hq:
     <<: *app
-    ports: ["8000:8000"]
+    # Plain HTTP for this host only by default: browse through https via the caddy service.
+    # Set AHQ_HTTP_BIND=8000 in .env to reach it over the network without HTTPS.
+    ports: ["${AHQ_HTTP_BIND:-127.0.0.1:8000}:8000"]
     environment:
       AHQ_CORS_ORIGINS: http://localhost:4200
+      AHQ_WORKER_PREFIX: hq
 
   # General-purpose worker: runs agents whose pool is "default".
   worker:
     <<: *app
     command: ["python", "-m", "app.worker", "--pools", "default", "--concurrency", "4"]
-    # No AHQ_WORKER_NAME here: each replica uses its container hostname, which is unique.
+    # No fixed AHQ_WORKER_NAME, so replicas stay unique: each is named
+    # worker-<host>-<last 4 of its container ID>, e.g. worker-shockwave-7090.
+    environment:
+      AHQ_WORKER_PREFIX: worker
     deploy:
       replicas: 1          # raise for more parallel agent runs
 
@@ -46,20 +55,40 @@ services:
       WEBREADER_ALLOW_HOSTS: ${WEBREADER_ALLOW_HOSTS:-}   # internal hosts agents may read
       WEBREADER_MAX_CHARS: ${WEBREADER_MAX_CHARS:-12000}
 
-  # One service per agent desktop. Copy this block (desktop-2, port 3002, ...) to add more.
+  # HTTPS for the UI (certificate from your step-ca) and sign-in-protected desktop viewers.
+  # Setup: deploy/caddy/Caddyfile and the README's "HTTPS" section.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      AHQ_SITE: ${AHQ_SITE:-}
+      ACME_CA: ${ACME_CA:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/caddy:/etc/caddy:ro     # Caddyfile + your root_ca.crt
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [hq]
+
+  # One service per agent desktop. Copy this block (desktop-2, SUBFOLDER /desktops/desktop-2/)
+  # to add more; the name must be desktop-<number> for the viewer route.
   # In the UI, register two HTTP tool servers (tick "Controls an agent desktop" on both):
   #   http://desktop-1:8765/mcp   screenshots, mouse, keyboard
   #   http://desktop-1:8931/mcp   the desktop's Chromium via Playwright (untick "Prefix tool names")
-  # tick them on the agent, and set its desktop viewer URL to http://<host>:3000.
+  # tick them on the agent, and set its desktop viewer URL to /desktops/desktop-1/.
+  # No published ports: you reach the viewer only through caddy, signed in to Agent HQ.
   desktop-1:
     build: ./desktop
     restart: unless-stopped
     shm_size: "1gb"
-    ports: ["3000:3000"]          # browser view of the desktop; MCP ports 8765/8931 stay internal
     volumes: ["./desktops/desktop-1:/config"]
     environment:
       PUID: "1000"
       PGID: "1000"
       TZ: America/New_York
-      # CUSTOM_USER: mike
-      # PASSWORD: change-me      # recommended: protects the desktop viewer
+      SUBFOLDER: /desktops/desktop-1/   # must match the service name
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -11,15 +11,19 @@ import { SchedulesPage } from './schedules.page';
 import { RequestsPage } from './requests.page';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
+import { LoginPage } from './login.page';
+import { SecurityPage } from './security.page';
+import { authGuard } from './session';
 
 export const routes: Routes = [
+  { path: 'login', component: LoginPage },
   { path: '', pathMatch: 'full', redirectTo: 'chat' },
-  { path: 'chat', component: ChatPage },
-  { path: 'chat/:id', component: ChatPage },
-  { path: 'schedules', component: SchedulesPage },
-  { path: 'requests', component: RequestsPage },
+  { path: 'chat', component: ChatPage, canActivate: [authGuard] },
+  { path: 'chat/:id', component: ChatPage, canActivate: [authGuard] },
+  { path: 'schedules', component: SchedulesPage, canActivate: [authGuard] },
+  { path: 'requests', component: RequestsPage, canActivate: [authGuard] },
   {
-    path: 'settings', component: SettingsLayout, children: [
+    path: 'settings', component: SettingsLayout, canActivate: [authGuard], children: [
       { path: '', pathMatch: 'full', redirectTo: 'agents' },
       { path: 'agents', component: AgentsPage },
       { path: 'models', component: ModelsPage },
@@ -29,6 +33,7 @@ export const routes: Routes = [
       { path: 'tools', component: ToolsPage },
       { path: 'events', component: EventsPage },
       { path: 'system', component: SystemPage },
+      { path: 'security', component: SecurityPage },
     ],
   },
   // Old addresses (bookmarks) from before Settings existed.
