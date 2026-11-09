@@ -10,6 +10,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'subagents', label: 'Sub-agents', icon: 'subagents' },
   { path: 'usage', label: 'Usage', icon: 'usage' },
   { path: 'memory', label: 'Memory', icon: 'memory' },
+  { path: 'skills', label: 'Skills', icon: 'skills' },
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'events', label: 'Events', icon: 'events' },
   { path: 'system', label: 'System', icon: 'system' },

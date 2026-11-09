@@ -13,6 +13,7 @@ import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
 import { LoginPage } from './login.page';
 import { SecurityPage } from './security.page';
+import { SkillsPage } from './skills.page';
 import { authGuard } from './session';
 
 export const routes: Routes = [
@@ -30,6 +31,7 @@ export const routes: Routes = [
       { path: 'subagents', component: SubagentsPage },
       { path: 'usage', component: UsagePage },
       { path: 'memory', component: MemoryPage },
+      { path: 'skills', component: SkillsPage },
       { path: 'tools', component: ToolsPage },
       { path: 'events', component: EventsPage },
       { path: 'system', component: SystemPage },

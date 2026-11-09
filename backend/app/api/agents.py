@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models import (AgentDef, ModelProvider, Subscription, SubagentMode, ToolServer, _now,
+from ..models import (AgentDef, LearningMode, ModelProvider, Subscription, SubagentMode, ToolServer, _now,
                       default_subagent_limits)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -38,6 +38,8 @@ class AgentIn(BaseModel):
     # Sub-agents: off | ask | allowed, and the limits that apply (see models.default_subagent_limits).
     subagent_mode: SubagentMode = SubagentMode.off
     subagent_limits: dict[str, Any] | None = None
+    # Skills: off | propose (default) | auto
+    learning_mode: LearningMode = LearningMode.propose
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),

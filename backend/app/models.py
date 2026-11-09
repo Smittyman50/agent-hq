@@ -74,6 +74,12 @@ def default_subagent_limits() -> dict[str, Any]:
     }
 
 
+class LearningMode(str, Enum):
+    off = "off"          # no skill proposals from this agent
+    propose = "propose"  # proposals wait for your approval (the default)
+    auto = "auto"        # proposals are applied at once; you're told
+
+
 class AgentDef(SQLModel, table=True):
     id: str = Field(default_factory=_id, primary_key=True)
     name: str = Field(index=True, unique=True)
@@ -115,6 +121,8 @@ class AgentDef(SQLModel, table=True):
     # Bumped on every avatar upload; 0 = no avatar. The UI uses it to bust image caches.
     avatar_version: int = 0
     avatar_animated: bool = False
+    # Skills: whether this agent may propose new skills or improvements (see app/skills.py).
+    learning_mode: LearningMode = LearningMode.propose
     # Sub-agents: off (default), ask (needs your approval), allowed (within limits).
     subagent_mode: SubagentMode = SubagentMode.off
     subagent_limits: dict[str, Any] = Field(default_factory=default_subagent_limits,
@@ -172,6 +180,81 @@ class ToolServer(SQLModel, table=True):
     approval_rules: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class Skill(SQLModel, table=True):
+    """Written-down know-how: when to use it, the steps, the pitfalls. Versioned."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = Field(index=True, sa_column_kwargs={"unique": True})  # slug, e.g. check_pve_backups
+    title: str = ""
+    when_to_use: str = Field(default="", sa_column=Column(Text, default=""))
+    body: str = Field(default="", sa_column=Column(Text, default=""))  # the procedure (markdown)
+    tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # tools it relies on
+    script: str | None = None  # a saved workbench script it uses, if any
+    # team = every agent; agent = only agent_id
+    scope: str = Field(default="team", index=True)
+    agent_id: str | None = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)  # active | retired
+    version: int = 1
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class SkillVersion(SQLModel, table=True):
+    """Every version of every skill, for history and rollback."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    skill_id: str = Field(index=True)
+    version: int
+    title: str = ""
+    when_to_use: str = Field(default="", sa_column=Column(Text, default=""))
+    body: str = Field(default="", sa_column=Column(Text, default=""))
+    tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    script: str | None = None
+    created_by: str = ""
+    note: str = Field(default="", sa_column=Column(Text, default=""))  # why it changed
+    created_at: datetime = Field(default_factory=_now)
+
+
+class SkillProposal(SQLModel, table=True):
+    """An agent proposing a new skill or a change to one."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    skill_id: str | None = Field(default=None, index=True)  # set = a revision of that skill
+    name: str = ""
+    title: str = ""
+    when_to_use: str = Field(default="", sa_column=Column(Text, default=""))
+    body: str = Field(default="", sa_column=Column(Text, default=""))
+    tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    script: str | None = None
+    scope: str = "team"
+    reason: str = Field(default="", sa_column=Column(Text, default=""))
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    thread_id: str | None = None
+    job_id: str | None = None
+    base_version: int | None = None  # the version a revision was written against
+    # pending | approved | rejected | applied (auto mode)
+    status: str = Field(default="pending", index=True)
+    note: str = Field(default="", sa_column=Column(Text, default=""))
+    message_id: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+    decided_at: datetime | None = None
+
+
+class SkillUse(SQLModel, table=True):
+    """An agent loading a skill during a job, and how that job turned out."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    skill_id: str = Field(index=True)
+    version: int = 1
+    agent_id: str = ""
+    job_id: str | None = Field(default=None, index=True)
+    thread_id: str | None = None
+    outcome: str = Field(default="pending", index=True)  # pending | done | partial | failed
+    at: datetime = Field(default_factory=_now)
 
 
 class ToolApproval(SQLModel, table=True):

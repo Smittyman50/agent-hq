@@ -320,6 +320,27 @@ A workbench is a small container per agent that gives it somewhere to write and 
 
 For another agent, copy the `workbench-1` block as `workbench-2`, with its own volume.
 
+### Skills: know-how agents write down and improve
+
+A **skill** is a short, named procedure. It has a title, a line saying *when to use it*, the steps in markdown (including what to check and the pitfalls), the tools it relies on, and optionally the name of a saved workbench script that does the mechanical part. A skill is either shared by every agent or belongs to one agent. You can write and edit skills under **Settings → Skills**. Every change is a new version, with who made it and why, and you can restore any earlier version.
+
+**How agents use them:**
+- **Listing:** on each run, an agent's instructions list up to 8 skills that fit the task, each with its name and *when to use* line.
+  - **How they're matched:** by meaning when an embedding model is set (Settings → Memory), and by keywords otherwise.
+  - **Small collections:** with 12 or fewer skills, all of them are listed.
+- **Loading:** the agent calls `load_skill` to read a skill's full procedure and follows it. `list_skills` searches the rest.
+- **Tracking:** each time a skill is loaded, the outcome of that job (done, partial or failed) is recorded. **Settings → Skills** shows each skill's uses and success rate.
+
+**How agents learn.** When an agent works out how to do something that will come up again, or finds that a skill it used was wrong or incomplete, it calls `propose_skill`. A proposal is either a new skill, or a revision to an existing one with a diff against the current version. What happens next depends on the agent's **Learning** setting (Settings → Agents):
+- **Propose to me** (the default for every agent):
+  - **Where it shows up:** in the conversation, in the **Requests** inbox (with the sidebar badge), and on MQTT as a `skill_proposal` notification.
+  - **Your options:** approve it, edit it first, or reject it, with an optional note.
+  - **Revisions** show a diff against the current version, with a warning if the skill changed after the agent wrote its proposal.
+- **Save automatically:** the change is saved at once and you're told. You can review it or roll it back on the Skills page.
+- **Off:** the agent uses skills but can't propose them.
+
+Sub-agents use their parent's skills but don't propose any. Skills never grant tools: every call a skill leads to still goes through your tool approvals.
+
 ### Tool approvals
 
 For every tool on every tool server, you choose under **Settings → Tools → (server) → Approvals**:
@@ -666,6 +687,7 @@ backend/app/
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
   auth.py            sign-in: accounts, sessions, API tokens, TOTP, lockout, audit log, CLI
   approvals.py       tool approvals: allow / ask / block per tool, decisions, timeouts
+  skills.py          skills: matching, loading, outcomes, versions, proposals
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)

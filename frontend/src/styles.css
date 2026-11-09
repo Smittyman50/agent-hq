@@ -346,10 +346,23 @@ table.grid.log tr.bad td:nth-child(2) { color: var(--bad); }
 .req-card.approval pre.code { margin: 0; max-height: 280px; overflow: auto; background: var(--panel2); border: 1px solid var(--line);
   border-radius: 6px; padding: 8px 10px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .approval-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; }
-.approval-actions input { flex: 1; min-width: 200px; }
+.approval-actions input:not([type=checkbox]) { flex: 1; min-width: 200px; }
+.approval-actions label.check { margin: 0; white-space: nowrap; }
 .approvals-list { padding: 12px 18px; display: flex; flex-direction: column; gap: 10px; }
 .approvals-list h2, .section-title { font-size: 14px; margin: 6px 0; }
 .section-title { padding: 0 18px; }
 .approvals-list details.recent summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
 .approvals-list details.recent[open] { display: flex; flex-direction: column; gap: 8px; }
 table.grid.approvals select { width: auto; min-width: 210px; }
+
+/* Skills */
+textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.limit-grid.two { grid-template-columns: 1fr 1fr; }
+.list-filter { padding: 0 14px 6px; }
+.skill-body { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--panel2); font-size: 13px; }
+pre.diff { margin: 0; max-height: 360px; overflow: auto; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; font-size: 12.5px; white-space: pre-wrap; }
+pre.diff .add { color: #7ee2a8; background: rgba(46, 160, 67, .12); display: block; }
+pre.diff .del { color: #ff9b95; background: rgba(248, 81, 73, .12); display: block; text-decoration: line-through; text-decoration-color: rgba(255,155,149,.5); }
+pre.diff .hunk { color: var(--muted); display: block; }
+table.grid tr.current td { color: var(--text); font-weight: 600; }

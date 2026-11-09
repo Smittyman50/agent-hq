@@ -6,13 +6,14 @@ import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { RequestCard } from './request-card';
 import { ApprovalCard } from './approval-card';
-import { ToolApproval } from './api.service';
+import { SkillProposalCard } from './skill-proposal-card';
+import { SkillProposal, ToolApproval } from './api.service';
 import { Workspace } from './workspace';
 
 /** Your inbox of sub-agent requests: pending ones first, then decided ones. */
 @Component({
   selector: 'hq-requests',
-  imports: [DatePipe, NgTemplateOutlet, Avatar, Icon, RequestCard, ApprovalCard],
+  imports: [DatePipe, NgTemplateOutlet, Avatar, Icon, RequestCard, ApprovalCard, SkillProposalCard],
   template: `
   <div class="page-wrap">
     <header class="crumbs"><hq-icon name="inbox" [size]="18" /><strong>Requests</strong>
@@ -27,6 +28,12 @@ import { Workspace } from './workspace';
           @for (a of recentApprovals(); track a.id) { <hq-approval-card [approvalId]="a.id" [showLink]="true" /> }
         </details>
       }
+    </section>
+    <section class="approvals-list">
+      <h2>Skill proposals ({{ pendingSkills().length }} waiting)</h2>
+      @for (p of pendingSkills(); track p.id) {
+        <hq-skill-proposal-card [proposalId]="p.id" (decided)="reload()" />
+      } @empty { <p class="hint">No proposals waiting. Agents propose skills as they work out how to do things.</p> }
     </section>
     <h2 class="section-title">Sub-agent requests</h2>
     <div class="split">
@@ -75,6 +82,8 @@ export class RequestsPage implements OnInit {
   current = computed(() => this.all().find(r => r.id === this.selected()));
   approvals = signal<ToolApproval[]>([]);
   pendingApprovals = computed(() => this.approvals().filter(a => a.status === 'pending'));
+  proposals = signal<SkillProposal[]>([]);
+  pendingSkills = computed(() => this.proposals().filter(p => p.status === 'pending'));
   recentApprovals = computed(() => this.approvals().filter(a => a.status !== 'pending').slice(0, 20));
 
   ngOnInit() {
@@ -84,6 +93,7 @@ export class RequestsPage implements OnInit {
 
   reload() {
     this.api.toolApprovals().subscribe(a => this.approvals.set(a));
+    this.api.skillProposals('pending').subscribe(p => this.proposals.set(p));
     this.api.subagentRequests().subscribe(rs => {
       this.all.set(rs);
       if (!this.selected() && rs.length) this.selected.set((rs.find(r => r.status === 'pending') ?? rs[0]).id);

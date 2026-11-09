@@ -10,13 +10,14 @@ import { Icon } from './icon';
 import { Markdown } from './markdown';
 import { RequestCard } from './request-card';
 import { ApprovalCard } from './approval-card';
+import { SkillProposalCard } from './skill-proposal-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard, SkillProposalCard],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation">
@@ -43,6 +44,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
           @for (m of messages(); track m.id) {
             @if (m.meta['kind'] === 'subagent_request' && m.meta['request_id']) {
               <hq-request-card [requestId]="$any(m.meta['request_id'])" [version]="$any(m.meta['status']) + ':' + $any(m.meta['used'])" />
+            } @else if (m.meta['kind'] === 'skill_proposal' && m.meta['proposal_id']) {
+              <hq-skill-proposal-card [proposalId]="$any(m.meta['proposal_id'])" [version]="m.meta['status']" />
             } @else if (m.meta['kind'] === 'tool_approval' && m.meta['approval_id']) {
               <hq-approval-card [approvalId]="$any(m.meta['approval_id'])" [version]="m.meta['status']" />
             } @else if (exchange(m); as x) {
@@ -381,6 +384,8 @@ export class ChatPage implements OnInit, OnDestroy {
         break;
       }
       case 'subagent_spawned': this.log(ev, `${ev['agent']} created sub-agent ${ev['subagent']} on ${ev['model']}`, 'deleg'); break;
+      case 'skill_loaded': this.log(ev, `${ev['agent']} is following the skill ${ev['skill']} (v${ev['version']})`, 'deleg'); break;
+      case 'skill_proposed': this.log(ev, `${ev['agent']} proposed a skill: ${ev['skill']}`, 'queue'); this.ws.refreshPending(); break;
       case 'approval_requested': this.log(ev, `${ev['agent']} is waiting for your OK to run ${ev['tool']} on ${ev['server']}`, 'queue'); this.ws.refreshPending(); break;
       case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); this.ws.refreshPending(); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;

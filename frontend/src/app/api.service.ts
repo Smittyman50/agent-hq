@@ -27,6 +27,25 @@ export interface AgentDef {
   avatar_animated?: boolean;
   subagent_mode: SubagentMode;
   subagent_limits: SubagentLimits;
+  learning_mode: LearningMode;
+}
+
+export type LearningMode = 'off' | 'propose' | 'auto';
+export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number; last_used_at: string | null; }
+export interface SkillVersion { id: string; version: number; title: string; when_to_use: string; body: string;
+  tools: string[]; script: string | null; created_by: string; note: string; created_at: string; }
+export interface Skill {
+  id?: string; name: string; title: string; when_to_use: string; body: string; tools: string[];
+  script: string | null; scope: 'team' | 'agent'; agent_id: string | null; agent?: string;
+  status?: 'active' | 'retired'; version?: number; created_by?: string; created_at?: string; updated_at?: string;
+  stats?: SkillStats; success_rate?: number | null; versions?: SkillVersion[]; note?: string;
+}
+export interface SkillProposal {
+  id: string; skill_id: string | null; name: string; title: string; when_to_use: string; body: string;
+  tools: string[]; script: string | null; scope: 'team' | 'agent'; reason: string; agent_id: string;
+  agent_name: string; thread_id: string | null; base_version: number | null;
+  status: 'pending' | 'approved' | 'rejected' | 'applied'; note: string; created_at: string; decided_at: string | null;
+  current?: { version: number; title: string; when_to_use: string; body: string }; diff?: string; stale?: boolean;
 }
 
 export type SubagentMode = 'off' | 'ask' | 'allowed';
@@ -217,7 +236,7 @@ export function blankAgent(): AgentDef {
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
     fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
-    subagent_mode: 'off', subagent_limits: defaultSubagentLimits() };
+    subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose' };
 }
 
 export function blankSubscription(agent_id = ''): Subscription {
@@ -326,7 +345,24 @@ export class Api {
   decideApproval(id: string, approve: boolean, note = '', remember_minutes = 0) {
     return this.http.post<ToolApproval>(`/api/tool-approvals/${id}/decide`, { approve, note, remember_minutes });
   }
-  inboxCount() { return this.http.get<{ requests: number; approvals: number; total: number }>('/api/inbox/count'); }
+  inboxCount() { return this.http.get<{ requests: number; approvals: number; skills: number; total: number }>('/api/inbox/count'); }
+
+  skills(includeRetired = false) { return this.http.get<Skill[]>('/api/skills', { params: { include_retired: includeRetired } }); }
+  skill(id: string) { return this.http.get<Skill>(`/api/skills/${id}`); }
+  saveSkill(k: Skill) {
+    const body = { name: k.name, title: k.title, when_to_use: k.when_to_use, body: k.body, tools: k.tools,
+      script: k.script || null, scope: k.scope, agent_id: k.agent_id, note: k.note ?? '' };
+    return k.id ? this.http.put<Skill>(`/api/skills/${k.id}`, body) : this.http.post<Skill>('/api/skills', body);
+  }
+  setSkillStatus(id: string, status: 'active' | 'retired') { return this.http.post<Skill>(`/api/skills/${id}/status`, { status }); }
+  rollbackSkill(id: string, version: number) { return this.http.post<Skill>(`/api/skills/${id}/rollback`, { version }); }
+  skillProposals(status?: string) {
+    return this.http.get<SkillProposal[]>('/api/skill-proposals', { params: status ? { status } : {} });
+  }
+  skillProposal(id: string) { return this.http.get<SkillProposal>(`/api/skill-proposals/${id}`); }
+  decideSkillProposal(id: string, d: { approve: boolean; note?: string; title?: string; when_to_use?: string; body?: string; scope?: string }) {
+    return this.http.post<SkillProposal>(`/api/skill-proposals/${id}/decide`, d);
+  }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

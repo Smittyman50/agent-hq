@@ -182,11 +182,48 @@ def coder(calls: int = 1):
     return fn
 
 
+def skilled(messages, info):
+    """Loads the first skill listed in its instructions and reports its first step;
+    without one listed, says which skill tools it has."""
+    import re as _re
+    returns = [r for r in reversed(_tool_returns(messages)) if r.tool_name == "load_skill"]
+    listed = _re.findall(r"^- ([a-z0-9_]+): ", info.instructions or "", _re.M)
+    if returns:
+        c = returns[-1].content
+        return ModelResponse(parts=[TextPart(f"Following {c.get('name')} v{c.get('version')}: "
+                                             f"{c.get('procedure', c.get('error', ''))[:60]}")])
+    if listed and "load_skill" in {t.name for t in info.function_tools}:
+        return ModelResponse(parts=[ToolCallPart("load_skill", {"name": listed[0]})])
+    tools = sorted(t.name for t in info.function_tools if "skill" in t.name)
+    return ModelResponse(parts=[TextPart("skill tools: " + ", ".join(tools))])
+
+
+def proposer(revise: str | None = None):
+    """Proposes a skill (or a revision), then reports the result."""
+    def fn(messages, info):
+        returns = [r for r in reversed(_tool_returns(messages)) if r.tool_name == "propose_skill"]
+        if "propose_skill" not in {t.name for t in info.function_tools}:
+            return ModelResponse(parts=[TextPart("I can't propose skills.")])
+        if not returns:
+            args = {"name": "check_pve_backups", "title": "Check Proxmox backups",
+                    "when_to_use": "When asked whether last night's Proxmox backups worked.",
+                    "steps": "1. Open PBS on rewind.\n2. Check the TrueNAS datastore's last job.\n3. Report failures first.",
+                    "reason": "I worked this out today and it will come up again."}
+            if revise:
+                args.update(revise=revise, steps="1. Open PBS on rewind.\n2. Check the last job AND verify job.\n3. Report failures first.",
+                            reason="Verify jobs fail separately; the old steps missed them.")
+            return ModelResponse(parts=[ToolCallPart("propose_skill", args)])
+        c = returns[-1].content
+        return ModelResponse(parts=[TextPart(f"{c['status']}: {c['summary']}")])
+    return fn
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
            "requester": requester, "retrying": retrying,
-           "coder": coder(1), "coder-2": coder(2)}
+           "coder": coder(1), "coder-2": coder(2),
+           "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups")}
 
 
 @pytest.fixture(autouse=True)

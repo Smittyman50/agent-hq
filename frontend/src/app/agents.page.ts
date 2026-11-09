@@ -89,6 +89,18 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <fieldset>
+          <legend>Learning <small>skills: written-down know-how agents use and improve</small></legend>
+          <div class="seg">
+            @for (m of learningModes; track m.value) {
+              <label class="seg-opt" [class.on]="d.learning_mode === m.value">
+                <input type="radio" name="learnmode" [value]="m.value" [(ngModel)]="d.learning_mode"> {{ m.label }}</label>
+            }
+          </div>
+          <p class="hint inline-hint">{{ learningHint(d.learning_mode) }} Every agent can use skills either way
+            (Settings → Skills).</p>
+        </fieldset>
+
+        <fieldset>
           <legend>Sub-agents <small>temporary helpers this agent creates for parts of a task</small></legend>
           <div class="seg">
             @for (m of modes; track m.value) {
@@ -210,10 +222,21 @@ export class AgentsPage implements OnInit {
     { value: 'ask', label: 'Ask me first' },
     { value: 'allowed', label: 'Allowed within limits' },
   ] as const;
+  learningModes = [
+    { value: 'off', label: 'Off' },
+    { value: 'propose', label: 'Propose to me' },
+    { value: 'auto', label: 'Save automatically' },
+  ] as const;
   addProvider: string | null = null;
   addModel = '';
 
   ngOnInit() { this.load(); }
+
+  learningHint(mode: string) {
+    if (mode === 'auto') return 'New skills and improvements this agent writes are saved at once; you\'re told, and can roll back.';
+    if (mode === 'off') return 'This agent can\'t propose skills.';
+    return 'New skills and improvements this agent writes wait in your Requests inbox for you to approve, edit or reject.';
+  }
 
   modeHint(mode: string) {
     if (mode === 'ask') return 'The agent can send you a request (which sub-agents, why, how much). It can only create them after you approve, within what you approve.';
@@ -253,6 +276,7 @@ export class AgentsPage implements OnInit {
     this.error.set('');
     const d = a ? structuredClone(a) : blankAgent();
     d.subagent_mode ??= 'off';
+    d.learning_mode ??= 'propose';
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
     d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
