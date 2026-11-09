@@ -445,6 +445,23 @@ Use "merge" for duplicates or memories that belong together. Use "retire" when a
 shows an older one is no longer true. Leave memories you would keep as-is out of the list."""
 
 
+def _same_audience(a: Memory, b: Memory) -> bool:
+    """Whether two memories are visible to the same agents, so they can be merged.
+
+    Only the scope's own key counts: a team memory captured in one conversation is the same
+    team memory as one captured in another (thread_id there just records where it came
+    from), while agent memories must belong to the same agent and conversation memories to
+    the same conversation.
+    """
+    if a.scope != b.scope:
+        return False
+    if a.scope == MemoryScope.agent:
+        return a.agent_id == b.agent_id
+    if a.scope == MemoryScope.thread:
+        return a.thread_id == b.thread_id
+    return True
+
+
 async def tidy(use_model: bool = True) -> dict:
     """Group near-duplicate memories; merge or retire with a model, or dedupe without one."""
     cfg = get_settings()
@@ -464,8 +481,7 @@ async def tidy(use_model: bool = True) -> dict:
         for o in live:
             if o.id == m.id or o.id in used or o.id not in vecs:
                 continue
-            same = o.scope == m.scope and o.agent_id == m.agent_id and o.thread_id == m.thread_id
-            if same and cosine(vecs[m.id], vecs[o.id]) >= group_at:
+            if _same_audience(m, o) and cosine(vecs[m.id], vecs[o.id]) >= group_at:
                 group.append(o)
         if len(group) > 1:
             used.update(x.id for x in group)

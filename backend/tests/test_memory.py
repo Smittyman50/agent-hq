@@ -259,6 +259,25 @@ async def test_tidy_dedupes_without_a_model(hq, embed_server):
     await _tidy_without_model(hq)
 
 
+async def test_tidy_groups_team_memories_from_different_conversations(hq, embed_server):
+    """Captured team memories record the conversation they came from; that mustn't stop
+    the tidy-up from comparing them. Conversation-scoped ones stay apart."""
+    from app import memory
+
+    await use_embeddings(hq, embed_server)
+    a = await hq.agent(name="Duke", model="fake:worker")
+    t1, t2 = await hq.thread(a["id"]), await hq.thread(a["id"])
+    text = "Snake Eyes was asked about Optimus Prime's gun on Wikipedia"
+    await memory.add(text, kind="incident", scope="team", thread_id=t1["id"])
+    newer = await memory.add(text + " page", kind="incident", scope="team", thread_id=t2["id"])
+    await memory.add("thread note about pve1 backups", scope="thread", thread_id=t1["id"])
+    await memory.add("thread note about pve1 backups.", scope="thread", thread_id=t2["id"])
+    report = (await hq.http.post("/api/memory/tidy")).json()
+    assert report["groups"] == 1 and report["retired"] == 1
+    live = {m["id"] for m in (await hq.http.get("/api/memory")).json()}
+    assert newer.id in live and len(live) == 3
+
+
 async def test_tidy_merges_with_a_model(hq, embed_server):
     await use_embeddings(hq, embed_server)
     # The fake bag-of-words embeddings are crude, so loosen "related" for this test.
