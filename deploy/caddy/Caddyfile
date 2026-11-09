@@ -6,13 +6,19 @@
 #
 # Caddy gets the certificate, renews it before it expires (step-ca's default lifetime is
 # 24 hours), and redirects http:// to https://.
-{
-	email {$ACME_EMAIL}
-	acme_ca {$ACME_CA}
-	acme_ca_root /etc/caddy/root_ca.crt
-}
 
 {$AHQ_SITE} {
+	# Name the issuer here, on the site. Caddy treats internal names such as *.home.arpa
+	# as not eligible for public certificates and quietly uses its own built-in CA for
+	# them, ignoring a global acme_ca; an explicit issuer on the site overrides that.
+	tls {
+		issuer acme {
+			dir {$ACME_CA}
+			trusted_roots /etc/caddy/root_ca.crt
+			email {$ACME_EMAIL}
+		}
+	}
+
 	encode zstd gzip
 
 	# Agent desktops: /desktops/desktop-1/ -> the desktop-1 container, only for someone

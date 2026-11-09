@@ -64,7 +64,7 @@ services:
     environment:
       AHQ_SITE: ${AHQ_SITE:-}
       ACME_CA: ${ACME_CA:-}
-      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@home.arpa}   # any address; step-ca sends no mail
     volumes:
       - ./deploy/caddy:/etc/caddy:ro     # Caddyfile + your root_ca.crt
       - caddy-data:/data
