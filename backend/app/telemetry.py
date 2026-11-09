@@ -12,6 +12,11 @@ Set OTEL_EXPORTER_OTLP_ENDPOINT (e.g. http://perceptor:4318, OTLP over HTTP) and
   them as a session) plus agent, job, kind, pool and worker attributes.
 * Images (screenshots sent to vision models) are never put into spans.
   AHQ_TRACE_CONTENT=0 also leaves out prompts and replies.
+* The MCP libraries (the MCP Python SDK and FastMCP) emit their own protocol spans for
+  every tool listing and call ("MCP send tools/call ...", "server/discover", ...). They
+  carry no OpenInference kind, so Phoenix shows them as "unknown", and they repeat what
+  PydanticAI's execute_tool span already shows. They're left out unless AHQ_TRACE_MCP=1,
+  which keeps them, labelled as tool or chain spans.
 """
 
 from __future__ import annotations
@@ -50,6 +55,40 @@ def _job_attributes_processor():
     return JobAttributesProcessor()
 
 
+# Instrumentation scopes of the MCP libraries' own protocol spans.
+MCP_SCOPES = {"mcp-python-sdk", "fastmcp"}
+
+
+def _scope(span) -> str:
+    scope = getattr(span, "instrumentation_scope", None)
+    return getattr(scope, "name", "") or ""
+
+
+def _mcp_filter(inner, keep: bool):
+    """Wraps the exporting processor: drops MCP protocol spans, or (keep) labels them."""
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    class McpSpanFilter(SpanProcessor):
+        def on_start(self, span, parent_context=None) -> None:
+            if keep and _scope(span) in MCP_SCOPES:
+                kind = "TOOL" if "tools/call" in (span.name or "") else "CHAIN"
+                span.set_attribute("openinference.span.kind", kind)
+            inner.on_start(span, parent_context)
+
+        def on_end(self, span) -> None:
+            if not keep and _scope(span) in MCP_SCOPES:
+                return
+            inner.on_end(span)
+
+        def shutdown(self) -> None:
+            inner.shutdown()
+
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            return inner.force_flush(timeout_millis)
+
+    return McpSpanFilter()
+
+
 def setup_telemetry(service_suffix: str = "", *, exporter=None, force: bool = False) -> bool:
     """Configure tracing. `exporter` is for tests (e.g. an InMemorySpanExporter)."""
     global _enabled
@@ -79,9 +118,11 @@ def setup_telemetry(service_suffix: str = "", *, exporter=None, force: bool = Fa
     if exporter is None:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        export = BatchSpanProcessor(OTLPSpanExporter())
     else:
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        export = SimpleSpanProcessor(exporter)
+    keep_mcp = os.environ.get("AHQ_TRACE_MCP", "0") in ("1", "true", "yes")
+    provider.add_span_processor(_mcp_filter(export, keep_mcp))
     trace.set_tracer_provider(provider)
     include_content = os.environ.get("AHQ_TRACE_CONTENT", "1") not in ("0", "false", "no")
     Agent.instrument_all(InstrumentationSettings(

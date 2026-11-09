@@ -313,7 +313,10 @@ def pglite_url(tmp_path_factory):
         pytest.skip("node/npm not installed")
     d = tmp_path_factory.mktemp("pglite")
     r = subprocess.run([npm, "install", "--prefix", str(d), "--no-audit", "--no-fund",
-                        "@electric-sql/pglite", "@electric-sql/pglite-socket", "@electric-sql/pglite-pgvector"],
+                        # Pinned: a set published to work together. (pglite-socket 0.2.19 and
+                        # pglite-pgvector 0.0.17 need pglite 0.5.16, which was never published.)
+                        "@electric-sql/pglite@0.5.15", "@electric-sql/pglite-socket@0.2.18",
+                        "@electric-sql/pglite-pgvector@0.0.16"],
                        capture_output=True, timeout=300)
     server = d / "node_modules/@electric-sql/pglite-socket/dist/scripts/server.js"
     if r.returncode != 0 or not server.exists():

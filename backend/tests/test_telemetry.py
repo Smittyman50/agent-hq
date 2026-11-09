@@ -127,3 +127,62 @@ async def test_spans_land_in_their_own_phoenix_project(hq):
     await settle(hq)
     assert spans()
     assert {s.resource.attributes.get("openinference.project.name") for s in spans()} == {"agent-hq"}
+
+
+def _mcp_provider(keep: bool):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    out = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(telemetry._mcp_filter(SimpleSpanProcessor(out), keep))
+    for scope, name in (("mcp-python-sdk", "MCP send tools/call screenshot"),
+                        ("fastmcp", "server/discover"), ("pydantic-ai", "execute_tool screenshot")):
+        with provider.get_tracer(scope).start_as_current_span(name):
+            pass
+    return {s.name: s for s in out.get_finished_spans()}
+
+
+def test_mcp_protocol_spans_are_left_out():
+    """The MCP libraries' own spans would show as 'unknown' in Phoenix and repeat the
+    execute_tool span; only the tool call itself is exported."""
+    assert list(_mcp_provider(keep=False)) == ["execute_tool screenshot"]
+
+
+def test_mcp_protocol_spans_kept_and_labelled_on_request():
+    got = _mcp_provider(keep=True)
+    assert got["MCP send tools/call screenshot"].attributes["openinference.span.kind"] == "TOOL"
+    assert got["server/discover"].attributes["openinference.span.kind"] == "CHAIN"
+    assert "openinference.span.kind" not in (got["execute_tool screenshot"].attributes or {})
+
+
+async def test_real_mcp_tool_call_exports_only_the_tool_span(hq):
+    import sys
+    from pathlib import Path
+
+    from opentelemetry import trace as ot
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    # Record what the MCP libraries emit on the live provider, before any filtering.
+    seen: list[str] = []
+
+    class Spy(SpanProcessor):
+        def on_end(self, span):
+            seen.append(telemetry._scope(span))
+
+    ot.get_tracer_provider().add_span_processor(Spy())
+    await hq.start_worker()
+    srv = (await hq.http.post("/api/tool-servers", json={
+        "name": "demo", "transport": "stdio", "command": sys.executable,
+        "args": [str(Path(__file__).parent / "demo_mcp_server.py")]})).json()
+    await hq.agent(name="Calc", description="Adds", model="fake:worker", tool_server_ids=[srv["id"]])
+    b = await hq.agent(name="Boss", model="fake:boss", delegates=["*"])
+    t = await hq.thread(b["id"])
+    await hq.say(t["id"], "add numbers")
+    await hq.wait_agent_replies(t["id"], 1)
+    await settle(hq)
+    assert telemetry.MCP_SCOPES & set(seen), "the MCP libraries emitted no spans of their own"
+    exported = spans()
+    assert not [s for s in exported if telemetry._scope(s) in telemetry.MCP_SCOPES]
+    names = [s.name for s in exported]
+    assert any("tool" in n and "add" in n for n in names), names
