@@ -51,7 +51,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import db, slots, subagents
+from . import approvals, db, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -66,6 +66,7 @@ from .models import (
     Role,
     MemoryKind,
     SubagentMode,
+    ToolApproval,
     SubagentRequest,
     Thread,
     ToolServer,
@@ -209,11 +210,17 @@ def desktop_servers(agent: AgentDef) -> list[ToolServer]:
     return [srv for srv in agent_tool_servers(agent) if srv.desktop]
 
 
-def build_tool_toolsets(agent: AgentDef) -> list[tuple[Any, str | None]]:
-    """[(toolset, desktop server id or None)] for the agent's MCP servers."""
+def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | None]]:
+    """[(toolset, desktop server id or None)] for the agent's MCP servers.
+
+    `wrap(toolset, server)` is applied to each server's toolset before its tool names are
+    prefixed (the approval check uses it, so it sees the server's own tool names).
+    """
     out = []
     for srv in agent_tool_servers(agent):
         ts = mcp_toolset(srv)
+        if wrap is not None:
+            ts = wrap(ts, srv)
         out.append((PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts,
                     srv.id if srv.desktop else None))
     return out
@@ -401,6 +408,36 @@ class PlannedSubagent(BaseModel):
     model: str | None = Field(default=None, description="One of the listed models (default: the first)")
     tools: list[str] | None = Field(default=None, description="Tool server names it needs (default: all you may give)")
     est_minutes: int = Field(default=10, description="Your estimate of how long it needs, in minutes")
+
+
+APPROVAL_NOTE = """Approvals: the user may require approval for some tool calls. Such a call
+waits for the user's decision. If a call comes back denied or not approved, don't try to
+get around it (no other tool or wording for the same thing): adapt, or report that it
+needs the user's approval. If a tool is blocked, it isn't available to you."""
+
+
+@dataclass
+class ApprovalToolset(WrapperToolset):
+    """Applies the server's approval rules to each call: allow, ask the user, or block."""
+
+    rt: Any = None
+    server_id: str = ""
+    server_name: str = ""
+    rules: dict[str, str] | None = None
+
+    async def call_tool(self, name, tool_args, ctx: RunContext[RunDeps], tool):
+        meta = ((getattr(tool, "tool_def", None) and tool.tool_def.metadata) or {}).get("meta")
+        mode = approvals.mode_for(self.rules, name, meta)
+        if mode == "block":
+            return (f"Not allowed: the user has blocked {name} on {self.server_name}. "
+                    "Don't try to do the same thing another way; say what you needed it for.")
+        if mode == "ask" and not approvals.remembered(ctx.deps.agent_id, ctx.deps.thread_id,
+                                                      self.server_id, name):
+            decision = await self.rt.ask_approval(ctx.deps, self.server_id, self.server_name,
+                                                  name, tool_args)
+            if decision["status"] != "approved":
+                return decision["message"]
+        return await super().call_tool(name, tool_args, ctx, tool)
 
 
 @dataclass
@@ -695,7 +732,9 @@ class Runtime:
                 "You are working on a task delegated by another agent. Do the work, then "
                 "return a WorkResult. If you cannot finish, return status 'failed' or "
                 "'partial' and explain why in the summary.")
-        toolsets = build_tool_toolsets(agent)
+        toolsets = build_tool_toolsets(agent, wrap=self._with_approvals)
+        if toolsets:
+            instructions.append(APPROVAL_NOTE)
         if any(desk for _, desk in toolsets):
             instructions.append(DESKTOP_RULES)
             toolsets.append((self._handoff_toolset(), None))
@@ -1076,6 +1115,83 @@ class Runtime:
                     "result": job.result, "error": job.error}
 
         return FunctionToolset([delegate, job_status], id="delegation")
+
+    # ------------------------------------------------------------ tool approvals
+
+    def _with_approvals(self, ts, srv: ToolServer):
+        return ApprovalToolset(ts, rt=self, server_id=srv.id, server_name=srv.name,
+                               rules=dict(srv.approval_rules or {}))
+
+    async def ask_approval(self, deps: RunDeps, server_id: str, server_name: str, tool: str,
+                           args: dict) -> dict:
+        """Post an approval card and wait for your decision (or the timeout)."""
+        agent = load_agent(deps.agent_id)
+        row = ToolApproval(agent_id=agent.id, agent_name=agent.name, thread_id=deps.thread_id,
+                           job_id=deps.job_id, server_id=server_id, server_name=server_name,
+                           tool=tool, args=args or {})
+        msg = await self.save_message(
+            deps.thread_id, Role.event, f"{agent.name} wants to run {tool} on {server_name}",
+            agent_id=agent.id, kind="tool_approval", approval_id=row.id, status="pending",
+            agent=agent.name, tool=tool, server=server_name, depth=deps.depth)
+        row.message_id = msg.id
+        with db.session() as s:
+            s.add(row)
+            s.commit()
+        await self.broker.publish(deps.thread_id, "approval_requested", approval_id=row.id,
+                                  agent=agent.name, tool=tool, server=server_name, depth=deps.depth)
+        await subagents.notify({"type": "tool_approval", "approval_id": row.id, "agent": agent.name,
+                                "tool": tool, "server": server_name, "thread_id": deps.thread_id,
+                                "args": {k: (str(v)[:500]) for k, v in (args or {}).items()},
+                                "link": subagents.link(f"/requests?approval={row.id}")})
+        wait = approvals.timeout_seconds()
+        async with released_slot():  # don't hold a worker slot while you decide
+            got = await self.broker.r.blpop([approvals.key(row.id)], timeout=wait)
+        with db.session() as s:
+            row = s.get(ToolApproval, row.id)
+            if row.status == "pending":  # nobody decided in time
+                row.status, row.decided_at = "expired", _now()
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+        if got is None and row.status == "expired":
+            await self.update_message(row.message_id, status="expired")
+            return {"status": "expired",
+                    "message": f"Not run: the user didn't approve {tool} within "
+                               f"{wait / 60:g} minutes. Report that it's waiting for approval."}
+        if row.status == "approved":
+            return {"status": "approved", "message": ""}
+        note = f" The user's note: {row.note}" if row.note else ""
+        return {"status": "denied",
+                "message": f"Not run: the user denied this call to {tool}.{note} "
+                           "Don't retry it or work around it."}
+
+    async def decide_approval(self, approval_id: str, approve: bool, *, note: str = "",
+                              remember_minutes: int = 0) -> ToolApproval:
+        with db.session() as s:
+            row = s.get(ToolApproval, approval_id)
+            if row is None:
+                raise LookupError("no such approval")
+            if row.status != "pending":
+                raise ValueError(f"this call is already {row.status}")
+            row.status = "approved" if approve else "denied"
+            row.note = note.strip()
+            row.decided_at = _now()
+            if approve and remember_minutes > 0:
+                row.remember_until = _now() + timedelta(minutes=remember_minutes)
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+        # Wake the waiting tool call (it expires on its own if nobody is waiting any more).
+        await self.broker.r.rpush(approvals.key(row.id), row.status)
+        await self.broker.r.expire(approvals.key(row.id), 3600)
+        if row.message_id:
+            await self.update_message(row.message_id, status=row.status, note=row.note,
+                                      remember_until=row.remember_until.isoformat()
+                                      if row.remember_until else None)
+        await subagents.notify({"type": "tool_approval_decision", "approval_id": row.id,
+                                "agent": row.agent_name, "tool": row.tool, "status": row.status,
+                                "note": row.note})
+        return row
 
     # ------------------------------------------------------------ sub-agent tools
 

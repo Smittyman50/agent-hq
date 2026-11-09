@@ -1,10 +1,11 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, ToolServer, blankServer } from './api.service';
+import { SlicePipe } from '@angular/common';
+import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.service';
 
 @Component({
   selector: 'hq-tools',
-  imports: [FormsModule],
+  imports: [FormsModule, SlicePipe],
   template: `
   <div class="split">
     <aside class="list">
@@ -51,9 +52,35 @@ import { Api, ToolServer, blankServer } from './api.service';
             <button type="button" class="danger" (click)="remove(d)">Delete</button>
           }
         </div>
-        @if (tools().length) {
-          <h3>Tools offered</h3>
-          <ul class="tools">@for (t of tools(); track t.name) { <li><code>{{ t.name }}</code> {{ t.description }}</li> }</ul>
+        @if (d.id) {
+          <h3>Approvals</h3>
+          <p class="hint inline-hint"><b>Allow</b> runs the call. <b>Ask me</b> makes the agent wait for your
+            OK (in the chat, the Requests inbox and on MQTT). <b>Block</b> refuses it. Your rules here override
+            what the server suggests. Sub-agents follow the same rules.</p>
+          <table class="grid approvals">
+            <tr><th>Tool</th><th>Approval</th><th></th></tr>
+            <tr><td><i>Every tool without its own rule</i></td>
+              <td><select [name]="'rule_all'" [ngModel]="d.approval_rules['*'] ?? ''" (ngModelChange)="setRule(d, '*', $event)">
+                <option value="">Server's suggestion, else allow</option>
+                @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td></tr>
+            @for (t of tools(); track t.name) {
+              <tr><td><code>{{ t.name }}</code><div class="muted small">{{ t.description | slice:0:140 }}</div></td>
+                <td><select [name]="'rule_' + t.name" [ngModel]="d.approval_rules[t.name] ?? ''" (ngModelChange)="setRule(d, t.name, $event)">
+                  <option value="">Default ({{ label(defaultFor(d, t)) }})</option>
+                  @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td>
+                <td class="muted small">@if (t.suggested_approval && t.suggested_approval !== 'allow') { server suggests {{ label(t.suggested_approval) }} }</td></tr>
+            }
+            @for (name of ruleOnly(d); track name) {
+              <tr><td><code>{{ name }}</code> <span class="muted small">(not offered right now)</span></td>
+                <td><select [name]="'rule_' + name" [ngModel]="d.approval_rules[name]" (ngModelChange)="setRule(d, name, $event)">
+                  <option value="">Remove rule</option>
+                  @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td></tr>
+            }
+          </table>
+          @if (!tools().length) {
+            <p class="hint inline-hint">Use <b>Test connection</b> to list this server's tools and set a rule per tool.</p>
+          }
+          <div class="actions"><button type="submit">Save approvals</button></div>
         }
       </form>
     } @else { <div class="empty">Select a tool server or register a new one.</div> }
@@ -63,7 +90,9 @@ export class ToolsPage implements OnInit {
   private api = inject(Api);
   servers = signal<ToolServer[]>([]);
   draft = signal<ToolServer | null>(null);
-  tools = signal<{ name: string; description: string }[]>([]);
+  tools = signal<ProbedTool[]>([]);
+  modes: { value: ApprovalMode; label: string }[] = [
+    { value: 'allow', label: 'Allow' }, { value: 'ask', label: 'Ask me' }, { value: 'block', label: 'Block' }];
   error = signal('');
 
   ngOnInit() { this.load(); }
@@ -71,7 +100,29 @@ export class ToolsPage implements OnInit {
 
   edit(t: ToolServer | null) {
     this.error.set(''); this.tools.set([]);
-    this.draft.set(t ? structuredClone(t) : blankServer());
+    const d = t ? structuredClone(t) : blankServer();
+    d.approval_rules ??= {};
+    this.draft.set(d);
+    if (d.id) this.probe(d, true);
+  }
+
+  label(m: ApprovalMode | null | undefined) {
+    return this.modes.find(x => x.value === m)?.label ?? 'Allow';
+  }
+
+  defaultFor(d: ToolServer, t: ProbedTool): ApprovalMode {
+    return d.approval_rules['*'] ?? t.suggested_approval ?? 'allow';
+  }
+
+  setRule(d: ToolServer, tool: string, mode: string) {
+    if (mode) d.approval_rules[tool] = mode as ApprovalMode;
+    else delete d.approval_rules[tool];
+    d.approval_rules = { ...d.approval_rules };
+  }
+
+  ruleOnly(d: ToolServer) {
+    const offered = new Set(this.tools().map(t => t.name));
+    return Object.keys(d.approval_rules).filter(k => k !== '*' && !offered.has(k));
   }
 
   splitLines(v: string) { return v.split('\n').map(x => x.trim()).filter(Boolean); }
@@ -89,11 +140,12 @@ export class ToolsPage implements OnInit {
     });
   }
 
-  probe(d: ToolServer) {
-    this.error.set(''); this.tools.set([]);
+  probe(d: ToolServer, quiet = false) {
+    if (!quiet) this.error.set('');
+    this.tools.set([]);
     this.api.probeServer(d.id!).subscribe({
       next: t => this.tools.set(t),
-      error: e => this.error.set(e.error?.detail ?? 'Connection failed'),
+      error: e => { if (!quiet) this.error.set(e.error?.detail ?? 'Connection failed'); },
     });
   }
 

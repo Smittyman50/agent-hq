@@ -40,7 +40,7 @@ export class Workspace {
   }
 
   refreshPending() {
-    this.api.pendingRequests().subscribe({ next: r => this.pendingRequests.set(r.pending), error: () => {} });
+    this.api.inboxCount().subscribe({ next: r => this.pendingRequests.set(r.total), error: () => {} });
   }
 
   reload() {

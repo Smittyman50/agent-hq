@@ -1,0 +1,5 @@
+# Hosts the workbenches may reach through the egress proxy (one regular expression per
+# line, matched against the host name). Everything else is refused. PyPI is enough for
+# pip_install. Add a line and run `docker compose restart egress` to allow another host.
+^pypi\.org$
+^files\.pythonhosted\.org$

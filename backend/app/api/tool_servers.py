@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from .. import approvals
 from ..db import get_session
 from ..models import AgentDef, ToolServer, Transport
 from ..runtime import mcp_toolset
@@ -23,7 +24,15 @@ class ToolServerIn(BaseModel):
     env: dict[str, str] = {}
     prefix_tools: bool = True
     desktop: bool = False
+    # {tool name or "*": "allow" | "ask" | "block"}. None (left out) keeps the current rules.
+    approval_rules: dict[str, str] | None = None
     enabled: bool = True
+
+
+def _check_rules(rules: dict[str, str] | None) -> None:
+    for tool, mode in (rules or {}).items():
+        if mode not in approvals.MODES:
+            raise HTTPException(422, f"approval for {tool} must be one of {', '.join(approvals.MODES)}")
 
 
 @router.get("", response_model=list[ToolServer])
@@ -35,7 +44,8 @@ def list_servers(s: Session = Depends(get_session)):
 def create_server(body: ToolServerIn, s: Session = Depends(get_session)):
     if s.exec(select(ToolServer).where(ToolServer.name == body.name)).first():
         raise HTTPException(409, f"a tool server named '{body.name}' already exists")
-    t = ToolServer(**body.model_dump())
+    _check_rules(body.approval_rules)
+    t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {}})
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -47,8 +57,11 @@ def update_server(server_id: str, body: ToolServerIn, s: Session = Depends(get_s
     t = s.get(ToolServer, server_id)
     if not t:
         raise HTTPException(404)
-    for k, v in body.model_dump().items():
+    _check_rules(body.approval_rules)
+    for k, v in body.model_dump(exclude={"approval_rules"}).items():
         setattr(t, k, v)
+    if body.approval_rules is not None:
+        t.approval_rules = {k: v for k, v in body.approval_rules.items() if v}
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -78,6 +91,11 @@ async def probe_server(server_id: str, s: Session = Depends(get_session)):
         ts = mcp_toolset(t)
         async with ts:
             tools = await ts.client.list_tools()
-        return [{"name": x.name, "description": x.description} for x in tools]
+        out = []
+        for x in tools:
+            hint = approvals.suggested(getattr(x, "meta", None))
+            out.append({"name": x.name, "description": x.description, "suggested_approval": hint,
+                        "approval": approvals.mode_for(t.approval_rules, x.name, getattr(x, "meta", None))})
+        return out
     except Exception as e:
         raise HTTPException(502, f"could not reach {t.name}: {e}") from e

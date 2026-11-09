@@ -261,6 +261,9 @@ async def scheduler_loop(rt, tick: float = SCHEDULER_TICK) -> None:
             from . import subagents
 
             subagents.sweep()  # retire expired sub-agents, lapse old requests and grants
+            from . import approvals
+
+            approvals.sweep()  # tool calls nobody decided in time
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -303,6 +303,12 @@ def grant_limits(req: SubagentRequest) -> dict[str, Any]:
             "models": g.get("models") or [], "tool_server_ids": g.get("tool_server_ids")}
 
 
+def pending_requests_total() -> int:
+    with db.session() as s:
+        return s.exec(select(func.count()).select_from(SubagentRequest)
+                      .where(SubagentRequest.status == "pending")).one()
+
+
 def pending_count(agent_id: str) -> int:
     with db.session() as s:
         return s.exec(select(func.count()).select_from(SubagentRequest).where(

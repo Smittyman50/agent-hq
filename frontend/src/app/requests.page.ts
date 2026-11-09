@@ -5,16 +5,30 @@ import { Api, SubagentRequest } from './api.service';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { RequestCard } from './request-card';
+import { ApprovalCard } from './approval-card';
+import { ToolApproval } from './api.service';
 import { Workspace } from './workspace';
 
 /** Your inbox of sub-agent requests: pending ones first, then decided ones. */
 @Component({
   selector: 'hq-requests',
-  imports: [DatePipe, NgTemplateOutlet, Avatar, Icon, RequestCard],
+  imports: [DatePipe, NgTemplateOutlet, Avatar, Icon, RequestCard, ApprovalCard],
   template: `
   <div class="page-wrap">
     <header class="crumbs"><hq-icon name="inbox" [size]="18" /><strong>Requests</strong>
-      <span class="muted small">agents asking for sub-agents</span></header>
+      <span class="muted small">tool calls waiting for your OK, and agents asking for sub-agents</span></header>
+    <section class="approvals-list">
+      <h2>Tool approvals ({{ pendingApprovals().length }} waiting)</h2>
+      @for (a of pendingApprovals(); track a.id) {
+        <hq-approval-card [approvalId]="a.id" [showLink]="true" (decided)="reload()" />
+      } @empty { <p class="hint">No tool calls are waiting. Set which tools need your OK under Settings → Tools → Approvals.</p> }
+      @if (recentApprovals().length) {
+        <details class="recent"><summary>Recent decisions ({{ recentApprovals().length }})</summary>
+          @for (a of recentApprovals(); track a.id) { <hq-approval-card [approvalId]="a.id" [showLink]="true" /> }
+        </details>
+      }
+    </section>
+    <h2 class="section-title">Sub-agent requests</h2>
     <div class="split">
       <aside class="list">
         <div class="list-head"><h2>Pending ({{ pending().length }})</h2></div>
@@ -59,6 +73,9 @@ export class RequestsPage implements OnInit {
   pending = computed(() => this.all().filter(r => r.status === 'pending'));
   decided = computed(() => this.all().filter(r => r.status !== 'pending'));
   current = computed(() => this.all().find(r => r.id === this.selected()));
+  approvals = signal<ToolApproval[]>([]);
+  pendingApprovals = computed(() => this.approvals().filter(a => a.status === 'pending'));
+  recentApprovals = computed(() => this.approvals().filter(a => a.status !== 'pending').slice(0, 20));
 
   ngOnInit() {
     this.route.queryParamMap.subscribe(p => { if (p.get('id')) this.selected.set(p.get('id')); });
@@ -66,6 +83,7 @@ export class RequestsPage implements OnInit {
   }
 
   reload() {
+    this.api.toolApprovals().subscribe(a => this.approvals.set(a));
     this.api.subagentRequests().subscribe(rs => {
       this.all.set(rs);
       if (!this.selected() && rs.length) this.selected.set((rs.find(r => r.status === 'pending') ?? rs[0]).id);

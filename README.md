@@ -286,6 +286,56 @@ Plain HTTP on port 8000 is published for Shockwave itself only (`127.0.0.1`). Wh
 
 **Desktop viewers are behind the same sign-in.** Their ports are no longer published. Instead, Caddy serves each one at `https://<site>/desktops/desktop-N/` and checks your Agent HQ session first (`forward_auth` to `/api/auth/verify`). Each desktop's `SUBFOLDER` must match its path. On the agent, set **Desktop viewer URL** to `/desktops/desktop-1/`.
 
+### Workbenches: an agent's own Python environment
+
+A workbench is a small container per agent that gives it somewhere to write and run code. It's like a desktop, but for scripts instead of a browser. The `workbench-1` service in `docker-compose.yml` exposes an MCP server on `:8770` with these tools:
+
+| Tool | What it does | Approval suggested |
+|---|---|---|
+| `run_python` | runs Python in the workbench's own virtual environment | ask |
+| `run_shell` | runs a bash command in the workspace | ask |
+| `pip_install` | installs packages into the venv (they persist) | ask |
+| `run_script` | runs a saved script by name, with JSON arguments | ask |
+| `save_script`, `list_scripts` | saves a working script as a named, reusable tool | allow |
+| `read_file`, `write_file`, `list_files` | files in the workspace | allow |
+
+**Storage.** Everything lives in the `workbench-1` volume, mounted at `/work`:
+- the agent's files
+- the venv at `/work/.venv`, so installed packages survive restarts and rebuilds
+- saved scripts in `/work/scripts`
+
+**Limits.**
+- **Runs:** each run has a timeout (default 120 seconds), and the run and any processes it started are killed when it's reached. Output is capped at 20,000 characters.
+- **Container:** it runs as an unprivileged user with a read-only root filesystem and no Linux capabilities, capped at 2 CPUs, 2 GB of memory and 512 processes.
+
+**The network is off by default.** The workbench is only on the internal `workbench` network, which has no route to the internet or your LAN. Its one way out is the `egress` proxy, which allows only the hosts in `deploy/egress/allowlist`. That's PyPI by default, so `pip_install` works.
+- **Allow another host:** add it to the allowlist, then run `docker compose restart egress`.
+- **Full network access for one workbench (internet and LAN):** add `default` to its `networks:`.
+
+**Set one up:**
+1. Run `docker compose up -d --build workbench-1 egress`.
+2. Register `http://workbench-1:8770/mcp` as an HTTP tool server under **Settings → Tools**.
+3. Tick it on the agent that owns it.
+4. Its code tools already ask for approval (see the table above). Change that per tool under the server's **Approvals**.
+
+For another agent, copy the `workbench-1` block as `workbench-2`, with its own volume.
+
+### Tool approvals
+
+For every tool on every tool server, you choose under **Settings → Tools → (server) → Approvals**:
+- **Allow:** the call runs.
+- **Ask me:** the call waits for your OK.
+- **Block:** the call is refused, and the agent is told it isn't allowed.
+
+A rule on `*` covers every tool on that server that doesn't have its own rule. A server can suggest a mode for each tool in the tool's MCP metadata (`{"agent_hq/approval": "ask"}`); the workbench does this for the tools that run code. Your rules always win. A tool with no rule and no suggestion is allowed, so your existing tool servers behave exactly as before.
+
+**When a call needs your OK:**
+- **Where it shows up:** in the conversation, as a card showing exactly what the agent wants to run, with code and commands shown as code. It also appears in the **Requests** inbox (with the sidebar badge) and on MQTT as a `tool_approval` notification.
+- **Your options:** approve it; approve it and don't ask again for that tool, from that agent, in that conversation, for an hour; or deny it, optionally with a note the agent sees.
+- **While it waits:** the agent's worker slot is freed for other work.
+- **If you don't decide** within `AHQ_APPROVAL_TIMEOUT_MINUTES` (default 30), the call isn't made, and the agent is told it's waiting for approval.
+- **Sub-agents** follow the same rules as everyone else.
+
 ### Agent desktops
 
 To add another desktop, copy the `desktop-1` block in `docker-compose.yml`. Name it `desktop-2`, set `SUBFOLDER: /desktops/desktop-2/`, and give it its own `/config` volume. It needs no published port, and Caddy routes any `desktop-<number>` without changes. Then, in the UI:
@@ -615,6 +665,7 @@ backend/app/
   vision.py          look / locate / click_on via a per-agent vision model
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
   auth.py            sign-in: accounts, sessions, API tokens, TOTP, lockout, audit log, CLI
+  approvals.py       tool approvals: allow / ask / block per tool, decisions, timeouts
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
@@ -631,6 +682,8 @@ desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop M
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 deploy/caddy/        HTTPS (step-ca ACME) and sign-in-protected desktop viewers
+deploy/egress/       the workbenches' allowlisting egress proxy (PyPI by default)
+workbench/           an agent's workbench: Python venv, files, shell, saved scripts (MCP)
 deploy/searxng/      a private SearXNG for the web reader's search (JSON on, limiter off)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
 ```

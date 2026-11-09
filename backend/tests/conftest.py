@@ -167,10 +167,26 @@ def retrying(messages, info):
     return worker_fn(messages, info)
 
 
+def coder(calls: int = 1):
+    """Runs print(6*7) on its workbench `calls` times, then reports what came back."""
+    def fn(messages, info):
+        tool = next((t.name for t in info.function_tools if t.name.endswith("run_python")), None)
+        returns = [r for r in reversed(_tool_returns(messages)) if r.tool_name == tool]
+        if tool is None:
+            return ModelResponse(parts=[TextPart("I have no workbench.")])
+        if len(returns) < calls:
+            return ModelResponse(parts=[ToolCallPart(tool, {"code": "print(6*7)"})])
+        def show(c):
+            return c.get("stdout", "").strip() if isinstance(c, dict) else str(c)
+        return ModelResponse(parts=[TextPart(" | ".join(show(r.content) for r in returns))])
+    return fn
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
-           "requester": requester, "retrying": retrying}
+           "requester": requester, "retrying": retrying,
+           "coder": coder(1), "coder-2": coder(2)}
 
 
 @pytest.fixture(autouse=True)

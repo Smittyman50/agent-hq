@@ -166,8 +166,34 @@ class ToolServer(SQLModel, table=True):
     # This server drives an agent desktop. Its tools pause while you have control of the
     # desktop, and agents using it get the ask_user_to_take_over tool.
     desktop: bool = False
+    # Approvals, per tool: {"run_shell": "ask", "*": "allow"} with modes allow | ask | block.
+    # A tool with no rule (and no "*") uses what the server suggests in the tool's MCP
+    # metadata ("agent_hq/approval"), else allow.
+    approval_rules: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class ToolApproval(SQLModel, table=True):
+    """A tool call waiting for (or decided by) you, under an "ask" approval rule."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    thread_id: str = Field(index=True)
+    job_id: str | None = None
+    server_id: str = Field(index=True)
+    server_name: str = ""
+    tool: str = Field(index=True)
+    args: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # pending | approved | denied | expired
+    status: str = Field(default="pending", index=True)
+    note: str = Field(default="", sa_column=Column(Text, default=""))
+    # On approval: don't ask again for this tool, agent and conversation until then.
+    remember_until: datetime | None = None
+    message_id: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+    decided_at: datetime | None = None
 
 
 class Thread(SQLModel, table=True):

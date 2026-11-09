@@ -9,13 +9,14 @@ import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Markdown } from './markdown';
 import { RequestCard } from './request-card';
+import { ApprovalCard } from './approval-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation">
@@ -42,6 +43,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
           @for (m of messages(); track m.id) {
             @if (m.meta['kind'] === 'subagent_request' && m.meta['request_id']) {
               <hq-request-card [requestId]="$any(m.meta['request_id'])" [version]="$any(m.meta['status']) + ':' + $any(m.meta['used'])" />
+            } @else if (m.meta['kind'] === 'tool_approval' && m.meta['approval_id']) {
+              <hq-approval-card [approvalId]="$any(m.meta['approval_id'])" [version]="m.meta['status']" />
             } @else if (exchange(m); as x) {
               <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
                 <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">
@@ -378,6 +381,7 @@ export class ChatPage implements OnInit, OnDestroy {
         break;
       }
       case 'subagent_spawned': this.log(ev, `${ev['agent']} created sub-agent ${ev['subagent']} on ${ev['model']}`, 'deleg'); break;
+      case 'approval_requested': this.log(ev, `${ev['agent']} is waiting for your OK to run ${ev['tool']} on ${ev['server']}`, 'queue'); this.ws.refreshPending(); break;
       case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); this.ws.refreshPending(); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;
       case 'model_fallback': this.log(ev, `${ev['agent']} → fallback model ${ev['to_model']}: ${ev['reason']}`, 'err'); break;

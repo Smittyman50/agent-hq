@@ -99,6 +99,20 @@ export interface ToolServer {
   prefix_tools: boolean;
   desktop: boolean;
   enabled: boolean;
+  approval_rules: Record<string, ApprovalMode>;
+}
+
+export type ApprovalMode = 'allow' | 'ask' | 'block';
+export interface ProbedTool {
+  name: string; description: string;
+  suggested_approval: ApprovalMode | null;   // what the server suggests in its metadata
+  approval: ApprovalMode;                    // what applies now
+}
+export interface ToolApproval {
+  id: string; agent_id: string; agent_name: string; thread_id: string; thread_title: string;
+  job_id: string | null; server_id: string; server_name: string; tool: string;
+  args: Record<string, unknown>; status: 'pending' | 'approved' | 'denied' | 'expired';
+  note: string; remember_until: string | null; created_at: string; decided_at: string | null;
 }
 
 export interface Thread { id: string; agent_id: string; title: string; created_at: string; }
@@ -213,7 +227,7 @@ export function blankSubscription(agent_id = ''): Subscription {
 
 export function blankServer(): ToolServer {
   return { name: '', description: '', transport: 'http', url: '', command: null, args: [],
-    env: {}, prefix_tools: true, desktop: false, enabled: true };
+    env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
 }
 
 @Injectable({ providedIn: 'root' })
@@ -302,8 +316,17 @@ export class Api {
   }
   deleteServer(id: string) { return this.http.delete(`/api/tool-servers/${id}`); }
   probeServer(id: string) {
-    return this.http.get<{ name: string; description: string }[]>(`/api/tool-servers/${id}/tools`);
+    return this.http.get<ProbedTool[]>(`/api/tool-servers/${id}/tools`);
   }
+
+  toolApprovals(status?: string) {
+    return this.http.get<ToolApproval[]>('/api/tool-approvals', { params: status ? { status } : {} });
+  }
+  toolApproval(id: string) { return this.http.get<ToolApproval>(`/api/tool-approvals/${id}`); }
+  decideApproval(id: string, approve: boolean, note = '', remember_minutes = 0) {
+    return this.http.post<ToolApproval>(`/api/tool-approvals/${id}/decide`, { approve, note, remember_minutes });
+  }
+  inboxCount() { return this.http.get<{ requests: number; approvals: number; total: number }>('/api/inbox/count'); }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

@@ -14,6 +14,8 @@ x-app: &app
   # The host's name, for readable worker names like worker-shockwave-7090. (Or set
   # AHQ_HOST_NAME in .env, e.g. on Docker Desktop, where this file doesn't exist.)
   volumes: ["/etc/hostname:/etc/host_hostname:ro"]
+  # "workbench" lets workers (and the API, to list tools) reach the agents' workbenches.
+  networks: [default, workbench]
 
 services:
   hq:
@@ -89,6 +91,48 @@ services:
       TZ: America/New_York
       SUBFOLDER: /desktops/desktop-1/   # must match the service name
 
+  # An agent's workbench: its own persistent Python venv, files and shell (MCP on :8770).
+  # Register http://workbench-1:8770/mcp in the UI (Settings -> Tools), tick it on the
+  # agent that owns it, and keep "Prefix tool names" on if an agent has more than one.
+  # Copy this block (workbench-2 and its own volume) for each agent that needs one.
+  #
+  # Network: OFF by default. It's only on the internal "workbench" network, which has no
+  # route out; the egress proxy lets it reach PyPI for pip installs and nothing else.
+  # To give it full network access (internet and LAN), add "default" to its networks.
+  workbench-1:
+    build: ./workbench
+    restart: unless-stopped
+    networks: [workbench]
+    volumes: ["workbench-1:/work"]   # files, the venv (/work/.venv) and saved scripts
+    environment:
+      HTTPS_PROXY: http://egress:8888
+      HTTP_PROXY: http://egress:8888
+      NO_PROXY: localhost,127.0.0.1
+    read_only: true                  # only /work and /tmp are writable
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 512
+
+  # The workbenches' only way out: an allowlisting proxy (PyPI by default). Edit
+  # deploy/egress/allowlist and `docker compose restart egress` to allow other hosts.
+  egress:
+    build: ./deploy/egress
+    restart: unless-stopped
+    networks: [default, workbench]
+    volumes: ["./deploy/egress/allowlist:/etc/tinyproxy/allowlist:ro"]
+    read_only: true
+    tmpfs: ["/tmp", "/run", "/var/log/tinyproxy"]
+
 volumes:
   caddy-data:
   caddy-config:
+  workbench-1:
+
+networks:
+  default:
+  # Internal: containers on only this network can't reach the internet or your LAN.
+  workbench:
+    internal: true
