@@ -30,7 +30,7 @@ import { Workspace } from './workspace';
           Also notify me on MQTT (topic set by AHQ_MQTT_NOTIFY_TOPIC, default agent-hq/notifications)</label>
         @if (msg()) { <p class="hint">{{ msg() }}</p> }
         <div class="actions"><button type="submit">Save</button>
-          <a class="ghost-link" routerLink="/requests">Requests inbox ({{ ws.pendingRequests() }} pending)</a></div>
+          <a class="ghost-link" routerLink="/requests/subagents">Requests inbox ({{ ws.pendingRequests() }} pending)</a></div>
       </form>
     }
 

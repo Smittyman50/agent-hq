@@ -369,3 +369,15 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 
 /* Cards on the Requests page use the full width; in a chat they stay message-sized. */
 .approvals-list .req-card { max-width: none; }
+
+/* Requests sub-pages */
+.settings-nav .count-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--bad); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.inbox { padding: 16px 22px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.inbox .hint.inline-hint { padding: 0; margin: 0 0 4px; }
+.inbox .req-card { max-width: none; }
+.inbox .linked .req-card { box-shadow: 0 0 0 2px var(--accent); }
+.inbox details.recent { margin-top: 8px; }
+.inbox details.recent summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.inbox details.recent[open] { display: flex; flex-direction: column; gap: 8px; }
+.empty-box { border: 1px dashed var(--line); border-radius: 10px; padding: 28px; text-align: center; color: var(--muted); }

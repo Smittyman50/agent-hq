@@ -8,7 +8,8 @@ import { ModelsPage } from './models.page';
 import { MemoryPage } from './memory.page';
 import { SettingsLayout } from './settings';
 import { SchedulesPage } from './schedules.page';
-import { RequestsPage } from './requests.page';
+import { ApprovalsInbox, SkillsInbox, SubagentInbox } from './requests.page';
+import { RequestsHome, RequestsLayout } from './requests';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
 import { LoginPage } from './login.page';
@@ -22,7 +23,14 @@ export const routes: Routes = [
   { path: 'chat', component: ChatPage, canActivate: [authGuard] },
   { path: 'chat/:id', component: ChatPage, canActivate: [authGuard] },
   { path: 'schedules', component: SchedulesPage, canActivate: [authGuard] },
-  { path: 'requests', component: RequestsPage, canActivate: [authGuard] },
+  {
+    path: 'requests', component: RequestsLayout, canActivate: [authGuard], children: [
+      { path: '', pathMatch: 'full', component: RequestsHome },
+      { path: 'approvals', component: ApprovalsInbox },
+      { path: 'skills', component: SkillsInbox },
+      { path: 'subagents', component: SubagentInbox },
+    ],
+  },
   {
     path: 'settings', component: SettingsLayout, canActivate: [authGuard], children: [
       { path: '', pathMatch: 'full', redirectTo: 'agents' },

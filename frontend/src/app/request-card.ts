@@ -91,7 +91,7 @@ interface Form {
               <div class="actions">
                 <button type="button" (click)="decide(true)" [disabled]="busy()">Approve</button>
                 <button type="button" class="danger" (click)="decide(false)" [disabled]="busy()">Deny</button>
-                @if (showLink()) { <a class="ghost-link" routerLink="/requests" [queryParams]="{ id: r.id }">Open in Requests</a> }
+                @if (showLink()) { <a class="ghost-link" routerLink="/requests/subagents" [queryParams]="{ id: r.id }">Open in Requests</a> }
               </div>
             </div>
           }

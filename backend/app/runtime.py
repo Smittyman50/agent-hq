@@ -1245,7 +1245,7 @@ class Runtime:
                                     agent=me.name, skill=name, depth=ctx.deps.depth)
             await subagents.notify({"type": "skill_proposal", "proposal_id": p.id, "agent": me.name,
                                     "skill": name, "title": title, "revision": bool(base),
-                                    "reason": reason, "link": subagents.link(f"/requests?skill={p.id}")})
+                                    "reason": reason, "link": subagents.link(f"/requests/skills?skill={p.id}")})
             return {"status": "pending", "summary": "Sent to the user for review. Carry on with the task."}
 
         tools = [load_skill, list_skills] + ([propose_skill] if learning != LearningMode.off else [])
@@ -1304,7 +1304,7 @@ class Runtime:
         await subagents.notify({"type": "tool_approval", "approval_id": row.id, "agent": agent.name,
                                 "tool": tool, "server": server_name, "thread_id": deps.thread_id,
                                 "args": {k: (str(v)[:500]) for k, v in (args or {}).items()},
-                                "link": subagents.link(f"/requests?approval={row.id}")})
+                                "link": subagents.link(f"/requests/approvals?approval={row.id}")})
         wait = approvals.timeout_seconds()
         async with released_slot():  # don't hold a worker slot while you decide
             got = await self.broker.r.blpop([approvals.key(row.id)], timeout=wait)
@@ -1558,7 +1558,7 @@ class Runtime:
                               "subagents": [{k: r[k] for k in ("role", "purpose", "label", "est_minutes")}
                                             for r in rows],
                               "total_minutes": est["total_minutes"], "hours": hours,
-                              "link": _sa.link(f"/requests?id={req.id}")})
+                              "link": _sa.link(f"/requests/subagents?id={req.id}")})
             if ctx.deps.depth == 0:
                 return {"status": "pending", "request_id": req.id,
                         "summary": "Sent to the user for approval. You'll be woken in this "
