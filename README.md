@@ -13,6 +13,15 @@ A self-hosted multi-agent system. You add model providers (your Ollama servers, 
 
 Nothing about specific agents or models is in the code. Providers, names, roles, instructions, models, tools, pools, delegation rights and event subscriptions are all database rows, so renaming or re-tasking an agent takes effect on its next job.
 
+**Agents get better with use, under your control:**
+- **Skills:** written-down procedures agents follow, propose and improve.
+- **The learning loop:** your 👍/👎 and corrections, and agents looking back at their work.
+- **Your profile:** what every agent always knows about you.
+- **A knowledge library:** your documents, runbooks and Obsidian vault, searchable with citations.
+- **Evals:** they show whether a change actually helps before it's applied.
+
+What they learn waits for your approval unless you say otherwise.
+
 ## Architecture
 
 ```mermaid
@@ -234,15 +243,24 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - scheduler: every cadence and its description, bad cadences explained, time zones across a DST change, firing into the schedule's own conversation exactly once (two checkers at once), catching up once after downtime, skipping while a run is still going, run now, and disabled agents
 - ChatGPT plan providers: the full sign-in by pasted callback (PKCE, state, single use, declined consent), tokens never returned or exported, model listing, an agent turn on the plan through the Responses API (`store: false`, `stream: true`, no unsupported fields), and two workers refreshing at once without ever reusing a refresh token
 - import and export
+- sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
+- sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
+- workbenches and tool approvals: allow/ask/block per tool, waiting for a decision, "don't ask again", timeouts, and a real workbench over MCP
+- skills: matching, loading, outcomes, versions and rollback, proposals in propose/auto/off modes, diffs and stale warnings
+- the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
+- your profile: in every agent's instructions (or not, per agent), the word cap, and suggestions you approve
+- the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
+- evals: cases from replies and feedback, replaying recorded tool calls, read-only tools running for real only when allowed, Ask/Block tools never running, the judge, and skill changes tested without and with (Auto-mode changes held when they make things worse)
 
 ## Deploy (Docker)
 
 1. **Infrastructure,** once, on one host: `deploy/infra/docker-compose.yml` (Postgres 17 with pgvector, Valkey 8, and optionally Mosquitto 2 via the `mqtt` profile). Keeping Postgres and Valkey together on a host dedicated to Agent HQ while sharing your lab's existing MQTT broker works well: the first two hold Agent HQ's state, and MQTT is how the rest of the lab talks to it.
 2. **Application:** `cp .env.example .env`, fill in the URLs and keys, set up HTTPS (next section), then `docker compose up -d --build`. This starts:
    - `caddy`: HTTPS on 443 (certificate from your step-ca), with http:// redirected
-   - `hq`: API, UI and MQTT bridge (plain HTTP on 8000, for this host only)
+   - `hq`: API, UI and MQTT bridge (plain HTTP on 8000, for this host only). Its `hq-data` volume holds the knowledge library's uploads and Git clones. It also reads your step-ca root from `deploy/caddy/root_ca.crt` (`AHQ_EXTRA_CA_FILE`), so Git and web sources on your HTTPS hosts (your Gitea) are trusted.
    - `worker`: pool `default`
    - `worker-desktop` and `desktop-1`: pool `desktop`, plus an example agent desktop
+   - `workbench-1` and `egress`: an example agent workbench and its allowlisting proxy (see Workbenches)
 3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 4. **More workers on one host:** `docker compose up -d --scale worker=3`.
 
@@ -336,10 +354,43 @@ A **skill** is a short, named procedure. It has a title, a line saying *when to 
   - **Where it shows up:** in the conversation, in the **Requests** inbox (with the sidebar badge), and on MQTT as a `skill_proposal` notification.
   - **Your options:** approve it, edit it first, or reject it, with an optional note.
   - **Revisions** show a diff against the current version, with a warning if the skill changed after the agent wrote its proposal.
-- **Save automatically:** the change is saved at once and you're told. You can review it or roll it back on the Skills page.
+- **Save automatically:** the change is saved at once and you're told. You can review it or roll it back on the Skills page. If there are test cases for that agent or skill (see Evals), the change is tested first. It's applied only if it doesn't lower the pass rate; otherwise it waits for you.
 - **Off:** the agent uses skills but can't propose them.
 
-Sub-agents use their parent's skills but don't propose any. Skills never grant tools: every call a skill leads to still goes through your tool approvals.
+Skills can come from three places besides your own writing: an agent's `propose_skill` call, a reflection after a job (see the learning loop), or a document in the knowledge library ("Propose skills" turns a runbook's procedures into proposals). Each proposal records where it came from. Sub-agents use their parent's skills but don't propose any. Skills never grant tools: every call a skill leads to still goes through your tool approvals.
+
+### The learning loop: ratings, corrections and reflections
+
+**Rate replies.** Every agent reply has 👍 and 👎 buttons. A 👎 opens a box for *what it should have done*, which is the most useful thing an agent can learn from. Ratings show on each skill's stats.
+
+**Corrections count too.** A reply such as "No, use the TrueNAS datastore" or "from now on, failures first" is recognised as a correction of the job the agent just did.
+
+**Reflection.** After a job that's worth a look, the agent rereads the conversation, its tool calls, how the job ended and what you said about it. A job is worth a look when:
+- you rated it 👎, or 👍 on work that took several steps;
+- you corrected it;
+- it failed or only partly worked;
+- or it made 4+ tool calls.
+
+It then may do three things:
+- **propose skills,** new or improved, through the same path as `propose_skill`, so your learning mode applies;
+- **save lessons** to its memory, and post "noted for next time: …" in the conversation;
+- **suggest a line for your profile** when you stated a standing rule.
+
+**Settings → Learning** controls all of this and keeps a log of every reflection: why it ran, what it concluded, and links to what it proposed. Each reflection has **Run now** and **Cancel**.
+- **Reasons to reflect:** you choose which ones count, or reflect after every job, or never.
+- **Waiting:** a reflection waits 10 minutes after a job so your follow-ups are included, and 2 minutes after a rating.
+- **Daily limit:** 30 by default.
+- **Model:** each agent's own, unless you pick a reflection model; a stronger one writes better skills for small local agents.
+- **Who never reflects:** agents whose learning is Off, and sub-agents.
+
+**Requests** has a sub-menu like Settings: **Tool approvals**, **Skill proposals**, **Profile updates** and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
+
+### Your profile
+
+**Settings → Profile** holds what every agent should always know about you: who you are, how you like things done, your environment. Memory comes up when it matches a task; the profile goes into every agent's instructions, every time.
+- **Size:** keep it short. Anything past the word limit (600 by default) is cut, so it doesn't crowd small models.
+- **Opting out:** an agent can opt out under Settings → Agents → Learning ("Knows your profile").
+- **Suggestions:** reflections suggest additions when you state a standing preference. Suggestions show up in the conversation, in **Requests → Profile updates**, and on MQTT as a `profile_proposal` notification. Nothing changes your profile without your approval, and you can reword a suggestion first.
 
 ### Tool approvals
 
@@ -356,6 +407,8 @@ A rule on `*` covers every tool on that server that doesn't have its own rule. A
 - **While it waits:** the agent's worker slot is freed for other work.
 - **If you don't decide** within `AHQ_APPROVAL_TIMEOUT_MINUTES` (default 30), the call isn't made, and the agent is told it's waiting for approval.
 - **Sub-agents** follow the same rules as everyone else.
+
+The same table has a **Safe in tests** column. It decides which tools may run for real in an eval when a test case has no recording for the call. Tools the server marks read-only (`readOnlyHint`) start ticked. Only tools set to Allow ever run in a test.
 
 ### Agent desktops
 
@@ -518,6 +571,64 @@ Changing the embedding model re-embeds existing memories in the background.
 - **On Postgres:** the infrastructure compose file uses the `pgvector/pgvector:pg17` image, and Agent HQ enables the extension, adds the vector column and creates the full-text index on startup.
 - **On SQLite (single-machine dev):** search runs in Python instead. It's fine for thousands of memories.
 
+## Knowledge library
+
+**Settings → Knowledge** makes your own documents and notes searchable by agents, with citations. Documents live in **collections**, and each collection says which agents may read it (none ticked means every agent; sub-agents read what their parent can).
+
+**Sources:**
+- **Obsidian vault (Git):**
+  - **Sync:** push the vault to your Gitea with the Obsidian Git community plugin, set to auto commit and push every 10 minutes or so, with `.obsidian/` in `.gitignore`. Agent HQ clones the repo read-only and checks for changes on a schedule (every 15 minutes by default). Only notes that changed are re-read, and deleted notes leave the library.
+  - **Notes are read the Obsidian way:** frontmatter titles, aliases and tags, inline `#tags`, `[[wikilinks]]` (kept as links, shown as text), `%%comments%%` dropped.
+  - **Citations** open the note in Obsidian (`obsidian://`).
+  - **Skipped folders:** `.obsidian`, `.trash` and `.git` always; add your own excludes (`Journal/**`).
+  - **Access:** use a dedicated Gitea user with **Read** access to just that repo, and a token with *repository: Read*. Tokens are never sent back to the browser, and errors are shown with the token redacted.
+- **Git repository:** the same for any repo of runbooks or docs. Citations link to the file in Gitea.
+- **Web page:** fetched, turned into text, and re-checked on a schedule if you like.
+- **Uploaded files:** PDF, Word, PowerPoint, Excel, HTML, Markdown and text (converted with `markitdown`). A scanned PDF needs OCR first.
+
+**How it's indexed:** documents are cut into sections at their headings and embedded with the embedding model from Settings → Memory. Search is hybrid (meaning plus keywords, with full-text search on Postgres); without an embedding model it matches keywords only.
+
+**What agents get:**
+- matching excerpts automatically, like memories (per collection, with a threshold);
+- `search_knowledge` and `read_document` tools;
+- instructions to say which document and section they used.
+
+**The page itself** also has:
+- a test search, run as any agent, showing scores and what would come up by itself;
+- a document viewer that shows each document's sections;
+- **Propose skills,** which turns a runbook's procedures into skill proposals.
+
+Agents on cloud models send the excerpts they read to that provider. Keep private collections to agents on local models.
+
+## Evals
+
+**Settings → Evals** shows whether agents, and the skills they learn, actually get better. A **test case** is three things:
+- a request for an agent;
+- the checks its answer must pass: a rubric graded by the judge, the reply contains or doesn't contain some text, calls or doesn't call a tool, loads a skill;
+- the tool results recorded from the job it came from.
+
+**Replay, so tests never touch your lab:**
+- **Recorded calls:** a call that matches the recording gets the recorded result.
+- **Calls with no recording:** they run for real only if the tool is set to Allow *and* ticked **Safe in tests** (Settings → Tools). Anything else is told "not available in a test run", and the result shows it.
+- **Ask and Block tools** never run in a test, and no approval requests are raised.
+- **Agent HQ's own tools:** the read-only ones (skills, knowledge search, memory recall) run normally. Ones that would change something (memories, delegation, proposals) are stubbed.
+
+Full tool results are kept for 14 days so you can turn any recent reply into a test.
+
+**Where cases come from:**
+- a 👎 with a note, or a correction, drafts one, and you click **Keep**;
+- the flask button under any reply ("Make this a test");
+- writing one yourself.
+
+Feedback never changes a test you've kept: a later note starts a fresh draft.
+
+**When they run:**
+- **On skill changes:** when an agent proposes one, the cases for that agent and skill run without and with the change, and the proposal card shows both pass rates.
+- **In Auto learning mode:** a change that lowers the pass rate isn't applied; it waits in Requests for you.
+- **Anytime:** **Run now** on a case, or **Run all**.
+
+**The judge** is any provider and model you pick, switchable any time: a strong local model, your ChatGPT plan, or any OpenAI-compatible service. Pick one that isn't grading its own work.
+
 ## Scheduled tasks
 
 The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a schedule: every N hours, daily, on chosen days of the week, monthly, or any cron expression.
@@ -560,7 +671,7 @@ On requests, near misses show up as warnings for you, and approving them is your
 
 **Requests.** A request appears in three places:
 - **In the conversation:** an approval card with the agent's reasoning and the system's own estimate. The estimate covers, for each sub-agent: the model and its size (from the provider's model list), whether it runs on your hardware or a cloud plan, free provider slots, and the usage ledger's averages for that model. It also gives the total model-minutes and the expected wall time.
-- **In the Requests inbox:** in the sidebar, with a badge for pending requests.
+- **In the Requests inbox:** under **Requests → Sub-agent requests**, with a badge for pending requests.
 - **On MQTT**, if `AHQ_MQTT_URL` is set (see below).
 
 You can approve as asked or change the terms first: the number of sub-agents, how many at once, minutes, model requests, models, tools, and how long the approval lasts. You can also deny it, with or without a note.
@@ -677,8 +788,8 @@ The API process reports as `agent-hq` and workers as `agent-hq-worker`, both in 
 
 ```
 backend/app/
-  models.py          ModelProvider, AgentDef, ToolServer, Thread, Message, Job, Subscription,
-                     SubagentRequest, UsageRecord tables
+  models.py          all the tables: providers, agents, tools, threads, messages, jobs, skills,
+                     reflections, feedback, profile suggestions, knowledge, eval cases and runs…
   runtime.py         builds agents from rows; turns; delegation; report-back
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
@@ -688,6 +799,10 @@ backend/app/
   auth.py            sign-in: accounts, sessions, API tokens, TOTP, lockout, audit log, CLI
   approvals.py       tool approvals: allow / ask / block per tool, decisions, timeouts
   skills.py          skills: matching, loading, outcomes, versions, proposals
+  learning.py        the learning loop: ratings, corrections, reflections, skills from documents
+  profile.py         your profile: in every agent's instructions; suggestions you approve
+  knowledge.py       knowledge library: sources (upload, web, Git/Obsidian), chunking, hybrid search, recall
+  evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
@@ -698,8 +813,10 @@ backend/app/
   api/               REST + WebSocket (/ws/threads/{id})
   telemetry.py       OTLP -> your Collector -> Phoenix
 frontend/src/app/    app shell (sidebar of conversations), chat, and the Settings pages
-                     (agents, model providers, sub-agents, usage, memory, tools, events, system),
-                     the Requests inbox and the Scheduler; icons from Lucide (ISC)
+                     (agents, model providers, sub-agents, usage, memory, skills, knowledge, learning,
+                     evals, profile, tools, events, system, security), the Requests inbox (tool
+                     approvals, skill proposals, profile updates, sub-agent requests) and the
+                     Scheduler; icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
@@ -712,8 +829,9 @@ examples/            example crew (providers, agents, pools, tools, subscription
 
 ## Next steps worth building
 
-- **Approvals:** mark tools as needing approval (PydanticAI `requires_approval` / LangGraph interrupts) and show approve/deny cards in chat before anything changes a system. This also makes reruns after a crash safe.
 - **Outbound MQTT:** a small MCP server that lets agents publish status or commands back to the lab.
 - **Schema migrations:** new columns on existing tables are added automatically at startup; add Alembic once you need renames or data changes.
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
+- **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
+- **OCR for scanned PDFs** in the knowledge library.
