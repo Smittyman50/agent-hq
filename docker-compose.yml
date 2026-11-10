@@ -26,6 +26,13 @@ services:
     environment:
       AHQ_CORS_ORIGINS: http://localhost:4200
       AHQ_WORKER_PREFIX: hq
+      # Your step-ca root, so the knowledge library trusts your Gitea and internal sites
+      # over HTTPS (the same root_ca.crt the caddy service uses).
+      AHQ_EXTRA_CA_FILE: /etc/agent-hq/caddy/root_ca.crt
+    volumes:
+      - /etc/hostname:/etc/host_hostname:ro
+      - hq-data:/data                          # knowledge library: uploads, repo clones
+      - ./deploy/caddy:/etc/agent-hq/caddy:ro
 
   # General-purpose worker: runs agents whose pool is "default".
   worker:
@@ -127,6 +134,7 @@ services:
     tmpfs: ["/tmp", "/run", "/var/log/tinyproxy"]
 
 volumes:
+  hq-data:
   caddy-data:
   caddy-config:
   workbench-1:

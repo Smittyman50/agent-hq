@@ -7,6 +7,9 @@ COPY frontend/ ./
 RUN npx ng build
 
 FROM python:3.13-slim
+# git: the knowledge library's Git sources (your Obsidian vault, runbook repos)
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/pyproject.toml ./
 COPY backend/app ./app

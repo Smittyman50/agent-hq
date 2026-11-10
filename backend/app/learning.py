@@ -606,3 +606,63 @@ async def loop(rt, every: float = 30) -> None:
         except Exception:
             log.exception("learning loop failed")
         await asyncio.sleep(every)
+
+
+# --------------------------------------------------------------------------- documents → skills
+
+
+class DocumentSkills(BaseModel):
+    summary: str = Field(description="one sentence: what the document covers and what you took from it")
+    skills: list[SkillIdea] = Field(default_factory=list, description="usually one to three")
+
+
+DOC_RULES = """\
+You are {name}. The user gave you a document from their knowledge library (a runbook, a
+how-to, notes) to turn into skills: written-down procedures you and your teammates follow
+when a matching task comes up.
+
+- One skill per distinct procedure in the document; none if it holds no procedure.
+- Write each skill's steps fully, in your own words, from what the document says: commands,
+  hosts, checks, pitfalls. Don't invent anything it doesn't say.
+- If a listed skill already covers a procedure, revise that one (its name in `revise`, the
+  full corrected steps) instead of making a duplicate.
+- `reason`: say it comes from the document, by title."""
+
+
+async def skills_from_document(rt, agent: AgentDef, doc) -> dict[str, Any]:
+    """Propose skills from a document, as `agent` (its learning mode decides what happens)."""
+    from pydantic_ai import Agent
+    from pydantic_ai.usage import UsageLimits
+
+    if not _learns(agent):
+        raise ValueError(f"{agent.name}'s learning mode is Off, so it can't propose skills")
+    cfg = get_settings()
+    model, provider_id, _, model_name = _model_for(agent, cfg)
+    existing = skills.visible_to(agent)
+    text = doc.text if len(doc.text) <= 40000 else doc.text[:40000] + "\n…(cut)"
+    prompt = (f"# {doc.title}\n(path: {doc.path})\n\n{text}\n\n" +
+              ("Skills that already exist:\n" + "\n".join(
+                  f"- {k.name}: {k.title} (use when: {_clip(k.when_to_use, 160)})" for k in existing[:40])
+               if existing else "No skills exist yet."))
+    started, usage, ok = time.monotonic(), None, False
+    try:
+        reader = Agent(model, output_type=DocumentSkills, retries=2,
+                       instructions=DOC_RULES.format(name=agent.name), name=f"{agent.name} (reading a document)")
+        result = await reader.run(prompt, usage_limits=UsageLimits(request_limit=6))
+        usage, ok, out = result.usage, True, result.output
+    finally:
+        subagents.record_usage(agent, provider_id=provider_id, model=model_name.split(" @ ")[0],
+                               usage=usage, seconds=time.monotonic() - started, ok=ok,
+                               job_id=None, thread_id=None)
+    proposed, notes = [], []
+    for idea in out.skills[:5]:
+        got = await rt.submit_skill_proposal(
+            agent, name=idea.name.strip().lower(), title=idea.title, when_to_use=idea.when_to_use,
+            steps=idea.steps, reason=idea.reason or f"From the document “{doc.title}”.",
+            revise=idea.revise or None, only_for_me=idea.only_for_me, thread_id=None,
+            source="document")
+        if got.get("proposal_id"):
+            proposed.append({"proposal_id": got["proposal_id"], "name": idea.name, "status": got["status"]})
+        else:
+            notes.append(f"{idea.name}: {got.get('summary', got.get('error', 'not proposed'))}")
+    return {"summary": out.summary, "proposals": proposed, "notes": notes, "model": model_name}

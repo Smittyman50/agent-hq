@@ -8,6 +8,7 @@ import { ModelsPage } from './models.page';
 import { MemoryPage } from './memory.page';
 import { SettingsLayout } from './settings';
 import { LearningPage } from './learning.page';
+import { KnowledgePage } from './knowledge.page';
 import { ProfilePage } from './profile.page';
 import { SchedulesPage } from './schedules.page';
 import { ApprovalsInbox, SkillsInbox, SubagentInbox, ProfileInbox } from './requests.page';
@@ -43,6 +44,7 @@ export const routes: Routes = [
       { path: 'usage', component: UsagePage },
       { path: 'memory', component: MemoryPage },
       { path: 'skills', component: SkillsPage },
+      { path: 'knowledge', component: KnowledgePage },
       { path: 'learning', component: LearningPage },
       { path: 'profile', component: ProfilePage },
       { path: 'tools', component: ToolsPage },

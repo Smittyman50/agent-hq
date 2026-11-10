@@ -52,7 +52,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import approvals, db, learning, profile, skills, slots, subagents
+from . import approvals, db, knowledge, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -775,7 +775,8 @@ class Runtime:
     # ------------------------------------------------------------ agents
 
     def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
-                    memory_context: str = "", skills_context: str = "") -> Agent:
+                    memory_context: str = "", skills_context: str = "",
+                    knowledge_context: str = "") -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
@@ -813,6 +814,11 @@ class Runtime:
             toolsets.append((self._memory_toolset(), None))
         if roster:
             toolsets.append((self._delegation_toolset(), None))
+        if knowledge_context or knowledge.has_knowledge(agent):
+            instructions.append(knowledge.KNOWLEDGE_RULES)
+            if knowledge_context:
+                instructions.append(knowledge_context)
+            toolsets.append((self._knowledge_toolset(), None))
         learning = skills.mode_of(agent)
         if skills_context or learning != LearningMode.off:
             instructions.append(SKILL_INTRO + (("\n" + skills.PROPOSE_RULES)
@@ -851,6 +857,7 @@ class Runtime:
         on model requests and a time limit.
         """
         recalled = await self._recall(agent, prompt, deps)
+        excerpts = await self._knowledge_recall(agent, prompt, deps)
         try:
             skills_block = skills.listing(await skills.relevant(agent, prompt))
         except Exception as e:  # skills must never stop the agent from working
@@ -874,7 +881,8 @@ class Runtime:
             usage, ok = None, False
             try:
                 pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=on_fallback,
-                                            memory_context=recalled, skills_context=skills_block)
+                                            memory_context=recalled, skills_context=skills_block,
+                                            knowledge_context=excerpts)
                 coro = pa_agent.run(text, deps=deps, message_history=history,
                                     conversation_id=deps.thread_id, **run_kw)
                 try:
@@ -922,6 +930,61 @@ class Runtime:
             await self.broker.publish(deps.thread_id, "memory_recall", agent=agent.name,
                                       agent_id=agent.id, count=block.count("\n- "), depth=deps.depth)
         return block
+
+    async def _knowledge_recall(self, agent: AgentDef, prompt: str, deps: RunDeps) -> str:
+        try:
+            block = await knowledge.recall_for(agent, prompt)
+        except Exception as e:  # the library must never stop the agent from working
+            log.warning("knowledge recall failed: %s", e)
+            return ""
+        if block:
+            await self.broker.publish(deps.thread_id, "knowledge_recall", agent=agent.name,
+                                      agent_id=agent.id, count=block.count("\n["), depth=deps.depth)
+        return block
+
+    def _knowledge_toolset(self) -> FunctionToolset:
+        rt = self
+
+        async def search_knowledge(ctx: RunContext[RunDeps], query: str, collection: str | None = None,
+                                   tags: list[str] | None = None, limit: int = 5) -> dict:
+            """Search the user's documents and notes (the knowledge library).
+
+            Args:
+                query: what you're looking for, in plain words.
+                collection: only this collection (by name); omit to search all you can read.
+                tags: only documents with one of these tags (e.g. ["homelab"]).
+                limit: how many excerpts (1-10).
+            """
+            me = load_agent(ctx.deps.agent_id)
+            cols = knowledge.readable_collections(me)
+            if collection:
+                cols = [c for c in cols if c.name.lower() == collection.strip().lower()] or cols
+            hits = await knowledge.search(query, collection_ids=[c.id for c in cols],
+                                          k=max(1, min(int(limit or 5), 10)), tags=tags)
+            await rt.broker.publish(ctx.deps.thread_id, "knowledge_search", agent=me.name, query=query,
+                                    count=len(hits), depth=ctx.deps.depth)
+            return {"results": [h.out() for h in hits],
+                    "collections": [c.name for c in knowledge.readable_collections(me)]}
+
+        async def read_document(ctx: RunContext[RunDeps], ref: str, part: int = 1) -> dict:
+            """Read a whole document from the knowledge library.
+
+            Args:
+                ref: the doc id from a search result or excerpt, or its path or title.
+                part: long documents come in parts of about 20,000 characters; 1 is the first.
+            """
+            me = load_agent(ctx.deps.agent_id)
+            d = knowledge.find_doc(ref, me)
+            if d is None:
+                return {"error": f"no document {ref!r} that you can read; try search_knowledge"}
+            size = 20000
+            parts = max(1, -(-len(d.text) // size))
+            n = max(1, min(int(part or 1), parts))
+            return {"doc_id": d.id, "title": d.title, "path": d.path, "link": d.link, "tags": d.tags,
+                    "links": d.links[:50], "part": n, "parts": parts,
+                    "text": d.text[(n - 1) * size:n * size]}
+
+        return FunctionToolset([search_knowledge, read_document])
 
     async def _capture_delegation(self, job: Job, assignee: AgentDef, result: WorkResult) -> None:
         if not memory.get_settings()["capture_delegations"] or not memory_on(assignee):
@@ -1246,12 +1309,13 @@ class Runtime:
     async def submit_skill_proposal(self, me: AgentDef, *, name: str, title: str, when_to_use: str,
                                     steps: str, reason: str, revise: str | None = None,
                                     tools: list[str] | None = None, script: str | None = None,
-                                    only_for_me: bool = False, thread_id: str,
+                                    only_for_me: bool = False, thread_id: str | None,
                                     job_id: str | None = None, depth: int = 0,
                                     source: str = "agent") -> dict:
         """A new skill or an improvement, from an agent's propose_skill or a reflection:
         sent for your review, or applied at once in auto mode."""
-        via_note = " (from looking back at this conversation)" if source == "reflection" else ""
+        via_note = {"reflection": " (from looking back at this conversation)",
+                    "document": " (from a document in the knowledge library)"}.get(source, "")
         mode = skills.mode_of(me)
         if mode == LearningMode.off:
             return {"status": "refused", "summary": "You can't propose skills."}
@@ -1284,26 +1348,29 @@ class Runtime:
         if mode == LearningMode.auto:
             k = skills.apply_proposal(p, by=me.name)
             p.status, p.decided_at, p.skill_id = "applied", _now(), k.id
-            msg = await self.save_message(thread_id, Role.event,
-                                        f"{me.name} added {what} (learning mode: auto){via_note}",
-                                        agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
-                                        status="applied", agent=me.name, depth=depth)
-            p.message_id = msg.id
+            if thread_id:
+                msg = await self.save_message(thread_id, Role.event,
+                                              f"{me.name} added {what} (learning mode: auto){via_note}",
+                                              agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
+                                              status="applied", agent=me.name, depth=depth)
+                p.message_id = msg.id
             with db.session() as s:
                 s.add(p)
                 s.commit()
             await subagents.notify({"type": "skill_applied", "proposal_id": p.id, "agent": me.name,
                                     "skill": name, "version": k.version})
             return {"status": "applied", "summary": f"Saved {name} (version {k.version}).", "proposal_id": p.id}
-        msg = await self.save_message(thread_id, Role.event, f"{me.name} proposes {what}{via_note}",
-                                    agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
-                                    status="pending", agent=me.name, depth=depth)
-        p.message_id = msg.id
+        if thread_id:
+            msg = await self.save_message(thread_id, Role.event, f"{me.name} proposes {what}{via_note}",
+                                          agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
+                                          status="pending", agent=me.name, depth=depth)
+            p.message_id = msg.id
         with db.session() as s:
             s.add(p)
             s.commit()
-        await self.broker.publish(thread_id, "skill_proposed", proposal_id=p.id,
-                                agent=me.name, skill=name, depth=depth)
+        if thread_id:
+            await self.broker.publish(thread_id, "skill_proposed", proposal_id=p.id,
+                                      agent=me.name, skill=name, depth=depth)
         await subagents.notify({"type": "skill_proposal", "proposal_id": p.id, "agent": me.name,
                                 "skill": name, "title": title, "revision": bool(base),
                                 "reason": reason, "link": subagents.link(f"/requests/skills?skill={p.id}")})

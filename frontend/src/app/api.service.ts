@@ -29,6 +29,7 @@ export interface AgentDef {
   subagent_limits: SubagentLimits;
   learning_mode: LearningMode;
   use_profile?: boolean;
+  is_subagent?: boolean;
 }
 
 export type LearningMode = 'off' | 'propose' | 'auto';
@@ -251,6 +252,32 @@ export function blankServer(): ToolServer {
     env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
 }
 
+export interface KnowledgeSettings { recall: boolean; recall_count: number; min_score: number; chunk_chars: number; max_file_mb: number; }
+
+export interface KnowledgeCollection {
+  id: string; name: string; description: string; agent_ids: string[]; auto_recall: boolean; enabled: boolean;
+  docs?: number; chunks?: number; sources?: number;
+}
+
+export interface KnowledgeSource {
+  id: string; collection_id: string; kind: 'upload' | 'url' | 'git'; name: string; url: string | null;
+  branch: string; username: string; token?: string | null; has_token?: boolean;
+  include: string[]; exclude: string[]; obsidian: boolean; vault_name: string; refresh_minutes: number;
+  status: 'queued' | 'indexing' | 'ready' | 'error'; error: string | null; last_indexed_at: string | null;
+  last_commit: string; docs: number; chunks: number;
+}
+
+export interface KnowledgeDoc {
+  id: string; source_id: string; collection_id: string; path: string; title: string; link: string;
+  tags: string[]; links: string[]; size: number; chunks: number; indexed: boolean; updated_at: string;
+  text?: string; sections?: { heading: string; text: string; embedded: boolean }[];
+}
+
+export interface KnowledgeHit {
+  doc_id: string; title: string; section: string; collection: string; path: string; link: string; tags: string[];
+  score: number; sim: number | null; keyword: number; would_recall: boolean; text: string;
+}
+
 export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; total: number; }
 
 export interface Profile { text: string; enabled: boolean; max_words: number; suggestions: boolean; updated_at: string | null; words: number; }
@@ -417,6 +444,41 @@ export class Api {
   reflections(limit = 50) { return this.http.get<ReflectionLog>('/api/learning/reflections', { params: { limit } }); }
   runReflection(id: string) { return this.http.post(`/api/learning/reflections/${id}/run`, {}); }
   cancelReflection(id: string) { return this.http.delete(`/api/learning/reflections/${id}`); }
+
+  knowledgeSettings() { return this.http.get<KnowledgeSettings>('/api/knowledge/settings'); }
+  saveKnowledgeSettings(x: KnowledgeSettings) { return this.http.put<KnowledgeSettings>('/api/knowledge/settings', x); }
+  collections() { return this.http.get<KnowledgeCollection[]>('/api/knowledge/collections'); }
+  createCollection(c: Partial<KnowledgeCollection>) { return this.http.post<KnowledgeCollection>('/api/knowledge/collections', c); }
+  updateCollection(c: KnowledgeCollection) { return this.http.put<KnowledgeCollection>(`/api/knowledge/collections/${c.id}`, c); }
+  deleteCollection(id: string) { return this.http.delete(`/api/knowledge/collections/${id}`); }
+  sources(collectionId: string) { return this.http.get<KnowledgeSource[]>(`/api/knowledge/collections/${collectionId}/sources`); }
+  createSource(collectionId: string, x: Partial<KnowledgeSource>) {
+    return this.http.post<KnowledgeSource>(`/api/knowledge/collections/${collectionId}/sources`, x);
+  }
+  updateSource(x: Partial<KnowledgeSource> & { id: string }) { return this.http.put<KnowledgeSource>(`/api/knowledge/sources/${x.id}`, x); }
+  deleteSource(id: string) { return this.http.delete(`/api/knowledge/sources/${id}`); }
+  reindexSource(id: string, full = false) { return this.http.post(`/api/knowledge/sources/${id}/reindex`, {}, { params: { full } }); }
+  uploadKnowledge(sourceId: string, files: File[]) {
+    const form = new FormData();
+    for (const f of files) form.append('files', f, f.name);
+    return this.http.post<{ added: { id: string; title: string; path: string }[]; errors: string[] }>(
+      `/api/knowledge/sources/${sourceId}/files`, form);
+  }
+  knowledgeDocs(collectionId: string, q = '', limit = 200) {
+    return this.http.get<{ total: number; docs: KnowledgeDoc[] }>(`/api/knowledge/collections/${collectionId}/docs`, { params: { q, limit } });
+  }
+  knowledgeDoc(id: string) { return this.http.get<KnowledgeDoc>(`/api/knowledge/docs/${id}`); }
+  deleteKnowledgeDoc(id: string) { return this.http.delete(`/api/knowledge/docs/${id}`); }
+  searchKnowledge(q: string, opts: { collection_id?: string; agent_id?: string } = {}) {
+    const params: Record<string, string> = { q };
+    if (opts.collection_id) params['collection_id'] = opts.collection_id;
+    if (opts.agent_id) params['agent_id'] = opts.agent_id;
+    return this.http.get<{ results: KnowledgeHit[]; min_score: number }>('/api/knowledge/search', { params });
+  }
+  proposeSkillsFromDoc(docId: string, agentId: string) {
+    return this.http.post<{ summary: string; proposals: { proposal_id: string; name: string; status: string }[]; notes: string[]; model: string }>(
+      `/api/knowledge/docs/${docId}/propose-skills`, { agent_id: agentId });
+  }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

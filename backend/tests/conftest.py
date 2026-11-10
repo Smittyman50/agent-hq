@@ -262,6 +262,33 @@ def whoami(messages, info):
     return ModelResponse(parts=[TextPart(text[i:].split("\n## ", 1)[0] if i >= 0 else "no profile")])
 
 
+def reader(messages, info):
+    """Searches the knowledge library for the prompt, then reports what it found and
+    whether excerpts came with its instructions."""
+    tools = {t.name for t in info.function_tools}
+    got = [r for r in _tool_returns(messages) if r.tool_name == "search_knowledge"]
+    text = next((m.instructions for m in reversed(messages) if getattr(m, "instructions", None)), "") or ""
+    excerpts = "Excerpts from the knowledge library" in text
+    if "search_knowledge" not in tools:
+        return ModelResponse(parts=[TextPart(f"no library; excerpts={excerpts}")])
+    if not got:
+        return ModelResponse(parts=[ToolCallPart("search_knowledge", {"query": _last_prompt(messages)})])
+    results = got[0].content["results"]
+    top = results[0]["title"] + " / " + results[0]["section"] if results else "nothing"
+    return ModelResponse(parts=[TextPart(f"found {top}; excerpts={excerpts}")])
+
+
+def docreader(messages, info):
+    """Turns each '## ' heading of a document into a skill."""
+    prompt = _last_prompt(messages)
+    heads = re.findall(r"^## (.+)$", prompt, re.M)
+    ideas = [{"name": re.sub(r"\W+", "_", h.lower()).strip("_"), "title": h,
+              "when_to_use": f"When you need to {h.lower()}.", "steps": f"Follow the {h} steps.",
+              "reason": "From the runbook."} for h in heads[:2]]
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name,
+                                             {"summary": f"{len(ideas)} procedures.", "skills": ideas})])
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
@@ -269,6 +296,7 @@ SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "bro
            "coder": coder(1), "coder-2": coder(2),
            "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups"),
            "busy": busy(3), "reflector": reflector, "whoami": whoami,
+           "reader": reader, "docreader": docreader,
            "echo": lambda m, i: ModelResponse(parts=[TextPart(f"You said: {_last_prompt(m)[:80]}")])}
 
 

@@ -25,6 +25,9 @@ dependencies = [
   "opentelemetry-sdk>=1.25",
   "opentelemetry-exporter-otlp-proto-http>=1.25",
   "openinference-instrumentation-pydantic-ai>=0.1.30",
+  # Knowledge library: PDF, Word, PowerPoint, Excel and HTML to Markdown; note frontmatter
+  "markitdown[pdf,docx,pptx,xlsx]>=0.1.2",
+  "pyyaml>=6",
 ]
 
 [project.optional-dependencies]

@@ -36,6 +36,9 @@ def init_db() -> None:
     from . import memory
 
     memory.init_storage()
+    from . import knowledge
+
+    knowledge.init_storage()
 
 
 log = logging.getLogger("agent_hq.db")

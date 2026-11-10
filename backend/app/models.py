@@ -260,6 +260,80 @@ class SkillUse(SQLModel, table=True):
     at: datetime = Field(default_factory=_now)
 
 
+class KnowledgeCollection(SQLModel, table=True):
+    """A shelf in the knowledge library: documents from one or more sources, readable by
+    the agents you choose (none chosen = every agent)."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = Field(index=True)
+    description: str = Field(default="", sa_column=Column(Text, default=""))
+    agent_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    auto_recall: bool = True   # matching excerpts come up by themselves, like memories
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class KnowledgeSource(SQLModel, table=True):
+    """Where a collection's documents come from: uploaded files, a web page, or a Git repo
+    (an Obsidian vault pushed with the Obsidian Git plugin, runbooks, docs)."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    collection_id: str = Field(index=True)
+    kind: str = "upload"  # upload | url | git
+    name: str = ""
+    url: str | None = None          # web page, or the repo's clone URL
+    branch: str = ""                # git: blank = the repo's default branch
+    username: str = ""              # git: the account the token belongs to
+    token: str | None = None        # git: access token (never sent back to the browser)
+    include: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    exclude: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    obsidian: bool = False          # understand frontmatter, #tags, [[links]]; obsidian:// links
+    vault_name: str = ""            # for obsidian:// links (blank = the repo's name)
+    refresh_minutes: int = 0        # check for changes this often (0 = only when you ask)
+    status: str = Field(default="queued", index=True)  # queued | indexing | ready | error
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    last_indexed_at: datetime | None = None
+    last_commit: str = ""
+    docs: int = 0
+    chunks: int = 0
+    created_at: datetime = Field(default_factory=_now)
+
+
+class KnowledgeDoc(SQLModel, table=True):
+    """One document (a note, a file, a page) as text."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    source_id: str = Field(index=True)
+    collection_id: str = Field(index=True)
+    path: str = Field(index=True)   # path in the repo, file name, or URL
+    title: str = ""
+    link: str = ""                  # where to open it: obsidian://, the web page, the repo
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    links: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # [[wikilinks]]
+    text: str = Field(default="", sa_column=Column(Text, default=""))
+    hash: str = ""
+    indexed_hash: str = ""          # the text that its chunks and embeddings come from
+    size: int = 0
+    chunks: int = 0
+    stored_file: str | None = None  # uploads: the original, under the data folder
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class KnowledgeChunk(SQLModel, table=True):
+    """A section of a document: what search finds and agents get as excerpts."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    doc_id: str = Field(index=True)
+    source_id: str = Field(index=True)
+    collection_id: str = Field(index=True)
+    ord: int = 0
+    heading: str = ""               # "Backups › Proxmox › Verify jobs"
+    text: str = Field(sa_column=Column(Text))
+    embedding: list[float] | None = Field(default=None, sa_column=Column(JSON))  # without pgvector
+    embedding_model: str | None = None
+
+
 class ProfileProposal(SQLModel, table=True):
     """An agent suggesting an addition to your profile (Settings → Profile), from a reflection.
     Your profile goes into every agent's instructions, so changes always wait for you."""
