@@ -52,7 +52,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import approvals, db, learning, skills, slots, subagents
+from . import approvals, db, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -67,6 +67,7 @@ from .models import (
     Role,
     LearningMode,
     MemoryKind,
+    ProfileProposal,
     SkillProposal,
     SubagentMode,
     ToolApproval,
@@ -776,6 +777,9 @@ class Runtime:
     def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
                     memory_context: str = "", skills_context: str = "") -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
+        about_user = profile.context_for(agent)
+        if about_user:
+            instructions.append(about_user)
         roster = team_roster(agent)
         if roster:
             instructions.append(roster)
@@ -1329,6 +1333,34 @@ class Runtime:
             s.add(p)
             s.commit()
             s.refresh(p)
+        if p.message_id:
+            await self.update_message(p.message_id, status=p.status, note=p.note)
+        return p
+
+    async def suggest_profile(self, me: AgentDef, text: str, reason: str, *, thread_id: str,
+                              job_id: str | None = None, reflection_id: str | None = None) -> ProfileProposal | None:
+        """An agent suggests a line for your profile: it waits in Requests → Profile updates."""
+        text = " ".join(text.split())[:500]
+        if not text or profile.already_known(text):
+            return None
+        p = ProfileProposal(text=text, reason=reason.strip()[:1000], agent_id=me.id, agent_name=me.name,
+                            thread_id=thread_id, job_id=job_id, reflection_id=reflection_id)
+        msg = await self.save_message(
+            thread_id, Role.event, f"{me.name} suggests adding to your profile: {text}",
+            agent_id=me.id, kind="profile_proposal", profile_proposal_id=p.id, status="pending")
+        p.message_id = msg.id
+        with db.session() as s:
+            s.add(p)
+            s.commit()
+            s.refresh(p)
+        await subagents.notify({"type": "profile_proposal", "proposal_id": p.id, "agent": me.name,
+                                "text": text, "thread_id": thread_id,
+                                "link": subagents.link(f"/requests/profile?suggestion={p.id}")})
+        return p
+
+    async def decide_profile_proposal(self, proposal_id: str, approve: bool, *, note: str = "",
+                                      text: str | None = None) -> ProfileProposal:
+        p = profile.decide(proposal_id, approve, note=note, text=text)
         if p.message_id:
             await self.update_message(p.message_id, status=p.status, note=p.note)
         return p

@@ -28,6 +28,7 @@ export interface AgentDef {
   subagent_mode: SubagentMode;
   subagent_limits: SubagentLimits;
   learning_mode: LearningMode;
+  use_profile?: boolean;
 }
 
 export type LearningMode = 'off' | 'propose' | 'auto';
@@ -237,7 +238,7 @@ export function blankAgent(): AgentDef {
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
     fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
-    subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose' };
+    subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true };
 }
 
 export function blankSubscription(agent_id = ''): Subscription {
@@ -248,6 +249,16 @@ export function blankSubscription(agent_id = ''): Subscription {
 export function blankServer(): ToolServer {
   return { name: '', description: '', transport: 'http', url: '', command: null, args: [],
     env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
+}
+
+export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; total: number; }
+
+export interface Profile { text: string; enabled: boolean; max_words: number; suggestions: boolean; updated_at: string | null; words: number; }
+
+export interface ProfileProposal {
+  id: string; text: string; reason: string; source: string; agent_id: string; agent_name: string;
+  thread_id: string | null; job_id: string | null; reflection_id: string | null;
+  status: 'pending' | 'approved' | 'rejected'; note: string; created_at: string; decided_at: string | null;
 }
 
 export interface MessageFeedback { rating: 'up' | 'down'; comment: string; }
@@ -270,7 +281,7 @@ export interface Reflection {
   id: string; job_id: string; thread_id: string; agent_id: string; agent_name: string;
   reasons: string[]; status: 'waiting' | 'running' | 'done' | 'skipped' | 'failed';
   due_at: string; summary: string; proposal_ids: string[]; memory_ids: string[];
-  model: string; error: string | null; created_at: string; started_at: string | null; finished_at: string | null;
+  profile_proposal_ids?: string[]; model: string; error: string | null; created_at: string; started_at: string | null; finished_at: string | null;
   proposals: { id: string; name: string; title: string; status: string; revision: boolean }[];
 }
 
@@ -372,7 +383,14 @@ export class Api {
   decideApproval(id: string, approve: boolean, note = '', remember_minutes = 0) {
     return this.http.post<ToolApproval>(`/api/tool-approvals/${id}/decide`, { approve, note, remember_minutes });
   }
-  inboxCount() { return this.http.get<{ requests: number; approvals: number; skills: number; total: number }>('/api/inbox/count'); }
+  inboxCount() { return this.http.get<InboxCount>('/api/inbox/count'); }
+  profile() { return this.http.get<Profile>('/api/profile'); }
+  saveProfile(x: Partial<Profile>) { return this.http.put<Profile>('/api/profile', x); }
+  profileProposals(status?: string) { return this.http.get<ProfileProposal[]>('/api/profile-proposals', { params: status ? { status } : {} }); }
+  profileProposal(id: string) { return this.http.get<ProfileProposal>(`/api/profile-proposals/${id}`); }
+  decideProfileProposal(id: string, d: { approve: boolean; note?: string; text?: string }) {
+    return this.http.post<ProfileProposal>(`/api/profile-proposals/${id}/decide`, d);
+  }
 
   skills(includeRetired = false) { return this.http.get<Skill[]>('/api/skills', { params: { include_retired: includeRetired } }); }
   skill(id: string) { return this.http.get<Skill>(`/api/skills/${id}`); }

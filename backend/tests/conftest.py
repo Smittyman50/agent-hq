@@ -243,13 +243,23 @@ def reflector(messages, info):
     c = re.search(r"you corrected it: “([^”]+)”", why)
     if c:
         lessons.append({"text": f"Correction from Mike: {c.group(1)}", "kind": "preference"})
+    rule = re.search(r"you corrected it: “(from now on[^”]*)”", why, re.I)
+    profile = [{"text": rule.group(1).split(",", 1)[-1].strip().capitalize() + ".",
+                "reason": "Stated as a standing rule."}] if rule else []
     if "tool calls" in why:
         ideas.append({"name": "survey_skills", "title": "Survey the team's skills",
                       "when_to_use": "When asked which skills the team has.",
                       "steps": "1. Call list_skills.\n2. Call it again with a narrower query.\n3. Summarise.",
                       "reason": "It took several calls to get right today."})
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
-        "summary": "I looked back at this.", "skills": ideas, "lessons": lessons})])
+        "summary": "I looked back at this.", "skills": ideas, "lessons": lessons, "profile": profile})])
+
+
+def whoami(messages, info):
+    """Replies with the profile block from its instructions (or 'no profile')."""
+    text = next((m.instructions for m in reversed(messages) if getattr(m, "instructions", None)), "") or ""
+    i = text.find("## About the user")
+    return ModelResponse(parts=[TextPart(text[i:].split("\n## ", 1)[0] if i >= 0 else "no profile")])
 
 
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
@@ -258,7 +268,7 @@ SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "bro
            "requester": requester, "retrying": retrying,
            "coder": coder(1), "coder-2": coder(2),
            "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups"),
-           "busy": busy(3), "reflector": reflector,
+           "busy": busy(3), "reflector": reflector, "whoami": whoami,
            "echo": lambda m, i: ModelResponse(parts=[TextPart(f"You said: {_last_prompt(m)[:80]}")])}
 
 

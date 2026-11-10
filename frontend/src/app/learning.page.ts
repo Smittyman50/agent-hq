@@ -34,11 +34,14 @@ import { Workspace } from './workspace';
           </div>
           @if (r.summary) { <div class="mem-text">{{ r.summary }}</div> }
           @if (r.error) { <div class="error small">{{ r.error }}</div> }
-          @if (r.proposals.length || r.memory_ids.length) {
+          @if (r.proposals.length || r.memory_ids.length || r.profile_proposal_ids?.length) {
             <div class="mem-meta">
               @for (p of r.proposals; track p.id) {
                 <a class="pill {{ pillClass(p.status) }}" [routerLink]="['/requests/skills']" [queryParams]="{ skill: p.id }"
                   [title]="p.title">{{ p.revision ? 'improve' : 'new skill' }}: {{ p.name }} · {{ p.status }}</a>
+              }
+              @if (r.profile_proposal_ids?.length) {
+                <a class="pill live" routerLink="/requests/profile">profile suggestion{{ r.profile_proposal_ids!.length === 1 ? '' : 's' }}</a>
               }
               @if (r.memory_ids.length) {
                 <a class="pill" routerLink="/settings/memory">{{ r.memory_ids.length }} lesson{{ r.memory_ids.length === 1 ? '' : 's' }} in memory</a>

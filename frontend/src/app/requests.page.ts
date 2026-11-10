@@ -1,12 +1,13 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Api, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
+import { Api, ProfileProposal, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
 import { ApprovalCard } from './approval-card';
 import { Avatar } from './avatar';
 import { RequestCard } from './request-card';
 import { SkillProposalCard } from './skill-proposal-card';
 import { Workspace } from './workspace';
+import { ProfileProposalCard } from './profile-proposal-card';
 
 /** Requests → Tool approvals: calls waiting for your OK, then recent decisions. */
 @Component({
@@ -143,4 +144,39 @@ export class SubagentInbox implements OnInit {
   roles(r: SubagentRequest) { return r.subagents.map(s => s.role).join(', '); }
   cls(s: string) { return s === 'approved' ? 'done' : s === 'denied' ? 'failed' : 'queued'; }
   goToChat(threadId: string) { this.router.navigate(['/chat', threadId]); }
+}
+
+/** Requests → Profile updates: lines agents suggest for your profile. */
+@Component({
+  selector: 'hq-profile-inbox',
+  imports: [ProfileProposalCard],
+  template: `
+  <div class="editor inbox">
+    <p class="hint inline-hint">When an agent notices a standing preference (“from now on…”), it suggests a line for
+      your profile, which every agent sees. Reword it if you like before adding it.</p>
+    @if (linked(); as id) { <hq-profile-proposal-card [proposalId]="id" (decided)="reload()" class="linked" /> }
+    @for (p of pending(); track p.id) {
+      @if (p.id !== linked()) { <hq-profile-proposal-card [proposalId]="p.id" (decided)="reload()" /> }
+    } @empty { @if (!linked()) { <div class="empty-box">No profile suggestions waiting.</div> } }
+    @if (recent().length) {
+      <details class="recent"><summary>Recent decisions ({{ recent().length }})</summary>
+        @for (p of recent(); track p.id) { <hq-profile-proposal-card [proposalId]="p.id" /> }
+      </details>
+    }
+  </div>`,
+})
+export class ProfileInbox implements OnInit {
+  private api = inject(Api);
+  private route = inject(ActivatedRoute);
+  private ws = inject(Workspace);
+  all = signal<ProfileProposal[]>([]);
+  linked = signal<string | null>(null);
+  pending = computed(() => this.all().filter(p => p.status === 'pending'));
+  recent = computed(() => this.all().filter(p => p.status !== 'pending' && p.id !== this.linked()).slice(0, 20));
+
+  ngOnInit() {
+    this.linked.set(this.route.snapshot.queryParamMap.get('suggestion'));
+    this.reload();
+  }
+  reload() { this.api.profileProposals().subscribe(p => this.all.set(p)); this.ws.refreshPending(); }
 }

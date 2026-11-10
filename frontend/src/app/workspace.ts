@@ -18,7 +18,7 @@ export class Workspace {
   /** Sub-agent requests waiting for you (the sidebar badge). */
   pendingRequests = signal(0);
   /** What's waiting, by kind (the Requests sub-menu counts). */
-  inbox = signal({ requests: 0, approvals: 0, skills: 0, total: 0 });
+  inbox = signal({ requests: 0, approvals: 0, skills: 0, profile: 0, total: 0 });
 
   private lastSeen = signal<Record<string, number>>({});
   private now = signal(Date.now());
@@ -35,7 +35,7 @@ export class Workspace {
         this.agents.set([]);
         this.threads.set([]);
         this.pendingRequests.set(0);
-        this.inbox.set({ requests: 0, approvals: 0, skills: 0, total: 0 });
+        this.inbox.set({ requests: 0, approvals: 0, skills: 0, profile: 0, total: 0 });
       }
     });
     setInterval(() => this.now.set(Date.now()), 1500);

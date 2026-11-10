@@ -296,10 +296,17 @@ class Lesson(BaseModel):
                               "own work; false if the whole team should know it")
 
 
+class ProfileIdea(BaseModel):
+    text: str = Field(description="one line for the user's profile, e.g. \"Prefers tables, with "
+                      "failures listed first.\"")
+    reason: str = Field(description="what the user said that shows it's a standing preference")
+
+
 class ReflectionOut(BaseModel):
     summary: str = Field(description="one or two sentences: what happened and what you took from it")
     skills: list[SkillIdea] = Field(default_factory=list, description="usually none or one")
     lessons: list[Lesson] = Field(default_factory=list, description="usually none to two")
+    profile: list[ProfileIdea] = Field(default_factory=list, description="usually none; see the rules")
 
 
 REFLECT_RULES = """\
@@ -321,6 +328,10 @@ Rules:
   what they actually wanted and capture that.
 - Only what the record below shows. Don't invent steps, hosts, tools or results.
 - Don't keep one-off details of this task (today's numbers, this conversation's topic).
+- profile: only for a standing fact or preference about the user that every agent should
+  always know, and only when the user stated it as a rule ("always", "from now on", "I
+  prefer") or it repeats something already in memory. Not for anything in their profile
+  already (shown below, if they have one). These always wait for the user's approval.
 - Empty lists are a normal, good outcome when there's nothing worth keeping.
 - Write `summary` in the first person, one or two sentences."""
 
@@ -402,6 +413,11 @@ def context_for(r: Reflection, agent: AgentDef) -> str:
             [line(m) for m in after]
     if convo:
         parts.append("The conversation (oldest first):\n" + "\n".join(convo))
+    from . import profile as profile_mod
+
+    prof = profile_mod.get()
+    if prof["enabled"] and prof["text"] and prof["suggestions"]:
+        parts.append("The user's profile, which every agent already gets:\n" + _clip(prof["text"], 4000))
     existing = skills.visible_to(agent)
     if existing:
         parts.append("Skills that already exist:\n" + "\n".join(
@@ -514,9 +530,18 @@ async def reflect(rt, r_id: str) -> Reflection:
                 agent_id=agent.id, kind="lesson", reflection_id=r.id, memory_ids=memory_ids)
     elif lessons:
         notes.append("lessons not saved (memory is off for this agent or for reflections)")
+    from . import profile as profile_mod
+
+    profile_ids = []
+    if out.profile and profile_mod.get()["suggestions"]:
+        for idea in out.profile[:2]:
+            p = await rt.suggest_profile(agent, idea.text, idea.reason, thread_id=r.thread_id,
+                                         job_id=r.job_id, reflection_id=r.id)
+            if p is not None:
+                profile_ids.append(p.id)
     summary = out.summary.strip() + ("\n" + "\n".join(notes) if notes else "")
     return _finish(r_id, status="done", summary=summary[:4000], proposal_ids=proposal_ids,
-                   memory_ids=memory_ids, model=model_name)
+                   memory_ids=memory_ids, profile_proposal_ids=profile_ids, model=model_name)
 
 
 async def run_due(rt, limit: int = 3) -> list[Reflection]:

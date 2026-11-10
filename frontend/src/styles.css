@@ -404,3 +404,11 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .mem-card a.pill { text-decoration: none; }
 .actions.tight { margin-top: 0; gap: 6px; }
 .mem-toolbar h2 { margin: 0; }
+
+/* Settings → Profile */
+.profile-main { display: flex; flex-direction: column; min-height: 0; }
+.profile-text { flex: 1; min-height: 360px; width: 100%; resize: vertical; line-height: 1.5; font-size: 13.5px; }
+.mem-toolbar .over { color: var(--bad); }
+.profile-line { display: block; margin: 8px 0; }
+.profile-line input { width: 100%; }
+.profile-quote { margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--accent); color: var(--text); }

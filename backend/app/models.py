@@ -121,6 +121,7 @@ class AgentDef(SQLModel, table=True):
     # Bumped on every avatar upload; 0 = no avatar. The UI uses it to bust image caches.
     avatar_version: int = 0
     avatar_animated: bool = False
+    use_profile: bool = True  # put your profile (Settings → Profile) in its instructions
     # Skills: whether this agent may propose new skills or improvements (see app/skills.py).
     learning_mode: LearningMode = LearningMode.propose
     # Sub-agents: off (default), ask (needs your approval), allowed (within limits).
@@ -259,6 +260,26 @@ class SkillUse(SQLModel, table=True):
     at: datetime = Field(default_factory=_now)
 
 
+class ProfileProposal(SQLModel, table=True):
+    """An agent suggesting an addition to your profile (Settings → Profile), from a reflection.
+    Your profile goes into every agent's instructions, so changes always wait for you."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    text: str = Field(sa_column=Column(Text))
+    reason: str = Field(default="", sa_column=Column(Text, default=""))
+    source: str = "reflection"
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    thread_id: str | None = None
+    job_id: str | None = None
+    reflection_id: str | None = None
+    message_id: str | None = None
+    status: str = Field(default="pending", index=True)  # pending | approved | rejected
+    note: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    decided_at: datetime | None = None
+
+
 class Feedback(SQLModel, table=True):
     """Your 👍 / 👎 on an agent's reply, with an optional note (what it should have done)."""
 
@@ -290,6 +311,7 @@ class Reflection(SQLModel, table=True):
     summary: str = Field(default="", sa_column=Column(Text, default=""))
     proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     memory_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    profile_proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     model: str = ""
     error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=_now)

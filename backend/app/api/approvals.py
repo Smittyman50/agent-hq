@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import select
 
-from .. import approvals, db, skills, subagents
+from .. import approvals, db, profile, skills, subagents
 from ..models import Thread, ToolApproval
 
 router = APIRouter(tags=["approvals"])
@@ -61,9 +61,11 @@ async def decide(approval_id: str, body: Decision, request: Request):
 
 @router.get("/api/inbox/count")
 def inbox_count() -> dict[str, int]:
-    """What's waiting for you: sub-agent requests, tool approvals and skill proposals."""
+    """What's waiting for you: sub-agent requests, tool approvals, skill proposals and
+    profile suggestions."""
     requests = subagents.pending_requests_total()
     tool_calls = approvals.pending_count()
     proposals = skills.pending_count()
-    return {"requests": requests, "approvals": tool_calls, "skills": proposals,
-            "total": requests + tool_calls + proposals}
+    about_you = profile.pending_count()
+    return {"requests": requests, "approvals": tool_calls, "skills": proposals, "profile": about_you,
+            "total": requests + tool_calls + proposals + about_you}

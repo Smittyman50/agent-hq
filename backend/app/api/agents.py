@@ -40,6 +40,7 @@ class AgentIn(BaseModel):
     subagent_limits: dict[str, Any] | None = None
     # Skills: off | propose (default) | auto
     learning_mode: LearningMode = LearningMode.propose
+    use_profile: bool = True
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),

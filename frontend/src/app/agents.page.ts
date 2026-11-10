@@ -98,6 +98,8 @@ import { Avatar } from './avatar';
           </div>
           <p class="hint inline-hint">{{ learningHint(d.learning_mode) }} Every agent can use skills either way
             (Settings → Skills).</p>
+          <label class="check"><input type="checkbox" name="useprofile" [(ngModel)]="d.use_profile">
+            Knows your profile <small>(Settings → Profile, in its instructions every time)</small></label>
         </fieldset>
 
         <fieldset>
@@ -277,6 +279,7 @@ export class AgentsPage implements OnInit {
     const d = a ? structuredClone(a) : blankAgent();
     d.subagent_mode ??= 'off';
     d.learning_mode ??= 'propose';
+    d.use_profile ??= true;
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
     d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;

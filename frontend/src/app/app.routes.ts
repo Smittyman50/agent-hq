@@ -8,8 +8,9 @@ import { ModelsPage } from './models.page';
 import { MemoryPage } from './memory.page';
 import { SettingsLayout } from './settings';
 import { LearningPage } from './learning.page';
+import { ProfilePage } from './profile.page';
 import { SchedulesPage } from './schedules.page';
-import { ApprovalsInbox, SkillsInbox, SubagentInbox } from './requests.page';
+import { ApprovalsInbox, SkillsInbox, SubagentInbox, ProfileInbox } from './requests.page';
 import { RequestsHome, RequestsLayout } from './requests';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
@@ -29,7 +30,8 @@ export const routes: Routes = [
       { path: '', pathMatch: 'full', component: RequestsHome },
       { path: 'approvals', component: ApprovalsInbox },
       { path: 'skills', component: SkillsInbox },
-      { path: 'subagents', component: SubagentInbox },
+      { path: 'profile', component: ProfileInbox },
+        { path: 'subagents', component: SubagentInbox },
     ],
   },
   {
@@ -42,6 +44,7 @@ export const routes: Routes = [
       { path: 'memory', component: MemoryPage },
       { path: 'skills', component: SkillsPage },
       { path: 'learning', component: LearningPage },
+      { path: 'profile', component: ProfilePage },
       { path: 'tools', component: ToolsPage },
       { path: 'events', component: EventsPage },
       { path: 'system', component: SystemPage },
