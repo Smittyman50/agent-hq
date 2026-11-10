@@ -8,6 +8,7 @@ import { ModelsPage } from './models.page';
 import { MemoryPage } from './memory.page';
 import { SettingsLayout } from './settings';
 import { LearningPage } from './learning.page';
+import { EvalsPage } from './evals.page';
 import { KnowledgePage } from './knowledge.page';
 import { ProfilePage } from './profile.page';
 import { SchedulesPage } from './schedules.page';
@@ -46,6 +47,7 @@ export const routes: Routes = [
       { path: 'skills', component: SkillsPage },
       { path: 'knowledge', component: KnowledgePage },
       { path: 'learning', component: LearningPage },
+      { path: 'evals', component: EvalsPage },
       { path: 'profile', component: ProfilePage },
       { path: 'tools', component: ToolsPage },
       { path: 'events', component: EventsPage },

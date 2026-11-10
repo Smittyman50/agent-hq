@@ -449,3 +449,22 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .kn-hit { border-top: 1px solid var(--border); padding: 8px 0; font-size: 13px; }
 .kn-hit.dim { opacity: .65; }
 .kn-snip { margin-top: 4px; white-space: pre-wrap; max-height: 120px; overflow: hidden; color: var(--muted); font-size: 12.5px; }
+
+/* Settings → Evals */
+.mem-toolbar .tabs { display: flex; gap: 4px; }
+.mem-toolbar .tabs button { background: none; border: 1px solid transparent; color: var(--muted); padding: 5px 12px; border-radius: 7px; }
+.mem-toolbar .tabs button.on { background: var(--panel2); border-color: var(--border); color: var(--text); }
+.mem-toolbar .tabs .count-badge { margin-left: 6px; }
+.ev-row, .ev-run { grid-template-columns: minmax(180px, 1.2fr) minmax(0, 1fr) auto; }
+.ev-row .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--border); margin-right: 8px; }
+.ev-row .dot.ok { background: var(--ok); }
+.ev-row .dot.bad { background: var(--bad); }
+.ev-editor { margin-top: 14px; }
+.ev-check { display: grid; grid-template-columns: 190px 1fr auto; gap: 6px; align-items: start; margin-bottom: 6px; }
+.ev-result { display: flex; flex-direction: column; gap: 3px; font-size: 13px; padding: 4px 0 6px; }
+.ev-result .bad { color: var(--bad); }
+.ev-detail { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.eval-line { font-size: 13px; }
+.eval-line.bad { color: var(--bad); }
+.eval-line a { margin-left: 6px; }
+.grid.approvals td.center { text-align: center; }

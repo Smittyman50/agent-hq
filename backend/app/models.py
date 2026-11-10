@@ -179,6 +179,10 @@ class ToolServer(SQLModel, table=True):
     # A tool with no rule (and no "*") uses what the server suggests in the tool's MCP
     # metadata ("agent_hq/approval"), else allow.
     approval_rules: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Evals: tools that may run for real in a test when a case has no recording for the call
+    # ({"list_vms": true}); unset tools follow the server's read-only hint. Only tools set to
+    # Allow ever run in a test.
+    eval_live: dict[str, bool] = Field(default_factory=dict, sa_column=Column(JSON))
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
 
@@ -232,7 +236,10 @@ class SkillProposal(SQLModel, table=True):
     script: str | None = None
     scope: str = "team"
     reason: str = Field(default="", sa_column=Column(Text, default=""))
-    source: str = "agent"  # agent (propose_skill) | reflection (looking back at a job)
+    source: str = "agent"  # agent (propose_skill) | reflection | document
+    # Evals: the run that tested this change, and its numbers.
+    eval_run_id: str | None = None
+    eval_summary: dict = Field(default_factory=dict, sa_column=Column(JSON))
     agent_id: str = Field(index=True)
     agent_name: str = ""
     thread_id: str | None = None
@@ -332,6 +339,77 @@ class KnowledgeChunk(SQLModel, table=True):
     text: str = Field(sa_column=Column(Text))
     embedding: list[float] | None = Field(default=None, sa_column=Column(JSON))  # without pgvector
     embedding_model: str | None = None
+
+
+class JobTrace(SQLModel, table=True):
+    """A job's tool calls with their full arguments and results (kept for a couple of weeks)
+    so a reply can become a test case that replays them."""
+
+    job_id: str = Field(primary_key=True)
+    steps: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now, index=True)
+
+
+class EvalCase(SQLModel, table=True):
+    """A test: a request for an agent, checks its answer must pass, and the tool results
+    recorded from the original job (replayed, so a test never touches your lab)."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = ""
+    agent_id: str = Field(index=True)
+    kind: str = "turn"   # turn (a chat message) | task (delegated work)
+    prompt: str = Field(sa_column=Column(Text))
+    context: str = Field(default="", sa_column=Column(Text, default=""))  # earlier conversation
+    # [{"type": "rubric" | "contains" | "not_contains" | "tool_called" | "tool_not_called"
+    #   | "skill_loaded", "value": "..."}]
+    checks: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    recording: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    recording_partial: bool = False  # only abbreviated results were left to record
+    skill_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="draft", index=True)  # draft | active | archived
+    source: str = "manual"  # manual | reply | feedback | correction
+    source_job_id: str | None = Field(default=None, index=True)
+    source_message_id: str | None = None
+    thread_id: str | None = None
+    last_passed: bool | None = None
+    last_run_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class EvalRun(SQLModel, table=True):
+    """A batch of test cases, run as they are, or with and without a skill change."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    trigger: str = "manual"  # manual | proposal
+    label: str = ""
+    case_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    variants: list[str] = Field(default_factory=lambda: ["current"], sa_column=Column(JSON))
+    proposal_id: str | None = Field(default=None, index=True)
+    status: str = Field(default="queued", index=True)  # queued | running | done | failed
+    # {"current": {"passed": 5, "total": 8}} or {"without": {...}, "with": {...}}
+    summary: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    judge: str = ""
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=_now, index=True)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class EvalResult(SQLModel, table=True):
+    id: str = Field(default_factory=_id, primary_key=True)
+    run_id: str = Field(index=True)
+    case_id: str = Field(index=True)
+    variant: str = "current"
+    passed: bool = False
+    reply: str = Field(default="", sa_column=Column(Text, default=""))
+    # [{"check": {...}, "passed": bool, "note": "..."}]
+    checks: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    calls: list[dict] = Field(default_factory=list, sa_column=Column(JSON))  # what it did, and how answered
+    model: str = ""
+    seconds: float = 0
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=_now)
 
 
 class ProfileProposal(SQLModel, table=True):

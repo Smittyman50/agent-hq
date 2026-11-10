@@ -13,6 +13,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'skills', label: 'Skills', icon: 'skills' },
   { path: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
   { path: 'learning', label: 'Learning', icon: 'learning' },
+  { path: 'evals', label: 'Evals', icon: 'evals' },
   { path: 'profile', label: 'Profile', icon: 'profile' },
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'events', label: 'Events', icon: 'events' },

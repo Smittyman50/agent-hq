@@ -52,7 +52,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import approvals, db, knowledge, learning, profile, skills, slots, subagents
+from . import approvals, db, evals, knowledge, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -61,6 +61,7 @@ from .telemetry import current_traceparent, job_span, set_output
 from .models import (
     AgentDef,
     Job,
+    JobTrace,
     JobKind,
     JobStatus,
     Message,
@@ -118,6 +119,8 @@ class RunDeps:
     job_id: str | None = None   # the job being executed
     # The tool calls made in this run, kept with the job so a reflection can see them.
     trace: list[dict] = field(default_factory=list)
+    # In a test run (app/evals.py): answers tool calls from a recording instead of your lab.
+    replay: Any = None
 
 
 def _brief(value: Any, n: int = 300) -> str:
@@ -129,16 +132,23 @@ def _brief(value: Any, n: int = 300) -> str:
 
 
 def save_trace(job_id: str | None, trace: list[dict]) -> None:
-    """Keep a job's tool calls (the last 60, abbreviated) with the job."""
+    """Keep a job's tool calls with the job (the last 60, abbreviated) and in full in a
+    JobTrace (for a couple of weeks) so the reply can become a test case."""
     if not job_id or not trace:
         return
     try:
+        brief = [{k: v for k, v in t.items() if not k.endswith("_full")} for t in trace[-60:]]
+        full = [{"tool": t["tool"], "args": t.get("args_full", {}), "result": t.get("result_full"),
+                 "error": t.get("error")} for t in trace[-100:]]
         with db.session() as s:
             job = s.get(Job, job_id)
             if job is not None:
-                job.meta = {**(job.meta or {}), "trace": trace[-60:], "tool_calls": len(trace)}
+                job.meta = {**(job.meta or {}), "trace": brief, "tool_calls": len(trace)}
                 s.add(job)
-                s.commit()
+            row = s.get(JobTrace, job_id) or JobTrace(job_id=job_id)
+            row.steps = full
+            s.add(row)
+            s.commit()
     except Exception as e:  # never let bookkeeping break a run
         log.warning("could not save the tool trace of job %s: %s", job_id, e)
 
@@ -460,9 +470,19 @@ class ApprovalToolset(WrapperToolset):
     server_name: str = ""
     rules: dict[str, str] | None = None
 
+    eval_live: dict[str, bool] | None = None
+
     async def call_tool(self, name, tool_args, ctx: RunContext[RunDeps], tool):
-        meta = ((getattr(tool, "tool_def", None) and tool.tool_def.metadata) or {}).get("meta")
+        metadata = (getattr(tool, "tool_def", None) and tool.tool_def.metadata) or {}
+        meta = metadata.get("meta")
         mode = approvals.mode_for(self.rules, name, meta)
+        if ctx.deps.replay is not None:  # a test run: only Allow + safe-in-tests tools run for real
+            read_only = bool((metadata.get("annotations") or {}).get("readOnlyHint"))
+            live = (self.eval_live or {}).get(name, read_only)
+            if mode != "allow" or not live or not ctx.deps.replay.live_allowed:
+                return ctx.deps.replay.not_available(name, tool_args, mode, live)
+            ctx.deps.replay.went_live(name)
+            return await super().call_tool(name, tool_args, ctx, tool)
         if mode == "block":
             return (f"Not allowed: the user has blocked {name} on {self.server_name}. "
                     "Don't try to do the same thing another way; say what you needed it for.")
@@ -482,9 +502,14 @@ class ObservedToolset(WrapperToolset):
     agent_name: str = ""
     broker: Broker | None = None
     desktop_server_id: str | None = None
+    source: str = "internal"  # internal (Agent HQ's own tools) | mcp (your tool servers)
 
     async def call_tool(self, name, tool_args, ctx: RunContext[RunDeps], tool):
         d = ctx.deps
+        if d.replay is not None:
+            inner = super().call_tool
+            return await d.replay.call(name, tool_args, self.source,
+                                       lambda: inner(name, tool_args, ctx, tool))
         if self.desktop_server_id and await self.broker.user_has_control(self.desktop_server_id):
             await self.broker.mark_blocked(self.desktop_server_id,
                                            {"agent_id": d.agent_id, "thread_id": d.thread_id})
@@ -494,16 +519,17 @@ class ObservedToolset(WrapperToolset):
             return DESKTOP_PAUSED
         await self.broker.publish(d.thread_id, "tool_call", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, args=tool_args, depth=d.depth)
-        step = {"tool": name, "args": _brief(tool_args)}
+        step = {"tool": name, "args": _brief(tool_args), "args_full": tool_args}
         d.trace.append(step)
         try:
             result = await super().call_tool(name, tool_args, ctx, tool)
         except Exception as e:
-            step["error"] = _brief(str(e))
+            step["error"] = _brief(str(e), 2000)
             await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
                                       agent_id=d.agent_id, tool=name, error=str(e), depth=d.depth)
             raise
         step["result"] = _brief(result)
+        step["result_full"] = _brief(result, 8000)
         await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, preview=str(result)[:500],
                                   depth=d.depth)
@@ -790,6 +816,7 @@ class Runtime:
                 "return a WorkResult. If you cannot finish, return status 'failed' or "
                 "'partial' and explain why in the summary.")
         toolsets = build_tool_toolsets(agent, wrap=self._with_approvals)
+        mcp_count = len(toolsets)  # the first ones are your tool servers; the rest are Agent HQ's
         if toolsets:
             instructions.append(APPROVAL_NOTE)
         if any(desk for _, desk in toolsets):
@@ -845,8 +872,9 @@ class Runtime:
             output_type=[WorkResult, str] if as_worker else str,
             retries=3,  # a malformed tool call or result gets a few tries, not one
             capabilities=[ProcessHistory(trim_old_tool_results)],
-            toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker,
-                                      desktop_server_id=desk) for t, desk in toolsets],
+            toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
+                                      source="mcp" if i < mcp_count else "internal")
+                      for i, (t, desk) in enumerate(toolsets)],
         )
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
@@ -1258,7 +1286,8 @@ class Runtime:
             k = skills.find(name, me)
             if k is None:
                 return {"error": f"no skill named {name!r}; see list_skills"}
-            skills.record_use(k, me.id, ctx.deps.job_id, ctx.deps.thread_id)
+            if ctx.deps.replay is None:  # test runs don't count as uses
+                skills.record_use(k, me.id, ctx.deps.job_id, ctx.deps.thread_id)
             await rt.broker.publish(ctx.deps.thread_id, "skill_loaded", agent=me.name, skill=k.name,
                                     version=k.version, depth=ctx.deps.depth)
             out = {"name": k.name, "title": k.title, "version": k.version,
@@ -1345,6 +1374,22 @@ class Runtime:
                           thread_id=thread_id, job_id=job_id,
                           base_version=base.version if base else None)
         what = f"an improvement to the skill {name}" if base else f"a new skill: {title}"
+        cases = evals.cases_for_proposal(me, name) if evals.get_settings()["on_proposals"] else []
+        if mode == LearningMode.auto and cases and evals.get_settings()["gate_auto"]:
+            # Test it first: applied if it doesn't lower the pass rate, else it waits for you.
+            p.status = "testing"
+            if thread_id:
+                msg = await self.save_message(thread_id, Role.event,
+                                              f"{me.name} is testing {what} before adding it{via_note}",
+                                              agent_id=me.id, kind="skill_proposal", proposal_id=p.id,
+                                              status="testing", agent=me.name, depth=depth)
+                p.message_id = msg.id
+            with db.session() as s:
+                s.add(p)
+                s.commit()
+            evals.queue_proposal_run(p, cases)
+            return {"status": "testing", "summary": "Testing the change against your test cases first; "
+                    "it's applied if it doesn't make them worse. Carry on with the task.", "proposal_id": p.id}
         if mode == LearningMode.auto:
             k = skills.apply_proposal(p, by=me.name)
             p.status, p.decided_at, p.skill_id = "applied", _now(), k.id
@@ -1371,6 +1416,8 @@ class Runtime:
         if thread_id:
             await self.broker.publish(thread_id, "skill_proposed", proposal_id=p.id,
                                       agent=me.name, skill=name, depth=depth)
+        if cases:
+            evals.queue_proposal_run(p, cases)
         await subagents.notify({"type": "skill_proposal", "proposal_id": p.id, "agent": me.name,
                                 "skill": name, "title": title, "revision": bool(base),
                                 "reason": reason, "link": subagents.link(f"/requests/skills?skill={p.id}")})
@@ -1383,7 +1430,7 @@ class Runtime:
             p = s.get(SkillProposal, proposal_id)
             if p is None:
                 raise LookupError("no such proposal")
-            if p.status != "pending":
+            if p.status not in ("pending", "testing"):
                 raise ValueError(f"this proposal is already {p.status}")
             for k, v in (edits or {}).items():
                 if k in ("name", "title", "when_to_use", "body", "tools", "script", "scope") and v is not None:
@@ -1436,7 +1483,8 @@ class Runtime:
 
     def _with_approvals(self, ts, srv: ToolServer):
         return ApprovalToolset(ts, rt=self, server_id=srv.id, server_name=srv.name,
-                               rules=dict(srv.approval_rules or {}))
+                               rules=dict(srv.approval_rules or {}),
+                               eval_live=dict(srv.eval_live or {}))
 
     async def ask_approval(self, deps: RunDeps, server_id: str, server_name: str, tool: str,
                            args: dict) -> dict:

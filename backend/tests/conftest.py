@@ -289,6 +289,28 @@ def docreader(messages, info):
                                              {"summary": f"{len(ideas)} procedures.", "skills": ideas})])
 
 
+def operator(messages, info):
+    """Lists the VMs, restarts 'web', then reports what each tool said."""
+    tools = {t.name for t in info.function_tools}
+    lister = next((t for t in tools if t.endswith("list_vms")), None)
+    restarter = next((t for t in tools if t.endswith("restart_vm")), None)
+    done = {r.tool_name: r.content for r in _tool_returns(messages)}
+    if lister and lister not in done:
+        return ModelResponse(parts=[ToolCallPart(lister, {})])
+    if restarter and restarter not in done:
+        return ModelResponse(parts=[ToolCallPart(restarter, {"name": "web"})])
+    return ModelResponse(parts=[TextPart(f"VMs: {done.get(lister)}. Restart: {done.get(restarter)}")])
+
+
+def judge(messages, info):
+    """Passes a reply unless it says something wasn't available in the test run."""
+    prompt = _last_prompt(messages)
+    reply = prompt.split("The agent's reply:", 1)[-1].split("The criterion:", 1)[0]
+    ok = "not available" not in reply.lower()
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name,
+                                             {"passed": ok, "reason": "fine" if ok else "a tool was missing"})])
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
@@ -296,7 +318,7 @@ SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "bro
            "coder": coder(1), "coder-2": coder(2),
            "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups"),
            "busy": busy(3), "reflector": reflector, "whoami": whoami,
-           "reader": reader, "docreader": docreader,
+           "reader": reader, "docreader": docreader, "operator": operator, "judge": judge,
            "echo": lambda m, i: ModelResponse(parts=[TextPart(f"You said: {_last_prompt(m)[:80]}")])}
 
 

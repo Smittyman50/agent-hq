@@ -26,6 +26,7 @@ class ToolServerIn(BaseModel):
     desktop: bool = False
     # {tool name or "*": "allow" | "ask" | "block"}. None (left out) keeps the current rules.
     approval_rules: dict[str, str] | None = None
+    eval_live: dict[str, bool] | None = None  # tools safe to run for real in tests
     enabled: bool = True
 
 
@@ -45,7 +46,8 @@ def create_server(body: ToolServerIn, s: Session = Depends(get_session)):
     if s.exec(select(ToolServer).where(ToolServer.name == body.name)).first():
         raise HTTPException(409, f"a tool server named '{body.name}' already exists")
     _check_rules(body.approval_rules)
-    t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {}})
+    t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {},
+                      "eval_live": body.eval_live or {}})
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -58,10 +60,12 @@ def update_server(server_id: str, body: ToolServerIn, s: Session = Depends(get_s
     if not t:
         raise HTTPException(404)
     _check_rules(body.approval_rules)
-    for k, v in body.model_dump(exclude={"approval_rules"}).items():
+    for k, v in body.model_dump(exclude={"approval_rules", "eval_live"}).items():
         setattr(t, k, v)
     if body.approval_rules is not None:
         t.approval_rules = {k: v for k, v in body.approval_rules.items() if v}
+    if body.eval_live is not None:
+        t.eval_live = {k: bool(v) for k, v in body.eval_live.items()}
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -94,8 +98,12 @@ async def probe_server(server_id: str, s: Session = Depends(get_session)):
         out = []
         for x in tools:
             hint = approvals.suggested(getattr(x, "meta", None))
+            ann = getattr(x, "annotations", None)
+            read_only = bool(ann and getattr(ann, "readOnlyHint", None))
             out.append({"name": x.name, "description": x.description, "suggested_approval": hint,
-                        "approval": approvals.mode_for(t.approval_rules, x.name, getattr(x, "meta", None))})
+                        "approval": approvals.mode_for(t.approval_rules, x.name, getattr(x, "meta", None)),
+                        "read_only_hint": read_only,
+                        "safe_in_tests": (t.eval_live or {}).get(x.name, read_only)})
         return out
     except Exception as e:
         raise HTTPException(502, f"could not reach {t.name}: {e}") from e

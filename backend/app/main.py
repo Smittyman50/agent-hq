@@ -20,6 +20,7 @@ from .api import skills as skills_api
 from .api import learning as learning_api
 from .api import profile as profile_api
 from .api import knowledge as knowledge_api
+from .api import evals as evals_api
 from .api import auth as auth_api
 from .api import agents, avatars, desktop, memory as memory_api, providers, schedules, subagents as subagents_api, subscriptions, system, threads, tool_servers
 from .broker import Broker
@@ -65,6 +66,9 @@ async def lifespan(app: FastAPI):
         from .knowledge import loop as knowledge_loop
 
         background.append(asyncio.create_task(knowledge_loop(broker)))
+        from .evals import loop as evals_loop
+
+        background.append(asyncio.create_task(evals_loop(rt)))
         if settings.scheduler_enabled:
             from .scheduler import scheduler_loop
 
@@ -105,7 +109,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app.add_middleware(auth_api.AuthMiddleware)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
-    for r in (auth_api.router, approvals_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
+    for r in (auth_api.router, approvals_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
               system.router):
         app.include_router(r)
 

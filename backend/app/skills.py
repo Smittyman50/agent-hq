@@ -23,6 +23,7 @@ a skill leads to.
 
 from __future__ import annotations
 
+import contextvars
 import difflib
 import logging
 import re
@@ -61,13 +62,25 @@ def mode_of(agent: AgentDef) -> LearningMode:
         return LearningMode.propose
 
 
+# Test runs (app/evals.py) see skills "with" or "without" a proposed change without it being
+# saved: {name: Skill to use instead (or add), or None to hide it}.
+overlay: contextvars.ContextVar[dict[str, Skill | None] | None] = contextvars.ContextVar(
+    "skill_overlay", default=None)
+
+
 def visible_to(agent: AgentDef) -> list[Skill]:
     """Active skills this agent can use: team skills and its own."""
     owner = agent.parent_agent_id if agent.is_subagent else agent.id
     with db.session() as s:
-        return list(s.exec(select(Skill).where(
+        rows = list(s.exec(select(Skill).where(
             Skill.status == "active",
             or_(Skill.scope == "team", Skill.agent_id == owner)).order_by(Skill.name)).all())
+    over = overlay.get()
+    if over:
+        rows = [k for k in rows if k.name not in over]
+        rows += [k for k in over.values() if k is not None and (k.scope == "team" or k.agent_id == owner)]
+        rows.sort(key=lambda k: k.name)
+    return rows
 
 
 def find(name: str, agent: AgentDef | None = None) -> Skill | None:

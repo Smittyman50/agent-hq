@@ -47,7 +47,8 @@ export interface SkillProposal {
   id: string; skill_id: string | null; name: string; title: string; when_to_use: string; body: string;
   tools: string[]; script: string | null; scope: 'team' | 'agent'; reason: string; agent_id: string;
   agent_name: string; thread_id: string | null; base_version: number | null;
-  status: 'pending' | 'approved' | 'rejected' | 'applied'; note: string; created_at: string; decided_at: string | null;
+  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'testing'; note: string; created_at: string; decided_at: string | null;
+  source?: string; eval_run_id?: string | null; eval_summary?: EvalSummary;
   current?: { version: number; title: string; when_to_use: string; body: string }; diff?: string; stale?: boolean;
 }
 
@@ -122,6 +123,7 @@ export interface ToolServer {
   desktop: boolean;
   enabled: boolean;
   approval_rules: Record<string, ApprovalMode>;
+  eval_live?: Record<string, boolean>;
 }
 
 export type ApprovalMode = 'allow' | 'ask' | 'block';
@@ -129,6 +131,8 @@ export interface ProbedTool {
   name: string; description: string;
   suggested_approval: ApprovalMode | null;   // what the server suggests in its metadata
   approval: ApprovalMode;                    // what applies now
+  read_only_hint?: boolean;                  // the server says it only reads
+  safe_in_tests?: boolean;                   // may run for real in an eval
 }
 export interface ToolApproval {
   id: string; agent_id: string; agent_name: string; thread_id: string; thread_title: string;
@@ -276,6 +280,35 @@ export interface KnowledgeDoc {
 export interface KnowledgeHit {
   doc_id: string; title: string; section: string; collection: string; path: string; link: string; tags: string[];
   score: number; sim: number | null; keyword: number; would_recall: boolean; text: string;
+}
+
+export interface EvalCheck { type: 'rubric' | 'contains' | 'not_contains' | 'tool_called' | 'tool_not_called' | 'skill_loaded'; value: string; }
+export interface EvalStep { tool: string; args: unknown; result: unknown; error?: string | null; }
+export interface EvalCase {
+  id: string; name: string; agent_id: string; kind: 'turn' | 'task'; prompt: string; context: string;
+  checks: EvalCheck[]; recording: EvalStep[]; recording_partial: boolean; skill_names: string[];
+  status: 'draft' | 'active' | 'archived'; source: string; source_job_id: string | null; thread_id: string | null;
+  last_passed: boolean | null; last_run_at: string | null; created_at: string; updated_at: string;
+  results?: EvalResult[];
+}
+export interface EvalResult {
+  id: string; run_id: string; case_id: string; case_name?: string; variant: string; passed: boolean; reply: string;
+  checks: { check: EvalCheck; passed: boolean; note: string }[]; calls: { tool: string; args: unknown; answered: string }[];
+  model: string; seconds: number; error: string | null; created_at: string;
+}
+export interface EvalRun {
+  id: string; trigger: 'manual' | 'proposal'; label: string; case_ids: string[]; variants: string[];
+  proposal_id: string | null; status: 'queued' | 'running' | 'done' | 'failed';
+  summary: Record<string, { passed: number; total: number }>; judge: string; error: string | null;
+  created_at: string; started_at: string | null; finished_at: string | null; results?: EvalResult[];
+}
+export interface EvalSummary {
+  status?: string; cases?: number; regressed?: boolean; run_id?: string;
+  with?: { passed: number; total: number }; without?: { passed: number; total: number };
+}
+export interface EvalSettings {
+  judge_provider_id: string | null; judge_model: string; on_proposals: boolean; gate_auto: boolean;
+  draft_from_feedback: boolean; live_read_only: boolean; max_cases: number; keep_traces_days: number;
 }
 
 export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; total: number; }
@@ -479,6 +512,20 @@ export class Api {
     return this.http.post<{ summary: string; proposals: { proposal_id: string; name: string; status: string }[]; notes: string[]; model: string }>(
       `/api/knowledge/docs/${docId}/propose-skills`, { agent_id: agentId });
   }
+
+  evalSettings() { return this.http.get<EvalSettings>('/api/evals/settings'); }
+  saveEvalSettings(x: EvalSettings) { return this.http.put<EvalSettings>('/api/evals/settings', x); }
+  evalCases(status?: string) {
+    return this.http.get<{ cases: EvalCase[]; counts: Record<string, number> }>('/api/evals/cases', { params: status ? { status } : {} });
+  }
+  evalCase(id: string) { return this.http.get<EvalCase>(`/api/evals/cases/${id}`); }
+  createEvalCase(c: Partial<EvalCase>) { return this.http.post<EvalCase>('/api/evals/cases', c); }
+  saveEvalCase(c: EvalCase) { return this.http.put<EvalCase>(`/api/evals/cases/${c.id}`, c); }
+  deleteEvalCase(id: string) { return this.http.delete(`/api/evals/cases/${id}`); }
+  caseFromMessage(messageId: string) { return this.http.post<EvalCase>('/api/evals/cases/from-message', { message_id: messageId }); }
+  startEvalRun(body: { case_ids?: string[]; agent_id?: string; label?: string }) { return this.http.post<EvalRun>('/api/evals/runs', body); }
+  evalRuns(limit = 50) { return this.http.get<EvalRun[]>('/api/evals/runs', { params: { limit } }); }
+  evalRun(id: string) { return this.http.get<EvalRun>(`/api/evals/runs/${id}`); }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

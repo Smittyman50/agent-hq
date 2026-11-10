@@ -1,6 +1,7 @@
 import { Component, computed, effect, inject, input, output, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { Api, SkillProposal } from './api.service';
 import { Avatar } from './avatar';
 import { Markdown } from './markdown';
@@ -9,7 +10,7 @@ import { Workspace } from './workspace';
 /** An agent proposing a new skill or an improvement: review, edit, approve or reject. */
 @Component({
   selector: 'hq-skill-proposal-card',
-  imports: [FormsModule, DatePipe, Avatar, Markdown],
+  imports: [FormsModule, DatePipe, Avatar, Markdown, RouterLink],
   template: `
     @if (p(); as r) {
       <div class="req-card skill" [class.pending]="r.status === 'pending'">
@@ -23,6 +24,19 @@ import { Workspace } from './workspace';
           <span class="muted small">{{ r.created_at | date:'MMM d, h:mm a' }}</span>
         </div>
         <div class="req-why"><span class="k">Why</span>{{ r.reason }}</div>
+        @if (r.status === 'testing') { <div class="req-why eval-line"><span class="k">Testing</span>Auto mode: it's applied if it doesn't lower the pass rate; you can decide now instead.</div> }
+        @if (r.eval_summary; as e) {
+          @if (e.with) {
+            <div class="req-why eval-line" [class.bad]="e.regressed">
+              <span class="k">Tests</span>
+              passes {{ e.with.passed }}/{{ e.with.total }} with this change vs {{ e.without?.passed }}/{{ e.without?.total }} without
+              @if (e.regressed) { · <strong>worse, so it wasn't applied automatically</strong> }
+              <a [routerLink]="['/settings/evals']" [queryParams]="{ run: e.run_id }">details</a>
+            </div>
+          } @else if (e.status === 'queued' || e.status === 'running') {
+            <div class="req-why eval-line"><span class="k">Tests</span>running {{ e.cases }} test case{{ e.cases === 1 ? '' : 's' }} with and without this change…</div>
+          }
+        }
 
         @if (r.status === 'pending' && editing()) {
           <label>Title<input [(ngModel)]="edit.title"></label>
@@ -38,7 +52,7 @@ import { Workspace } from './workspace';
           <div class="skill-body"><hq-md [text]="r.body" /></div>
         }
 
-        @if (r.status === 'pending') {
+        @if (r.status === 'pending' || r.status === 'testing') {
           <div class="approval-actions">
             <input [(ngModel)]="note" placeholder="Note (optional)">
             <label class="check small"><input type="checkbox" [ngModel]="editing()" (ngModelChange)="startEdit($event)"> Edit first</label>

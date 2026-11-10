@@ -204,13 +204,19 @@ def last_reply(thread_id: str) -> Message | None:
 
 
 def user_said(thread_id: str, text: str) -> None:
-    """A new message from you: if it corrects the last reply, that job gets a look."""
+    """A new message from you: if it corrects the last reply, that job gets a look (and, with
+    evals, a draft test case)."""
     try:
-        cfg = get_settings()
-        if cfg["reflect"] == "off" or not cfg["on_correction"] or not looks_like_correction(text):
+        if not looks_like_correction(text):
             return
         m = last_reply(thread_id)
         if m is None:
+            return
+        from . import evals
+
+        evals.draft_from_correction(m.meta["job_id"], text)
+        cfg = get_settings()
+        if cfg["reflect"] == "off" or not cfg["on_correction"]:
             return
         quote = text.strip().replace("\n", " ")
         quote = quote if len(quote) <= 160 else quote[:160] + "…"
@@ -259,6 +265,10 @@ def set_feedback(message: Message, rating: str | None, comment: str = "") -> Fee
             s.refresh(fb)
     if rating is None or not job_id:
         return fb if rating else None
+    if rating == "down" and comment:
+        from . import evals
+
+        evals.draft_from_feedback(message, comment)
     try:
         cfg = get_settings()
         if cfg["on_feedback"]:

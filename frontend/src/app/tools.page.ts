@@ -58,25 +58,32 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
             OK (in the chat, the Requests inbox and on MQTT). <b>Block</b> refuses it. Your rules here override
             what the server suggests. Sub-agents follow the same rules.</p>
           <table class="grid approvals">
-            <tr><th>Tool</th><th>Approval</th><th></th></tr>
+            <tr><th>Tool</th><th>Approval</th><th title="In a test run (Settings → Evals), may this tool run for real when the test has no recorded result for the call? Only Allow tools ever do.">Safe in tests</th><th></th></tr>
             <tr><td><i>Every tool without its own rule</i></td>
               <td><select [name]="'rule_all'" [ngModel]="d.approval_rules['*'] ?? ''" (ngModelChange)="setRule(d, '*', $event)">
                 <option value="">Server's suggestion, else allow</option>
-                @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td></tr>
+                @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td><td></td></tr>
             @for (t of tools(); track t.name) {
               <tr><td><code>{{ t.name }}</code><div class="muted small">{{ t.description | slice:0:140 }}</div></td>
                 <td><select [name]="'rule_' + t.name" [ngModel]="d.approval_rules[t.name] ?? ''" (ngModelChange)="setRule(d, t.name, $event)">
                   <option value="">Default ({{ label(defaultFor(d, t)) }})</option>
                   @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td>
-                <td class="muted small">@if (t.suggested_approval && t.suggested_approval !== 'allow') { server suggests {{ label(t.suggested_approval) }} }</td></tr>
+                <td class="center"><input type="checkbox" [name]="'live_' + t.name" [checked]="safe(d, t)"
+                  (change)="setSafe(d, t, $any($event.target).checked)"
+                  [title]="t.read_only_hint ? 'The server says this tool only reads' : 'Changes things, as far as the server says'"></td>
+                <td class="muted small">@if (t.suggested_approval && t.suggested_approval !== 'allow') { server suggests {{ label(t.suggested_approval) }} }
+                  @if (t.read_only_hint) { read-only }</td></tr>
             }
             @for (name of ruleOnly(d); track name) {
               <tr><td><code>{{ name }}</code> <span class="muted small">(not offered right now)</span></td>
                 <td><select [name]="'rule_' + name" [ngModel]="d.approval_rules[name]" (ngModelChange)="setRule(d, name, $event)">
                   <option value="">Remove rule</option>
-                  @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td></tr>
+                  @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td><td></td></tr>
             }
           </table>
+          <p class="hint inline-hint"><b>Safe in tests</b>: when a test case (Settings → Evals) has no recorded result for a
+            call, a ticked tool set to Allow runs for real; others answer “not available in a test run”. Tools the
+            server marks read-only start ticked.</p>
           @if (!tools().length) {
             <p class="hint inline-hint">Use <b>Test connection</b> to list this server's tools and set a rule per tool.</p>
           }
@@ -102,12 +109,20 @@ export class ToolsPage implements OnInit {
     this.error.set(''); this.tools.set([]);
     const d = t ? structuredClone(t) : blankServer();
     d.approval_rules ??= {};
+    d.eval_live ??= {};
     this.draft.set(d);
     if (d.id) this.probe(d, true);
   }
 
   label(m: ApprovalMode | null | undefined) {
     return this.modes.find(x => x.value === m)?.label ?? 'Allow';
+  }
+
+  safe(d: ToolServer, t: ProbedTool) { return d.eval_live?.[t.name] ?? !!t.read_only_hint; }
+  setSafe(d: ToolServer, t: ProbedTool, on: boolean) {
+    const next = { ...(d.eval_live ?? {}) };
+    if (on === !!t.read_only_hint) delete next[t.name]; else next[t.name] = on;
+    d.eval_live = next;
   }
 
   defaultFor(d: ToolServer, t: ProbedTool): ApprovalMode {

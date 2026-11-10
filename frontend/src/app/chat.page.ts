@@ -2,7 +2,7 @@ import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, sig
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { Api, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
 import { Avatar } from './avatar';
@@ -112,6 +112,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                     <button type="button" class="rate-btn down" [class.on]="fb(m)?.rating === 'down'"
                       [title]="fb(m)?.rating === 'down' ? 'Clear your rating' : 'Not right: say what it should have done'"
                       (click)="rate(m, 'down')"><hq-icon name="thumbs-down" [size]="14" /></button>
+                    <button type="button" class="rate-btn" title="Make this a test (Settings → Evals)" (click)="makeTest(m)">
+                      <hq-icon name="evals" [size]="14" /></button>
                     @if (fb(m)?.comment && noteFor() !== m.id) {
                       <button type="button" class="rate-note" title="Edit your note" (click)="openNote(m)">“{{ fb(m)!.comment }}”</button>
                     }
@@ -201,6 +203,7 @@ export class ChatPage implements OnInit, OnDestroy {
   private api = inject(Api);
   ws = inject(Workspace);
   private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private sanitizer = inject(DomSanitizer);
   private scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private sub?: Subscription;
@@ -237,6 +240,12 @@ export class ChatPage implements OnInit, OnDestroy {
     this.applyFeedback(m.id, next ? { rating: next, comment } : null);
     this.api.rateMessage(m.id, next, comment).subscribe({ error: () => this.reload() });
     if (next === 'down') this.openNote(m); else if (this.noteFor() === m.id) this.noteFor.set(null);
+  }
+  makeTest(m: Message) {
+    this.api.caseFromMessage(m.id).subscribe({
+      next: c => this.router.navigate(['/settings/evals'], { queryParams: { case: c.id } }),
+      error: e => alert(e.error?.detail ?? 'Could not make a test from this reply'),
+    });
   }
   openNote(m: Message) { this.noteDraft = this.fb(m)?.comment ?? ''; this.noteFor.set(m.id); }
   saveNote(m: Message) {
