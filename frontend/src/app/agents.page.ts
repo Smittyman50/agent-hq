@@ -1,7 +1,7 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits } from './api.service';
+import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits, AgentContextInfo } from './api.service';
 import { ModelPicker } from './model-picker';
 import { Avatar } from './avatar';
 
@@ -64,6 +64,18 @@ import { Avatar } from './avatar';
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
         <hq-model-picker label="Model" [providers]="providers()"
           [(providerId)]="d.provider_id" [(modelName)]="d.model" />
+        <label class="narrow">Context window <small>tokens; blank = ask the provider</small>
+          <input name="ctxwin" type="number" min="1024" step="1024" [(ngModel)]="d.context_window"
+            [placeholder]="ctx()?.detected ? 'Auto: ' + ctx()!.detected!.toLocaleString() : 'Auto'"></label>
+        @if (ctx(); as c) {
+          <p class="hint inline-hint" [class.needs-hint]="c.room_for_conversation < 1000">
+            Using {{ c.window.toLocaleString() }} tokens ({{ c.source }}). Its instructions take about
+            {{ c.instruction_tokens.toLocaleString() }}, leaving about {{ c.room_for_conversation.toLocaleString() }}
+            for the conversation before older turns are summarised.
+            @if (c.room_for_conversation < 1000) { That's very little: raise the window (for Ollama, OLLAMA_CONTEXT_LENGTH
+              on the server, then set it here) or trim the instructions. }
+          </p>
+        }
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
         <datalist id="pools">@for (p of pools(); track p) { <option [value]="p"></option> }</datalist>
@@ -214,6 +226,11 @@ export class AgentsPage implements OnInit {
   agents = signal<AgentDef[]>([]);
   servers = signal<ToolServer[]>([]);
   draft = signal<AgentDef | null>(null);
+  ctx = signal<AgentContextInfo | null>(null);
+  private loadCtx(id?: string | null) {
+    this.ctx.set(null);
+    if (id) this.api.agentContext(id).subscribe({ next: c => this.ctx.set(c), error: () => {} });
+  }
   error = signal('');
   providers = signal<ProviderInfo[]>([]);
   pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
@@ -284,6 +301,7 @@ export class AgentsPage implements OnInit {
     d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
     this.draft.set(d);
+    this.loadCtx(a?.id);
   }
 
   uploadAvatar(d: AgentDef, ev: Event) {
@@ -322,7 +340,7 @@ export class AgentsPage implements OnInit {
   save() {
     const d = this.draft()!;
     this.api.saveAgent(d).subscribe({
-      next: saved => { this.load(); this.draft.set(structuredClone(saved)); this.error.set(''); },
+      next: saved => { this.load(); this.draft.set(structuredClone(saved)); this.error.set(''); this.loadCtx(saved.id); },
       error: e => this.error.set(e.error?.detail ?? 'Save failed'),
     });
   }

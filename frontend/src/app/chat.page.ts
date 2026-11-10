@@ -2,7 +2,7 @@ import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, sig
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { Api, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
 import { Avatar } from './avatar';
@@ -18,7 +18,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, RouterLink],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation">
@@ -51,6 +51,15 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
               <hq-skill-proposal-card [proposalId]="$any(m.meta['proposal_id'])" [version]="m.meta['status']" />
             } @else if (m.meta['kind'] === 'tool_approval' && m.meta['approval_id']) {
               <hq-approval-card [approvalId]="$any(m.meta['approval_id'])" [version]="m.meta['status']" />
+            } @else if (m.meta['kind'] === 'compaction') {
+              <div class="note-line">
+                <hq-icon name="history" [size]="14" /> <span>{{ m.content }}</span>
+                @if (m.meta['summary']) {
+                  <details><summary>What it kept</summary><pre class="kn-text">{{ m.meta['summary'] }}</pre></details>
+                }
+              </div>
+            } @else if (m.meta['kind'] === 'context_warning') {
+              <div class="note-line warn">⚠ {{ m.content }} <a routerLink="/settings/agents">Agent settings</a></div>
             } @else if (exchange(m); as x) {
               <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
                 <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">

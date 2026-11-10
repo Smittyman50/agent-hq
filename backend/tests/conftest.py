@@ -311,6 +311,21 @@ def judge(messages, info):
                                              {"passed": ok, "reason": "fine" if ok else "a tool was missing"})])
 
 
+def summarizer(messages, info):
+    """Summarises by counting the user turns it was given and quoting the first."""
+    prompt = _last_prompt(messages)
+    users = [l for l in prompt.splitlines() if l.startswith("User: ")]
+    first = users[0][6:40] if users else ""
+    return ModelResponse(parts=[TextPart(f"- {len(users)} earlier user turns; first asked: {first}")])
+
+
+def historian(messages, info):
+    """Reports how much history it was given and whether it starts with a summary."""
+    first = next((p.content for m in messages for p in getattr(m, "parts", [])
+                  if getattr(p, "part_kind", "") == "user-prompt"), "")
+    return ModelResponse(parts=[TextPart(f"messages={len(messages)} summary={str(first).startswith('[Summary')}")])
+
+
 SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
@@ -319,6 +334,7 @@ SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "bro
            "skilled": skilled, "proposer": proposer(), "reviser": proposer("check_pve_backups"),
            "busy": busy(3), "reflector": reflector, "whoami": whoami,
            "reader": reader, "docreader": docreader, "operator": operator, "judge": judge,
+           "summarizer": summarizer, "historian": historian,
            "echo": lambda m, i: ModelResponse(parts=[TextPart(f"You said: {_last_prompt(m)[:80]}")])}
 
 

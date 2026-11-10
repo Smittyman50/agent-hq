@@ -122,6 +122,8 @@ class AgentDef(SQLModel, table=True):
     avatar_version: int = 0
     avatar_animated: bool = False
     use_profile: bool = True  # put your profile (Settings → Profile) in its instructions
+    # Context window in tokens (None = ask the provider; see app/context.py).
+    context_window: int | None = None
     # Skills: whether this agent may propose new skills or improvements (see app/skills.py).
     learning_mode: LearningMode = LearningMode.propose
     # Sub-agents: off (default), ask (needs your approval), allowed (within limits).

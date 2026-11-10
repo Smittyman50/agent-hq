@@ -250,6 +250,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
 - your profile: in every agent's instructions (or not, per agent), the word cap, and suggestions you approve
 - the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
+- long conversations: cutting only between turns, summarising older turns (and folding an old summary into a new one), dropping them when the summary fails, compaction in a real conversation, trimming tool results within a turn, the warning when instructions don't fit, and reading the window from Ollama (loaded model, Modelfile, or the default)
 - evals: cases from replies and feedback, replaying recorded tool calls, read-only tools running for real only when allowed, Ask/Block tools never running, the judge, and skill changes tested without and with (Auto-mode changes held when they make things worse)
 
 ## Deploy (Docker)
@@ -571,6 +572,30 @@ Changing the embedding model re-embeds existing memories in the background.
 - **On Postgres:** the infrastructure compose file uses the `pgvector/pgvector:pg17` image, and Agent HQ enables the extension, adds the vector column and creates the full-text index on startup.
 - **On SQLite (single-machine dev):** search runs in Python instead. It's fine for thousands of memories.
 
+## Long conversations
+
+Every model call has to fit the agent's **context window**, and Ollama silently drops whatever doesn't. Agent HQ works out each agent's window and fits the conversation into it.
+
+**The window comes from, in order:**
+1. the agent's own **Context window** setting (Settings → Agents);
+2. what the provider reports: for Ollama, the loaded model's context (`/api/ps`), else a Modelfile's `num_ctx` (`/api/show`); for vLLM-style servers, `max_model_len`;
+3. a default: 4,096 for Ollama (the smallest it picks), 128K for cloud models.
+
+The agent editor shows the window it's using, where the number came from, how many tokens the agent's instructions take, and how much room that leaves for the conversation.
+
+**Ollama's window is set on the Ollama server, not per request.** The OpenAI-compatible endpoint Agent HQ uses can't change it. Set `OLLAMA_CONTEXT_LENGTH` on the server, or bake `num_ctx` into a Modelfile; otherwise Ollama picks 4K, 32K or 256K depending on GPU memory. Then set the same number on the agent if Agent HQ can't read it.
+
+**What happens as a conversation grows:**
+- **Compaction, between turns.** When the history, the agent's instructions and the new message would take more than 75% of the window, the older turns are summarised and replaced by the summary, and the recent turns stay word for word.
+  - **Who writes the summary:** the agent's own model, unless you pick a summary model.
+  - **Contents:** what you want, decisions and results, open work, and facts found with tools, with exact hostnames, IDs and paths.
+  - **In the conversation:** a note says what was summarised, with the summary itself one click away.
+  - **If the summary can't be written,** the older turns are dropped instead, and the agent is told.
+- **Trimming, within a turn.** During a long run of tool calls, older tool results are shortened, harder as the run nears the window.
+- **A warning,** once a day per conversation, when an agent's instructions alone don't fit its window. The instructions include its prompt, your profile, skills, memories, knowledge excerpts and tools. When that happens, Ollama is already cutting them.
+
+The thresholds, the summary length, the room kept for tools and the reply, and the default windows are under **Settings → System → Long conversations**.
+
 ## Knowledge library
 
 **Settings → Knowledge** makes your own documents and notes searchable by agents, with citations. Documents live in **collections**, and each collection says which agents may read it (none ticked means every agent; sub-agents read what their parent can).
@@ -803,6 +828,7 @@ backend/app/
   profile.py         your profile: in every agent's instructions; suggestions you approve
   knowledge.py       knowledge library: sources (upload, web, Git/Obsidian), chunking, hybrid search, recall
   evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
+  context.py         long conversations: context windows, compaction, trimming, overflow warnings
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)

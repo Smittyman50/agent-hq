@@ -52,7 +52,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
-from . import approvals, db, evals, knowledge, learning, profile, skills, slots, subagents
+from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -802,7 +802,7 @@ class Runtime:
 
     def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
                     memory_context: str = "", skills_context: str = "",
-                    knowledge_context: str = "") -> Agent:
+                    knowledge_context: str = "", window: int | None = None) -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
@@ -862,20 +862,27 @@ class Runtime:
         model = (build_model_for(agent.fallback_provider_id, agent.fallback_model,
                                  f"{agent.name} (fallback)")
                  if on_fallback else build_agent_model(agent))
-        return Agent(
+        text = "\n\n".join(instructions)
+        used = context.tokens(text)
+        reserve = int(context.get_settings()["reserve_tokens"])
+        # Within a run, older tool results are trimmed harder as it nears the window.
+        trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0)
+        built = Agent(
             model,
             name=agent.name,
-            instructions="\n\n".join(instructions),
+            instructions=text,
             deps_type=RunDeps,
             # Delegated agents should hand in a WorkResult, but small models often just write
             # their answer as text; accept that too rather than throwing the work away.
             output_type=[WorkResult, str] if as_worker else str,
             retries=3,  # a malformed tool call or result gets a few tries, not one
-            capabilities=[ProcessHistory(trim_old_tool_results)],
+            capabilities=[ProcessHistory(trimmer)],
             toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
                                       source="mcp" if i < mcp_count else "internal")
                       for i, (t, desk) in enumerate(toolsets)],
         )
+        built.ahq_instruction_tokens = used  # for fitting the history around them
+        return built
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
                         history: list | None = None, as_worker: bool = False):
@@ -903,14 +910,17 @@ class Runtime:
             minutes = float(caps.get("max_minutes") or 10)
 
         async def attempt(on_fallback: bool, text: str):
+            nonlocal history
             pid, model = ((agent.fallback_provider_id, agent.fallback_model) if on_fallback
                           else (agent.provider_id, agent.model))
             started = asyncio.get_running_loop().time()
             usage, ok = None, False
             try:
+                window, _ = await context.window_for(agent, on_fallback=on_fallback)
                 pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=on_fallback,
                                             memory_context=recalled, skills_context=skills_block,
-                                            knowledge_context=excerpts)
+                                            knowledge_context=excerpts, window=window)
+                history = await self._fit_history(agent, pa_agent, history, window, text, deps)
                 coro = pa_agent.run(text, deps=deps, message_history=history,
                                     conversation_id=deps.thread_id, **run_kw)
                 try:
@@ -943,6 +953,45 @@ class Runtime:
             note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Take over and complete it.]")
             return await attempt(True, prompt + note)
+
+    async def _fit_history(self, agent: AgentDef, pa_agent: Agent, history: list | None,
+                           window: int, prompt: str, deps: RunDeps) -> list | None:
+        """Compact the conversation so instructions + history + the new message fit the
+        window; warn once a day if the instructions alone leave too little room."""
+        cfg = context.get_settings()
+        used = getattr(pa_agent, "ahq_instruction_tokens", 0) + context.tokens(prompt)
+        reserve = int(cfg["reserve_tokens"])
+        if cfg["warn_overflow"] and used + reserve > window * 0.9 and deps.replay is None:
+            try:
+                if await self.broker.r.set(f"ahq:ctxwarn:{deps.thread_id}:{agent.id}", "1", nx=True, ex=86400):
+                    await self.save_message(
+                        deps.thread_id, Role.event,
+                        f"{agent.name}'s instructions and this message take about {used:,} tokens, but its "
+                        f"context window is {window:,}, so the model can't see all of it. Raise the window "
+                        f"(for Ollama: OLLAMA_CONTEXT_LENGTH on the server, or a Modelfile with num_ctx) and "
+                        f"set it on the agent, or trim its instructions, tools or recall settings.",
+                        agent_id=agent.id, kind="context_warning", window=window, used=used)
+            except Exception as e:
+                log.warning("context warning failed: %s", e)
+        if not history:
+            return history
+        budget = max(512, int(window * float(cfg["trigger_ratio"])) - used - reserve)
+        try:
+            fitted, done = await context.compact(agent, history, budget=budget, window=window)
+        except Exception as e:  # never let this stop the agent from answering
+            log.warning("compaction failed for %s: %s", agent.name, e)
+            return history
+        if done is not None and deps.replay is None:
+            what = ("summarised" if done.method == "summary" else "removed (a summary couldn't be written)")
+            await self.save_message(
+                deps.thread_id, Role.event,
+                f"{agent.name}'s earlier conversation ({done.turns} turn{'s' if done.turns != 1 else ''}) was "
+                f"{what} to fit its {window:,}-token context window: about {done.before:,} → {done.after:,} tokens.",
+                agent_id=agent.id, kind="compaction", summary=done.summary, method=done.method,
+                turns=done.turns, model=done.model)
+            await self.broker.publish(deps.thread_id, "compaction", agent=agent.name, turns=done.turns,
+                                      before=done.before, after=done.after, depth=deps.depth)
+        return fitted
 
     # ------------------------------------------------------------ memory
 

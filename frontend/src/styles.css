@@ -471,3 +471,12 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .eval-line.bad { color: var(--bad); }
 .eval-line a { margin-left: 6px; }
 .grid.approvals td.center { text-align: center; }
+
+/* Long conversations: compaction notes and context warnings in chat */
+.note-line { align-self: center; max-width: 760px; font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap;
+  gap: 6px; align-items: center; padding: 4px 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.note-line details { flex-basis: 100%; }
+.note-line summary { cursor: pointer; }
+.note-line.warn { color: var(--warn); border-color: var(--warn); }
+.narrow-row { max-width: 760px; gap: 12px; }
+.narrow-picker { max-width: 760px; }

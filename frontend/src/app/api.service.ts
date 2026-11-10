@@ -29,6 +29,7 @@ export interface AgentDef {
   subagent_limits: SubagentLimits;
   learning_mode: LearningMode;
   use_profile?: boolean;
+  context_window?: number | null;
   is_subagent?: boolean;
 }
 
@@ -311,6 +312,16 @@ export interface EvalSettings {
   draft_from_feedback: boolean; live_read_only: boolean; max_cases: number; keep_traces_days: number;
 }
 
+export interface ConversationSettings {
+  compaction: boolean; trigger_ratio: number; keep_ratio: number; summary_max_tokens: number;
+  reserve_tokens: number; local_window: number; cloud_window: number;
+  provider_id: string | null; model: string; warn_overflow: boolean;
+}
+export interface AgentContextInfo {
+  window: number; source: string; detected: number | null; set: number | null;
+  instruction_tokens: number; reserve_tokens: number; room_for_conversation: number;
+}
+
 export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; total: number; }
 
 export interface Profile { text: string; enabled: boolean; max_words: number; suggestions: boolean; updated_at: string | null; words: number; }
@@ -526,6 +537,10 @@ export class Api {
   startEvalRun(body: { case_ids?: string[]; agent_id?: string; label?: string }) { return this.http.post<EvalRun>('/api/evals/runs', body); }
   evalRuns(limit = 50) { return this.http.get<EvalRun[]>('/api/evals/runs', { params: { limit } }); }
   evalRun(id: string) { return this.http.get<EvalRun>(`/api/evals/runs/${id}`); }
+
+  conversationSettings() { return this.http.get<ConversationSettings>('/api/conversations/settings'); }
+  saveConversationSettings(x: ConversationSettings) { return this.http.put<ConversationSettings>('/api/conversations/settings', x); }
+  agentContext(id: string) { return this.http.get<AgentContextInfo>(`/api/agents/${id}/context`); }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

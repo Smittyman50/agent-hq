@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -41,6 +41,7 @@ class AgentIn(BaseModel):
     # Skills: off | propose (default) | auto
     learning_mode: LearningMode = LearningMode.propose
     use_profile: bool = True
+    context_window: int | None = None
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),
@@ -292,3 +293,31 @@ def delete_agent(agent_id: str, s: Session = Depends(get_session)):
             s.add(other)
     s.add(a)
     s.commit()
+
+
+@router.get("/{agent_id}/context")
+async def agent_context(agent_id: str, request: Request):
+    """The agent's context window (and where it came from), and how much of it its
+    instructions take before any conversation."""
+    from .. import context
+    from ..runtime import load_agent
+
+    try:
+        agent = load_agent(agent_id)
+    except Exception:
+        raise HTTPException(404) from None
+    window, source = await context.window_for(agent)
+    detected = None
+    if agent.provider_id:
+        from .. import db
+
+        with db.session() as s:
+            p = s.get(ModelProvider, agent.provider_id)
+        if p is not None:
+            detected, _ = await context.detect_window(p, agent.model)
+    built = request.app.state.runtime.build_agent(agent, as_worker=False, window=window)
+    used = getattr(built, "ahq_instruction_tokens", 0)
+    cfg = context.get_settings()
+    return {"window": window, "source": source, "detected": detected, "set": agent.context_window,
+            "instruction_tokens": used, "reserve_tokens": cfg["reserve_tokens"],
+            "room_for_conversation": max(0, int(window * cfg["trigger_ratio"]) - used - cfg["reserve_tokens"])}
