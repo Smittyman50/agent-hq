@@ -118,7 +118,10 @@ button.danger-link { color: var(--bad); }
 .mem-side .inline select { width: auto; }
 .mem-side h2 { margin-bottom: 6px; }
 .mem-side > .inline-hint { margin: 0 0 12px; }
-.mem-side .model-row { flex-direction: column; gap: 0; }
+.mem-side .model-row { flex-direction: column; gap: 0; align-items: stretch; }
+/* Side panels: each picker field takes the panel's width, its dropdown under the label,
+   whatever the provider or how long the label is. */
+.mem-side .model-row > label > select, .mem-side .model-row > label > input { display: block; width: 100%; }
 
 /* Sign in with ChatGPT (Models page) */
 .signin { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; background: var(--panel2); }
