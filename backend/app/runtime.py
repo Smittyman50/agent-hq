@@ -38,6 +38,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 from pydantic_ai import (
+    ToolReturn,
     Agent,
     FunctionToolset,
     ModelMessagesTypeAdapter,
@@ -52,6 +53,7 @@ from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
+from . import attachments as att
 from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
@@ -101,6 +103,9 @@ async def released_slot():
 # --------------------------------------------------------------------------- types
 
 
+MAX_FILES_PER_JOB = 20  # files one agent run may attach
+
+
 class WorkResult(BaseModel):
     """What every delegated agent hands back to whoever delegated to it."""
 
@@ -121,6 +126,8 @@ class RunDeps:
     trace: list[dict] = field(default_factory=list)
     # In a test run (app/evals.py): answers tool calls from a recording instead of your lab.
     replay: Any = None
+    # Files given with this turn or task (Attachment IDs), see app/attachments.py.
+    attachment_ids: list[str] = field(default_factory=list)
 
 
 def _brief(value: Any, n: int = 300) -> str:
@@ -260,6 +267,8 @@ def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | Non
         ts = mcp_toolset(srv)
         if wrap is not None:
             ts = wrap(ts, srv)
+        # ahq_* tools are for Agent HQ itself (e.g. moving attachments to a workbench).
+        ts = ts.filtered(lambda ctx, td: not td.name.startswith("ahq_"))
         out.append((PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts,
                     srv.id if srv.desktop else None))
     return out
@@ -542,6 +551,7 @@ class ObservedToolset(WrapperToolset):
 class TurnState(TypedDict, total=False):
     agent_id: str
     prompt: str
+    attachments: list[str]
     job_id: str
     history: list[dict]
     reply: str
@@ -596,20 +606,33 @@ class Runtime:
     # ------------------------------------------------------------ enqueueing
 
     async def enqueue_turn(self, thread_id: str, prompt: str, *, from_user: bool = True,
-                           event_text: str | None = None, **meta: Any) -> Job:
-        """Queue one turn of a conversation for its owner agent."""
+                           event_text: str | None = None, attachments: list[str] | None = None,
+                           **meta: Any) -> Job:
+        """Queue one turn of a conversation for its owner agent.
+
+        `attachments`: IDs of files you uploaded to this conversation for this message.
+        """
         with db.session() as s:
             thread = s.get(Thread, thread_id)
         if thread is None:
             raise LookupError(f"thread {thread_id} not found")
         owner = load_agent(thread.agent_id)
+        files = att.in_thread(thread_id, attachments or [])
         if from_user:
             learning.user_said(thread_id, prompt)  # a correction? the last job gets a look
-            await self.save_message(thread_id, Role.user, prompt)
+            extra = {"attachments": [att.summary(a) for a in files]} if files else {}
+            msg = await self.save_message(thread_id, Role.user, prompt, **extra)
+            if files:
+                att.link([a.id for a in files], msg.id)
         elif event_text:
             await self.save_message(thread_id, Role.event, event_text, **meta)
+        task = prompt
+        if files:
+            task = ((prompt.strip() or "(The user sent these files without a message.)")
+                    + "\n\n" + att.manifest(files, sees_images=owner.sees_images))
+            meta = {**meta, "attachments": [a.id for a in files]}
         job = Job(kind=JobKind.turn, origin_thread_id=thread_id, assignee_agent_id=owner.id,
-                  task=prompt, depth=0, chain=[owner.id], pool=owner.pool,
+                  task=task, depth=0, chain=[owner.id], pool=owner.pool,
                   meta={**meta, **({"event": event_text} if event_text else {})})
         return await self._submit(job)
 
@@ -666,7 +689,7 @@ class Runtime:
         agent = load_agent(state["agent_id"])
         history = ModelMessagesTypeAdapter.validate_python(state.get("history") or [])
         deps = RunDeps(thread_id=thread_id, agent_id=agent.id, depth=0, chain=[agent.id],
-                       job_id=state.get("job_id"))
+                       job_id=state.get("job_id"), attachment_ids=list(state.get("attachments") or []))
         try:
             reply, messages = await self.run_agent(agent, state["prompt"], deps, history=history)
         finally:
@@ -686,11 +709,14 @@ class Runtime:
             await self.broker.publish(thread_id, "status", state="thinking",
                                       agent_id=job.assignee_agent_id, job_id=job.id)
             out = await self.graph.ainvoke(
-                {"agent_id": job.assignee_agent_id, "prompt": job.task, "job_id": job.id},
+                # attachments always set: graph state carries over between turns otherwise
+                {"agent_id": job.assignee_agent_id, "prompt": job.task, "job_id": job.id,
+                 "attachments": list((job.meta or {}).get("attachments") or [])},
                 config={"configurable": {"thread_id": thread_id}})
             reply = out["reply"]
-            await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id,
-                                    job_id=job.id)
+            msg = await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id,
+                                          job_id=job.id)
+            await att.link_outputs(self, job.id, msg.id)  # files the agent made this turn
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
             skills.finish_job(job.id, "done")
             learning.job_finished(job.id, "done")
@@ -722,7 +748,8 @@ class Runtime:
         assignee = load_agent(job.assignee_agent_id)
         requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
         deps = RunDeps(thread_id=job.origin_thread_id, agent_id=assignee.id, depth=job.depth,
-                       chain=list(job.chain), job_id=job.id)
+                       chain=list(job.chain), job_id=job.id,
+                       attachment_ids=list((job.meta or {}).get("attachments") or []))
         await self.broker.publish(job.origin_thread_id, "delegation_started", job_id=job.id,
                                   from_agent=requester.name if requester else None,
                                   to_agent=assignee.name, task=job.task,
@@ -743,6 +770,11 @@ class Runtime:
             finally:
                 save_trace(job.id, deps.trace)
             result = as_work_result(result)
+            made = att.made_by_job(job.id)
+            if made:  # so the delegator knows the files exist and can use them
+                listing = "\n".join(f"- {att.ref(a.id)}: {a.name} ({att.human_size(a.size)})" for a in made)
+                result.details = (result.details + "\n\n" if result.details else "") + \
+                    f"Files {assignee.name} attached (in this conversation):\n{listing}"
             update_job(job.id, status=JobStatus.done, result=result.model_dump(),
                        finished_at=_now())
         except Exception as e:
@@ -767,6 +799,8 @@ class Runtime:
         updated = message_id and await self.update_message(
             message_id, content=text, status=result.status, result=result.model_dump(),
             finished_at=_now().isoformat())
+        if updated:
+            await att.link_outputs(self, job.id, message_id)  # files the assignee made
         if not updated:  # a job queued before this version: no message yet
             await self.save_message(
                 job.origin_thread_id, Role.event, text,
@@ -802,7 +836,8 @@ class Runtime:
 
     def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
                     memory_context: str = "", skills_context: str = "",
-                    knowledge_context: str = "", window: int | None = None) -> Agent:
+                    knowledge_context: str = "", window: int | None = None,
+                    thread_id: str | None = None) -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
@@ -853,6 +888,10 @@ class Runtime:
             if skills_context:
                 instructions.append(skills_context)
             toolsets.append((self._skills_toolset(learning), None))
+        files_here = bool(thread_id) and att.has_any(thread_id)
+        workbench = any(not desk for _, desk in toolsets[:mcp_count])
+        instructions.append(att.ATTACHMENT_RULES if files_here else att.NO_FILES_RULES)
+        toolsets.append((self._attachments_toolset(files_here, workbench), None))
         mode = subagents.mode_of(agent)
         if mode != SubagentMode.off:
             instructions.append(subagent_rules(agent, mode))
@@ -919,16 +958,19 @@ class Runtime:
                 window, _ = await context.window_for(agent, on_fallback=on_fallback)
                 pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=on_fallback,
                                             memory_context=recalled, skills_context=skills_block,
-                                            knowledge_context=excerpts, window=window)
+                                            knowledge_context=excerpts, window=window,
+                                            thread_id=deps.thread_id)
                 history = await self._fit_history(agent, pa_agent, history, window, text, deps)
-                coro = pa_agent.run(text, deps=deps, message_history=history,
+                coro = pa_agent.run(self._user_input(agent, text, deps), deps=deps,
+                                    message_history=history,
                                     conversation_id=deps.thread_id, **run_kw)
                 try:
                     result = await (asyncio.wait_for(coro, minutes * 60) if minutes else coro)
                 except asyncio.TimeoutError:
                     raise RuntimeError(f"stopped at its {minutes:g}-minute limit") from None
                 usage, ok = result.usage, True
-                return result.output, result.all_messages()
+                # Images were for this run; the saved history keeps a placeholder instead.
+                return result.output, att.strip_images(result.all_messages())
             finally:
                 subagents.record_usage(agent, provider_id=pid, model=model, usage=usage,
                                        seconds=asyncio.get_running_loop().time() - started, ok=ok,
@@ -953,6 +995,19 @@ class Runtime:
             note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Take over and complete it.]")
             return await attempt(True, prompt + note)
+
+    @staticmethod
+    def _user_input(agent: AgentDef, text: str, deps: RunDeps):
+        """The prompt, with the attached images when the agent's own model sees images."""
+        if not (agent.sees_images and deps.attachment_ids):
+            return text
+        try:
+            images = [att.model_image(a) for a in att.in_thread(deps.thread_id, deps.attachment_ids)
+                      if a.kind == "image"]
+        except Exception as e:  # a bad image must not stop the turn; the tools still work
+            log.warning("attachments: images not sent: %s", e)
+            return text
+        return [text, *images] if images else text
 
     async def _fit_history(self, agent: AgentDef, pa_agent: Agent, history: list | None,
                            window: int, prompt: str, deps: RunDeps) -> list | None:
@@ -1205,6 +1260,142 @@ class Runtime:
 
         return FunctionToolset([look, locate, click_on], id="vision")
 
+    def _attachments_toolset(self, files_here: bool, workbench: bool) -> FunctionToolset:
+        """Reading the conversation's files, and sending files back to the user."""
+
+        def files(ctx: RunContext[RunDeps], ids: list[str]):
+            return att.in_thread(ctx.deps.thread_id, ids)
+
+        def made_count(ctx: RunContext[RunDeps]) -> int:
+            return len(att.made_by_job(ctx.deps.job_id))
+
+        def rehearsal(ctx: RunContext[RunDeps], name: str) -> dict | None:
+            # An eval run has no real conversation to put files in: say it worked.
+            if ctx.deps.replay is None:
+                return None
+            return {"attached": True, "attachment": "att_000000000000", "name": name,
+                    "note": "(test run: nothing was stored)"}
+
+        async def list_attachments(ctx: RunContext[RunDeps]) -> list[dict]:
+            """Every file in this conversation: the user's and the ones agents attached."""
+            out = []
+            for a in att.for_thread(ctx.deps.thread_id):
+                who = "user" if a.source == "user" else (load_agent(a.agent_id).name if a.agent_id else "agent")
+                out.append({"attachment": att.ref(a.id), "name": a.name, "kind": a.kind,
+                            "size": att.human_size(a.size), "from": who,
+                            "readable_text": a.text is not None})
+            return out
+
+        async def read_attachment(ctx: RunContext[RunDeps], attachment_id: str, offset: int = 0,
+                                  max_chars: int = att.READ_CHARS) -> dict:
+            """Read the text of an attached document or text file, a page at a time.
+
+            Args:
+                attachment_id: e.g. att_ab12cd34ef56
+                offset: where to start; use next_offset from the previous call to continue.
+                max_chars: how much to read (up to 30000).
+            """
+            try:
+                (a,) = files(ctx, [attachment_id])
+            except att.AttachmentError as e:
+                return {"error": str(e)}
+            return att.read_text(a, offset, max_chars)
+
+        async def look_at_attachment(ctx: RunContext[RunDeps], attachment_id: str, question: str):
+            """Ask a question about an attached image (photo, screenshot, chart, scan).
+
+            Args:
+                attachment_id: e.g. att_ab12cd34ef56
+                question: what you want to know, e.g. "What error message is shown?"
+            """
+            from .vision import ask_image
+
+            try:
+                (a,) = files(ctx, [attachment_id])
+            except att.AttachmentError as e:
+                return str(e)
+            if a.kind != "image":
+                return f"{a.name} is not an image; read it with read_attachment."
+            me = load_agent(ctx.deps.agent_id)
+            if me.vision_model:
+                return await ask_image(me, question, att.image_png(a), ctx.deps.thread_id)
+            if me.sees_images:
+                return ToolReturn(return_value=f"Here is {a.name}; look at it to answer: {question}",
+                                  content=[att.model_image(a)])
+            return (f"You have no way to see images: no vision model is set for you. Tell the "
+                    f"user you can't view {a.name}, and that they can set a vision model (or "
+                    "turn on 'Model sees images' for a multimodal model) under Settings → Agents.")
+
+        async def attachment_to_workbench(ctx: RunContext[RunDeps], attachment_id: str,
+                                          path: str = "") -> dict:
+            """Copy a file from this conversation into your workbench, to work on it with code.
+
+            Args:
+                attachment_id: e.g. att_ab12cd34ef56
+                path: where to put it in your workspace (default: inbox/<file name>).
+            """
+            try:
+                (a,) = files(ctx, [attachment_id])
+            except att.AttachmentError as e:
+                return {"error": str(e)}
+            srv = await att.workbench_server(load_agent(ctx.deps.agent_id))
+            if srv is None:
+                return {"error": "you have no workbench that can receive files (or it is not reachable)"}
+            try:
+                r = await att.to_workbench(srv, a, path or f"inbox/{a.name}")
+            except Exception as e:
+                return {"error": f"copy failed: {e}"}
+            return {"copied": True, **r}
+
+        async def create_file(ctx: RunContext[RunDeps], name: str, content: str) -> dict:
+            """Give the user a file you wrote: a report, CSV, JSON, config, script, Markdown...
+
+            Args:
+                name: the file name with its extension, e.g. "ups-report.md" or "hosts.csv".
+                content: the full text of the file.
+            """
+            if (fake := rehearsal(ctx, name)) is not None:
+                return fake
+            if made_count(ctx) >= MAX_FILES_PER_JOB:
+                return {"error": f"you can attach at most {MAX_FILES_PER_JOB} files per task"}
+            try:
+                a = att.store(ctx.deps.thread_id, name, content.encode("utf-8"), source="agent",
+                              agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
+            except att.AttachmentError as e:
+                return {"error": str(e)}
+            return att.Outgoing(a).result()
+
+        async def send_from_workbench(ctx: RunContext[RunDeps], path: str, name: str = "") -> dict:
+            """Give the user a file from your workbench (a chart, a spreadsheet, an export...).
+
+            Args:
+                path: the file's path in your workspace, e.g. "out/chart.png".
+                name: the name to show the user (default: the file's own name).
+            """
+            if (fake := rehearsal(ctx, name or path)) is not None:
+                return fake
+            if made_count(ctx) >= MAX_FILES_PER_JOB:
+                return {"error": f"you can attach at most {MAX_FILES_PER_JOB} files per task"}
+            srv = await att.workbench_server(load_agent(ctx.deps.agent_id))
+            if srv is None:
+                return {"error": "you have no workbench that can send files (or it is not reachable)"}
+            try:
+                fname, data = await att.from_workbench(srv, path)
+                a = att.store(ctx.deps.thread_id, name or fname, data, source="workbench",
+                              agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
+            except Exception as e:
+                return {"error": str(e)}
+            return att.Outgoing(a).result()
+
+        tools = [create_file]
+        if files_here:
+            tools = [list_attachments, read_attachment, look_at_attachment, *tools]
+        if workbench:
+            tools.append(send_from_workbench)
+            if files_here:
+                tools.append(attachment_to_workbench)
+        return FunctionToolset(tools, id="attachments")
+
     def _escalate_toolset(self) -> FunctionToolset:
         async def escalate(ctx: RunContext[RunDeps], reason: str) -> str:
             """Hand this task to a stronger model when you cannot do it well.
@@ -1261,7 +1452,7 @@ class Runtime:
         rt = self
 
         async def delegate(ctx: RunContext[RunDeps], agent_name: str, task: str,
-                           background: bool = False) -> dict:
+                           background: bool = False, attachment_ids: list[str] | None = None) -> dict:
             """Hand a task to a team member and get their result.
 
             Args:
@@ -1269,6 +1460,7 @@ class Runtime:
                 task: A complete, self-contained description of what to do and what to return.
                 background: False (default) waits and returns their result now. True returns a
                     job ID immediately; you will be woken in this conversation with the result.
+                attachment_ids: Files from this conversation they need, e.g. ["att_ab12cd34ef56"].
             """
             me = load_agent(ctx.deps.agent_id)
             target = find_delegate(me, agent_name)
@@ -1281,19 +1473,27 @@ class Runtime:
                         "this chain; delegating back would loop. Do it yourself or ask the user."}
             if ctx.deps.depth + 1 > settings.max_delegation_depth:
                 return {"status": "failed", "summary": "Delegation chain is too deep."}
+            try:
+                given = att.in_thread(ctx.deps.thread_id, attachment_ids or [])
+            except att.AttachmentError as e:
+                return {"status": "failed", "summary": f"{e}. See list_attachments for the IDs."}
+            full_task = task + ("\n\n" + att.manifest(given, sees_images=target.sees_images,
+                                                      heading="Files for this task") if given else "")
 
             job = Job(
                 kind=JobKind.task, origin_thread_id=ctx.deps.thread_id, requester_agent_id=me.id,
-                assignee_agent_id=target.id, parent_job_id=ctx.deps.job_id, task=task,
+                assignee_agent_id=target.id, parent_job_id=ctx.deps.job_id, task=full_task,
                 background=background, depth=ctx.deps.depth + 1,
-                chain=[*ctx.deps.chain, target.id], pool=target.pool)
+                chain=[*ctx.deps.chain, target.id], pool=target.pool,
+                meta={"attachments": [a.id for a in given]} if given else {})
             # Show the exchange in the conversation right away; it's updated in place as the
             # task starts and finishes. Created before queueing, so a fast worker can't win.
             msg = await rt.save_message(
                 ctx.deps.thread_id, Role.event, f"{me.name} → {target.name}: {task}",
                 agent_id=target.id, kind="delegation_result", job_id=job.id, status="queued",
                 task=task, requester_id=me.id, requester=me.name, assignee=target.name,
-                background=background, depth=job.depth, started_at=_now().isoformat())
+                background=background, depth=job.depth, started_at=_now().isoformat(),
+                **({"given": [att.summary(a) for a in given]} if given else {}))
             job.meta = {**(job.meta or {}), "message_id": msg.id}
             job = await rt._submit(job)
             if background:

@@ -68,7 +68,8 @@ def test_upgrade_adds_new_columns_on_postgres(postgres_url, tmp_path, monkeypatc
     with eng.begin() as c:
         c.execute(sa.text("DELETE FROM agentdef WHERE name = 'Old'"))
         for col in ("subagent_mode", "subagent_limits", "is_subagent", "parent_agent_id",
-                    "spawned_by_job_id", "expires_at", "retired", "learning_mode", "use_profile"):
+                    "spawned_by_job_id", "expires_at", "retired", "learning_mode", "use_profile",
+                    "sees_images"):
             c.execute(sa.text(f'ALTER TABLE agentdef DROP COLUMN IF EXISTS "{col}"'))
         c.execute(sa.text('ALTER TABLE modelprovider DROP COLUMN IF EXISTS "max_concurrent"'))
         c.execute(sa.text("DROP TYPE IF EXISTS subagentmode"))
@@ -86,4 +87,5 @@ def test_upgrade_adds_new_columns_on_postgres(postgres_url, tmp_path, monkeypatc
         assert a.subagent_mode == "off" and a.is_subagent is False and a.retired is False
         assert a.learning_mode == "propose"  # existing agents start proposing skills
         assert a.use_profile is True  # and get your profile
+        assert a.sees_images is False  # images keep going through the vision model
         assert all(p.max_concurrent == 0 for p in s.exec(sa.select(ModelProvider)).scalars())

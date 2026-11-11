@@ -93,15 +93,22 @@ def tokens(text: str) -> int:
     return int(len(text) / 3.5) + 1
 
 
+def _json_default(o: Any) -> str:
+    # Images count as a fixed-size placeholder, not as their bytes.
+    if getattr(o, "kind", None) == "binary":
+        return "[image]" * 200  # roughly what an image costs a model (~1,500 tokens)
+    return str(o)
+
+
 def _part_text(p: Any) -> str:
     if isinstance(p, (UserPromptPart, TextPart)):
         c = p.content
-        return c if isinstance(c, str) else json.dumps(c, default=str)
+        return c if isinstance(c, str) else json.dumps(c, default=_json_default)
     if isinstance(p, ToolCallPart):
         return f"{p.tool_name}({json.dumps(p.args, default=str) if not isinstance(p.args, str) else p.args})"
     if isinstance(p, ToolReturnPart):
         c = p.content
-        return c if isinstance(c, str) else json.dumps(c, default=str)
+        return c if isinstance(c, str) else json.dumps(c, default=_json_default)
     return str(getattr(p, "content", ""))
 
 

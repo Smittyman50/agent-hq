@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from .. import attachments
+from ..config import settings
 from ..db import get_session
 from ..models import AgentDef, Job, Message, Thread
 
@@ -21,7 +23,9 @@ class ThreadIn(BaseModel):
 
 
 class MessageIn(BaseModel):
-    content: str
+    content: str = ""
+    # Files uploaded with POST /api/threads/{id}/attachments, sent with this message.
+    attachment_ids: list[str] = []
 
 
 @router.get("/api/threads", response_model=list[Thread])
@@ -56,7 +60,18 @@ async def post_message(thread_id: str, body: MessageIn, request: Request,
     """Queues a turn for the thread's agent; the reply arrives over the WebSocket."""
     if not s.get(Thread, thread_id):
         raise HTTPException(404)
-    job = await request.app.state.runtime.enqueue_turn(thread_id, body.content)
+    if not body.content.strip() and not body.attachment_ids:
+        raise HTTPException(422, "say something or attach a file")
+    if len(body.attachment_ids) > settings.attachment_max_files:
+        raise HTTPException(422, f"at most {settings.attachment_max_files} files on one message")
+    try:
+        files = attachments.in_thread(thread_id, body.attachment_ids)
+    except attachments.AttachmentError as e:
+        raise HTTPException(422, str(e)) from None
+    if any(a.message_id is not None or a.source != "user" for a in files):
+        raise HTTPException(409, "a file was already sent; attach it again")
+    job = await request.app.state.runtime.enqueue_turn(thread_id, body.content,
+                                                       attachments=[a.id for a in files])
     return {"accepted": True, "job_id": job.id, "pool": job.pool}
 
 

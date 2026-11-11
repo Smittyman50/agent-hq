@@ -165,3 +165,18 @@ class DesktopEyes:
     async def click(self, x: int, y: int, double: bool) -> str:
         result = await self._call("click", {"x": x, "y": y, "double": double})
         return " ".join(getattr(p, "text", "") for p in result.content).strip()
+
+
+IMAGE_PROMPT = ("You are looking at an image a user attached to a conversation, for an AI agent "
+                "that cannot see it. Answer the question precisely and concisely, quoting any "
+                "text or numbers exactly as shown. If the answer is not in the image, say so."
+                "\n\nQuestion: {q}")
+
+
+async def ask_image(agent: AgentDef, question: str, png: bytes, thread_id: str | None = None) -> str:
+    """The agent's vision model answers a question about an attached image."""
+    model = build_model_for(agent.vision_provider_id, agent.vision_model, f"{agent.name} (vision)")
+    r = await Agent(model, name=f"{agent.name} vision", output_type=str).run(
+        [IMAGE_PROMPT.format(q=question), BinaryContent(data=png, media_type="image/png")],
+        conversation_id=thread_id)
+    return str(r.output).strip()

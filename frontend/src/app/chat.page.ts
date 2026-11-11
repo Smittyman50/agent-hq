@@ -4,7 +4,8 @@ import { DatePipe } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Api, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
+import { Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
+import { Files } from './files';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Markdown } from './markdown';
@@ -18,10 +19,11 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, RouterLink],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, RouterLink],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
-    <section class="conversation">
+    <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
+             (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
       @if (threadId()) {
         <header class="conv-head">
           <hq-avatar [agent]="agentById(thread()?.agent_id)" [size]="30" [active]="isActive(thread()?.agent_id)" />
@@ -85,6 +87,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                         <div class="who"><hq-avatar [agent]="agentById(x.requesterId)" [size]="18" />
                           {{ x.requester }} <span class="muted">→ {{ x.assignee }}</span></div>
                         <div class="body rich"><hq-md [text]="x.task" /></div>
+                        @if (x.given.length) { <hq-files [files]="x.given" /> }
                       </div>
                     }
                     @if (x.finished) {
@@ -93,6 +96,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                           {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
                         <div class="body rich"><hq-md [text]="x.summary" /></div>
                         @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
+                        @if (x.files.length) { <hq-files [files]="x.files" /> }
                       </div>
                     } @else {
                       <div class="crumb-msg reply working">
@@ -113,6 +117,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
               } @else if (m.role === 'event') { <div class="who">activity</div> }
               @if (m.role === 'agent') {
                 <div class="body rich"><hq-md [text]="m.content" /></div>
+                @if (filesOf(m).length) { <hq-files [files]="filesOf(m)" /> }
                 @if (m.meta?.['job_id']) {
                   <div class="rate" [class.rated]="!!fb(m)">
                     <button type="button" class="rate-btn" [class.on]="fb(m)?.rating === 'up'"
@@ -137,7 +142,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                   }
                 }
               } @else {
-                <div class="body">{{ m.content }}</div>
+                @if (m.content) { <div class="body">{{ m.content }}</div> }
+                @if (filesOf(m).length) { <hq-files [files]="filesOf(m)" /> }
               }
             </div>
             }
@@ -145,10 +151,21 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
         </div>
         <div class="resizer" title="Drag to resize the message box (double-click to reset)"
              (pointerdown)="startResize($event)" (dblclick)="setComposerHeight(DEFAULT_COMPOSER)"></div>
+        @if (pending().length || uploading() || uploadError()) {
+          <div class="composer-files">
+            <hq-files [files]="pending()" [removable]="true" (remove)="unattach($event)" />
+            @if (uploading()) { <span class="muted upload-note">Uploading {{ uploading() }}…</span> }
+            @if (uploadError(); as e) { <span class="upload-note err">{{ e }}</span> }
+          </div>
+        }
         <form class="composer" (ngSubmit)="send()" [style.height.px]="composerHeight()">
+          <label class="attach" title="Attach files (or drop them here, or paste an image)">
+            <hq-icon name="paperclip" [size]="17" />
+            <input type="file" multiple hidden (change)="pick($event)">
+          </label>
           <textarea name="draft" [(ngModel)]="draft" placeholder="Message…  (Enter to send, Shift+Enter for a new line)"
-            (keydown.enter)="onEnter($event)"></textarea>
-          <button type="submit" [disabled]="!draft.trim()">Send</button>
+            (keydown.enter)="onEnter($event)" (paste)="onPaste($event)"></textarea>
+          <button type="submit" [disabled]="(!draft.trim() && !pending().length) || !!uploading()">Send</button>
         </form>
         @if (activity().length) {
           <details class="activity" open>
@@ -310,6 +327,8 @@ export class ChatPage implements OnInit, OnDestroy {
       finished: !!meta['result'] || !meta['status'],
       summary: (result.summary ?? m.content) as string,
       details: (result.details ?? '') as string,
+      given: (meta['given'] ?? []) as Attachment[],
+      files: (meta['attachments'] ?? []) as Attachment[],
       background: !!meta['background'],
       depth: Math.max(1, Number(meta['depth'] ?? 1)),
     };
@@ -398,6 +417,8 @@ export class ChatPage implements OnInit, OnDestroy {
     this.messages.set([]);
     this.activity.set([]);
     this.busy.set(false);
+    this.pending.set([]);
+    this.uploadError.set('');
     if (!id) return;
     if (!this.threads().some(t => t.id === id)) this.ws.reloadThreads();  // started elsewhere
     this.api.messages(id).subscribe(m => { this.messages.set(m); this.scroll(); });
@@ -481,10 +502,78 @@ export class ChatPage implements OnInit, OnDestroy {
 
   send() {
     const id = this.threadId(); const text = this.draft.trim();
-    if (!id || !text) return;
+    const files = this.pending();
+    if (!id || (!text && !files.length) || this.uploading()) return;
     this.draft = '';
+    this.pending.set([]);
+    this.uploadError.set('');
     this.busy.set(true);
-    this.api.send(id, text).subscribe();
+    this.api.send(id, text, files.map(f => f.id)).subscribe({
+      error: e => {
+        this.busy.set(false);
+        this.draft = text;
+        this.pending.set(files);
+        this.uploadError.set(e.error?.detail ?? 'Could not send');
+      },
+    });
+  }
+
+  // ---- attachments: picked, dropped or pasted files upload at once; sent with the message
+  pending = signal<Attachment[]>([]);
+  uploading = signal(0);
+  uploadError = signal('');
+  dropping = signal(false);
+
+  filesOf(m: Message): Attachment[] { return (m.meta?.['attachments'] as Attachment[]) ?? []; }
+
+  pick(e: Event) {
+    const input = e.target as HTMLInputElement;
+    this.attach(Array.from(input.files ?? []));
+    input.value = '';
+  }
+
+  onPaste(e: ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (!files.length) return;  // ordinary text paste
+    e.preventDefault();
+    // Pasted screenshots are all called image.png; give them a time-stamped name.
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    this.attach(files.map((f, i) => f.name === 'image.png'
+      ? new File([f], `pasted-${stamp}${files.length > 1 ? '-' + (i + 1) : ''}.png`, { type: f.type }) : f));
+  }
+
+  onDragOver(e: DragEvent) {
+    if (!this.threadId() || !e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    this.dropping.set(true);
+  }
+
+  onDragLeave(e: DragEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (!to || !(e.currentTarget as HTMLElement).contains(to)) this.dropping.set(false);
+  }
+
+  onDrop(e: DragEvent) {
+    if (!e.dataTransfer?.files.length) return;
+    e.preventDefault();
+    this.dropping.set(false);
+    this.attach(Array.from(e.dataTransfer.files));
+  }
+
+  private attach(files: File[]) {
+    const id = this.threadId();
+    if (!id || !files.length) return;
+    this.uploadError.set('');
+    this.uploading.update(n => n + files.length);
+    this.api.uploadAttachments(id, files).subscribe({
+      next: added => { if (this.threadId() === id) this.pending.update(p => [...p, ...added]); },
+      error: e => this.uploadError.set(e.error?.detail ?? 'Upload failed'),
+    }).add(() => this.uploading.update(n => Math.max(0, n - files.length)));
+  }
+
+  unattach(f: Attachment) {
+    this.pending.update(p => p.filter(x => x.id !== f.id));
+    this.api.removeAttachment(f.id).subscribe({ error: () => {} });
   }
 
   private scroll() {

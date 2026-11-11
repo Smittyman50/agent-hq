@@ -170,9 +170,9 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <fieldset>
-          <legend>Vision model <small>looks at the desktop for this agent</small></legend>
+          <legend>Vision model <small>looks at the desktop and attached images for this agent</small></legend>
           <p class="hint inline-hint">Optional. When set, this agent never receives screenshots itself: it gets
-            look / locate / click_on tools and this model does the looking. Needs a desktop tool server.
+            look / locate / click_on tools (with a desktop tool server) and look_at_attachment, and this model does the looking.
             A small local vision model (e.g. qwen3-vl:8b, Holo2) keeps the main model text-only.</p>
           <hq-model-picker label="Vision model" [providers]="providers()" [optional]="true" noneLabel="No vision model"
             [(providerId)]="d.vision_provider_id" [(modelName)]="d.vision_model" />
@@ -187,6 +187,10 @@ import { Avatar } from './avatar';
                 Zoom in to double-check clicks</label>
             </div>
           }
+          <label class="check"><input type="checkbox" name="seesimg" [(ngModel)]="d.sees_images">
+            Model sees images: send image attachments straight to this agent's own model (it must be multimodal)</label>
+          <p class="hint inline-hint">Off: the agent asks its vision model about attached images with look_at_attachment.
+            With neither, it can read documents but not images.</p>
         </fieldset>
 
         <fieldset>

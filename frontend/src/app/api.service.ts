@@ -14,6 +14,7 @@ export interface AgentDef {
   vision_model: string;
   vision_coords: 'relative_1000' | 'pixels';
   vision_zoom: boolean;
+  sees_images?: boolean;   // image attachments go to its own (multimodal) model
   fallback_provider_id: string | null;
   fallback_model: string;
   pool: string;
@@ -154,6 +155,17 @@ export interface Message {
   created_at: string;
 }
 
+/** A file in a conversation (yours, or one an agent made or sent from its workbench). */
+export interface Attachment {
+  id: string; ref: string; name: string; mime: string; kind: 'image' | 'document' | 'text' | 'file';
+  size: number; width: number; height: number; source: 'user' | 'agent' | 'workbench';
+  agent_id: string | null; has_text: boolean; message_id: string | null; created_at: string | null;
+}
+
+export function attachmentUrl(id: string, download = false) {
+  return `/api/attachments/${id}` + (download ? '?download=1' : '');
+}
+
 export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'chatgpt';
 
 export type Frequency = 'hourly' | 'daily' | 'weekly' | 'monthly' | 'cron';
@@ -241,7 +253,7 @@ export interface HqEvent { type: string; [k: string]: any; }
 
 export function blankAgent(): AgentDef {
   return { name: '', description: '', pronouns: '', instructions: '', provider_id: null, model: '',
-    vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true,
+    vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true, sees_images: false,
     fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
     subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true };
@@ -572,9 +584,15 @@ export class Api {
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }
   messages(threadId: string) { return this.http.get<Message[]>(`/api/threads/${threadId}/messages`); }
-  send(threadId: string, content: string) {
-    return this.http.post(`/api/threads/${threadId}/messages`, { content });
+  send(threadId: string, content: string, attachmentIds: string[] = []) {
+    return this.http.post(`/api/threads/${threadId}/messages`, { content, attachment_ids: attachmentIds });
   }
+  uploadAttachments(threadId: string, files: File[]) {
+    const form = new FormData();
+    for (const f of files) form.append('files', f, f.name);
+    return this.http.post<Attachment[]>(`/api/threads/${threadId}/attachments`, form);
+  }
+  removeAttachment(id: string) { return this.http.delete(`/api/attachments/${id}`); }
   jobs(threadId: string) { return this.http.get<Job[]>(`/api/threads/${threadId}/jobs`); }
 
   events(threadId: string): Observable<HqEvent> {

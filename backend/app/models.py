@@ -102,6 +102,9 @@ class AgentDef(SQLModel, table=True):
     vision_coords: str = "relative_1000"
     # Re-check each located point on a zoomed-in crop (slower, more accurate).
     vision_zoom: bool = True
+    # Image attachments go straight to this agent's own model (it must be multimodal).
+    # Off: the agent asks its vision model about them with look_at_attachment instead.
+    sees_images: bool = False
     # Optional fallback model, used when the main model fails or the agent escalates.
     fallback_provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
     fallback_model: str = ""
@@ -550,6 +553,34 @@ class Message(SQLModel, table=True):
     agent_id: str | None = None
     content: str = Field(sa_column=Column(Text, nullable=False))
     meta: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
+
+
+class Attachment(SQLModel, table=True):
+    """A file in a conversation: one you attached, or one an agent made or sent back.
+
+    The bytes live in the database (like avatars), so workers on any machine can read
+    them. Text is pulled out of documents once, when the file arrives.
+    """
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    thread_id: str = Field(foreign_key="thread.id", index=True)
+    # The message it belongs to (None = uploaded, not sent yet; or made during a run
+    # whose message isn't written yet).
+    message_id: str | None = Field(default=None, index=True)
+    source: str = "user"           # user | agent | workbench
+    agent_id: str | None = None    # who made it, for agent files
+    job_id: str | None = Field(default=None, index=True)  # the run that made it
+    name: str
+    mime: str = "application/octet-stream"
+    kind: str = "file"             # image | document | text | file
+    size: int = 0
+    sha256: str = ""
+    width: int = 0                 # images
+    height: int = 0
+    data: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
+    text: str | None = Field(default=None, sa_column=Column(Text))  # extracted text, if any
+    text_error: str = ""           # why there is no text, when extraction failed
     created_at: datetime = Field(default_factory=_now)
 
 

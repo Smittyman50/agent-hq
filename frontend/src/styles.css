@@ -482,3 +482,26 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .note-line.warn { color: var(--warn); border-color: var(--warn); }
 .narrow-row { max-width: 760px; gap: 12px; }
 .narrow-picker { max-width: 760px; }
+
+/* Attachments: thumbnails and chips on messages and in the composer */
+.files { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 6px; }
+.msg.user .files { justify-content: flex-end; }
+.file-thumb { position: relative; display: block; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--panel2); }
+.file-thumb img { display: block; max-width: 220px; max-height: 160px; object-fit: cover; }
+.files.compact .file-thumb img { max-width: 72px; max-height: 56px; }
+.file-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; padding: 5px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel2); color: inherit; text-decoration: none; font-size: 12.5px; }
+.file-chip:hover { border-color: #5aa9e6; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-size { flex: none; font-size: 11.5px; }
+.file-x { border: 0; background: transparent; padding: 2px; margin: 0; cursor: pointer; color: var(--muted); line-height: 0; }
+.file-thumb .file-x { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,.6); border-radius: 50%; color: #fff; }
+.composer-wrap { flex: none; display: flex; flex-direction: column; }
+.composer-files { display: flex; align-items: center; gap: 8px; padding: 6px 12px 0; flex-wrap: wrap; }
+.composer-files .files { margin-top: 0; align-items: center; }
+.composer .attach { align-self: flex-end; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  padding: 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
+.composer .attach:hover { color: inherit; border-color: #5aa9e6; }
+.conversation.dropping { outline: 2px dashed #5aa9e6; outline-offset: -6px; }
+.upload-note { font-size: 12px; }
+.upload-note.err { color: #e66; }

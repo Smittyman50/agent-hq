@@ -77,6 +77,9 @@ class Settings:
     delegate_wait_timeout: float = field(default_factory=lambda: float(_env("DELEGATE_WAIT_TIMEOUT", "1800")))
     # Largest avatar upload accepted, in bytes.
     avatar_max_bytes: int = field(default_factory=lambda: int(_env("AVATAR_MAX_BYTES", str(3 * 1024 * 1024))))
+    # Chat attachments: largest file, and most files on one message.
+    attachment_max_bytes: int = field(default_factory=lambda: int(_env("ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024))))
+    attachment_max_files: int = field(default_factory=lambda: int(_env("ATTACHMENT_MAX_FILES", "10")))
     # How long an agent waits for you after asking you to take over its desktop.
     handoff_timeout: float = field(default_factory=lambda: float(_env("HANDOFF_TIMEOUT", "1800")))
     # Worker reliability knobs.

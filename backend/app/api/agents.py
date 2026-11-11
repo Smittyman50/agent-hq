@@ -26,6 +26,7 @@ class AgentIn(BaseModel):
     vision_model: str = ""
     vision_coords: str = "relative_1000"
     vision_zoom: bool = True
+    sees_images: bool = False
     fallback_provider_id: str | None = None
     fallback_model: str = ""
     memory_enabled: bool = True

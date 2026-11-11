@@ -162,6 +162,41 @@ def list_files(path: str = ".", depth: int = 2) -> list[str]:
     return out
 
 
+# Agent HQ moves chat attachments in and out with these two. They are hidden from the
+# agent itself (Agent HQ drops ahq_* tools from its tool list); agents use
+# attachment_to_workbench / send_from_workbench, which call them.
+MAX_TRANSFER = int(os.environ.get("WORKBENCH_MAX_TRANSFER", str(25 * 1024 * 1024)))
+
+
+@mcp.tool(meta=ALLOW)
+def ahq_put_file(path: str, data_b64: str) -> str:
+    """(Agent HQ) Write a file from base64, creating folders as needed."""
+    import base64
+
+    data = base64.b64decode(data_b64)
+    if len(data) > MAX_TRANSFER:
+        raise ValueError(f"file is larger than {MAX_TRANSFER} bytes")
+    p = _path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+    return json.dumps({"path": str(p.relative_to(WORK)), "bytes": len(data)})
+
+
+@mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})
+def ahq_get_file(path: str, max_bytes: int = MAX_TRANSFER) -> str:
+    """(Agent HQ) Read a file as base64."""
+    import base64
+
+    p = _path(path)
+    if not p.is_file():
+        return json.dumps({"error": f"no file {path} in your workspace"})
+    size = p.stat().st_size
+    if size > min(max_bytes, MAX_TRANSFER):
+        return json.dumps({"error": f"{path} is {size} bytes, more than the {min(max_bytes, MAX_TRANSFER)} allowed"})
+    return json.dumps({"name": p.name, "bytes": size,
+                       "data_b64": base64.b64encode(p.read_bytes()).decode()})
+
+
 def _index() -> dict:
     f = SCRIPTS / "index.json"
     return json.loads(f.read_text()) if f.exists() else {}

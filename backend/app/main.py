@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .api import approvals as approvals_api
+from .api import attachments as attachments_api
 from .api import skills as skills_api
 from .api import learning as learning_api
 from .api import profile as profile_api
@@ -110,7 +111,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app.add_middleware(auth_api.AuthMiddleware)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
-    for r in (auth_api.router, approvals_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
+    for r in (auth_api.router, approvals_api.router, attachments_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, threads.router, subscriptions.router,
               system.router):
         app.include_router(r)
 

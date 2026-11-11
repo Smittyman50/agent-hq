@@ -596,6 +596,39 @@ The agent editor shows the window it's using, where the number came from, how ma
 
 The thresholds, the summary length, the room kept for tools and the reply, and the default windows are under **Settings → System → Long conversations**.
 
+## File attachments
+
+Attach files in the chat: the 📎 button, drag and drop onto the conversation, or paste (a pasted screenshot becomes `pasted-<time>.png`). They upload as soon as you pick them, show as chips above the message box (✕ removes one), and go with your message when you send it. A message can be just files.
+
+**Storage:** files live in the database (Postgres `bytea`), like avatars, so a worker on any machine reads the same bytes; no shared folder needed. Text is pulled out once, on upload: PDF, Word, PowerPoint, Excel, HTML and EPUB through `markitdown`, plus Markdown, CSV, JSON, logs and code as they are. Limits: `AHQ_ATTACHMENT_MAX_BYTES` (25 MB) per file and `AHQ_ATTACHMENT_MAX_FILES` (10) per message.
+
+**What the agent gets:** the turn starts with a manifest: each file's ID (`att_…`), name, kind and size, and the first lines of each document. Its tools:
+
+| Tool | What it does |
+|---|---|
+| `read_attachment` | A document's text, in pages (`next_offset` to continue) |
+| `look_at_attachment` | A question about an image, answered by the agent's **vision model** (the same one that looks at its desktop) |
+| `list_attachments` | Every file in the conversation, the user's and the agents' |
+| `attachment_to_workbench` | Copies a file to the agent's workbench (`inbox/<name>` by default) so scripts can work on it |
+| `create_file` | Gives you a file it wrote (a report, CSV, JSON, a script) |
+| `send_from_workbench` | Gives you a file from its workbench (a chart a script made, an export) |
+
+The reading tools only appear once a conversation has files; `create_file` is always there, and the workbench tools appear for agents with a workbench.
+
+**Images, two ways** (Settings → Agents, under *Vision model*):
+- **Vision tool (the default):** the agent's own model never sees pixels. It asks its vision model with `look_at_attachment`, as it does with its desktop, so a text-only model on Ollama can still "see" a photo.
+- **Model sees images:** for an agent on a multimodal model (qwen3-vl, gpt-4.1, Claude…), image attachments go straight into its turn. They're taken out of the saved history afterwards (a placeholder stays), so a conversation doesn't carry megabytes of pictures; it can look again with `look_at_attachment`.
+
+With neither, the agent can read documents but tells you it can't view images.
+
+**Delegation:** every agent working in a conversation can read its files, so a supervisor passes your file on by ID: `delegate(agent_name=…, task=…, attachment_ids=["att_…"])`. The delegate gets the manifest with its task; the file shows on the delegation card. Files a delegate makes appear on its card and are listed in its result, so the supervisor can use them too.
+
+**Files agents send back** appear under their reply, or on the delegation card for a delegate's files: images as thumbnails, everything else as a download.
+
+**Safety:** downloads are served with `Content-Security-Policy: sandbox` and `nosniff`, and only real images (PNG, JPEG, GIF, WebP, BMP, checked by decoding them) open in the browser. An uploaded HTML or SVG file always downloads; it never runs on Agent HQ's origin. Workbench transfers go through two internal `ahq_put_file` / `ahq_get_file` tools on the workbench server. Agents never see them; they use `attachment_to_workbench` and `send_from_workbench`. Agents on cloud models send the attachments they read to that provider.
+
+**API:** `POST /api/threads/{id}/attachments` (multipart `files`), then `POST /api/threads/{id}/messages` with `{"content": "…", "attachment_ids": ["…"]}`. `GET /api/attachments/{id}` returns the file (`?download=1` forces a download), `GET /api/attachments/{id}/text` its text, `GET /api/threads/{id}/attachments` the list. `DELETE /api/attachments/{id}` removes a file that hasn't been sent.
+
 ## Knowledge library
 
 **Settings → Knowledge** makes your own documents and notes searchable by agents, with citations. Documents live in **collections**, and each collection says which agents may read it (none ticked means every agent; sub-agents read what their parent can).
@@ -819,7 +852,8 @@ backend/app/
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs
-  vision.py          look / locate / click_on via a per-agent vision model
+  vision.py          look / locate / click_on via a per-agent vision model; questions about attached images
+  attachments.py     chat attachments: storage, text, manifests, images to models, workbench transfer
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
   auth.py            sign-in: accounts, sessions, API tokens, TOTP, lockout, audit log, CLI
   approvals.py       tool approvals: allow / ask / block per tool, decisions, timeouts
@@ -860,4 +894,6 @@ examples/            example crew (providers, agents, pools, tools, subscription
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
-- **OCR for scanned PDFs** in the knowledge library.
+- **OCR for scanned PDFs** in the knowledge library and in chat attachments.
+- **Attachments on desktops:** copy a file onto an agent's desktop so it can upload it to a website.
+- **Save an attachment to a knowledge collection** with one click.
