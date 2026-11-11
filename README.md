@@ -167,6 +167,8 @@ Subscriptions are managed on the **Settings → Events** page:
 
 The page can also send a test event without a broker. The bridge runs in the API process; run only one API process with `AHQ_MQTT_URL` set, or each event is handled twice.
 
+MQTT works in the other direction too. Agent HQ publishes your notifications (sub-agent requests and decisions, tool approvals) to `AHQ_MQTT_NOTIFY_TOPIC`, and agents can publish their own status and commands through the [MQTT publisher](#mqtt-publisher-agents-publish-back-to-the-lab).
+
 ## Quick start (single machine, dev)
 
 You need Postgres, Valkey and (optionally) MQTT. The simplest route is the infra compose file, which always starts Postgres and Valkey:
@@ -239,6 +241,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
+- MQTT publisher: status and allow-listed publishes reaching a real broker; refusing wildcards, system, reserved and off-list topics, oversized payloads and bursts; and an agent publishing only after you approve
 - web reader: feeds (and finding a site's feed), readable pages without clutter, paging of long pages, redirects, robots.txt, SearXNG search, refusing LAN addresses unless allowed, and an agent reading a feed through Agent HQ
 - scheduler: every cadence and its description, bad cadences explained, time zones across a DST change, firing into the schedule's own conversation exactly once (two checkers at once), catching up once after downtime, skipping while a run is still going, run now, and disabled agents
 - ChatGPT plan providers: the full sign-in by pasted callback (PKCE, state, single use, declined consent), tokens never returned or exported, model listing, an agent turn on the plan through the Responses API (`store: false`, `stream: true`, no unsupported fields), and two workers refreshing at once without ever reusing a refresh token
@@ -493,6 +496,29 @@ curl 'http://localhost:8888/search?q=proxmox&format=json'   # JSON back = ready 
 ```
 
 Its `config/settings.yml` turns on JSON output, which the web reader needs, and turns off the bot limiter, which would otherwise throttle your own agents on a private instance. Then set `SEARXNG_URL=http://<that-host>:8888` in Agent HQ's `.env` and run `docker compose up -d web-reader`. Agents see `search_web` the next time they start a job.
+
+### MQTT publisher: agents publish back to the lab
+
+The `mqtt-publisher` service (in `docker-compose.yml`, code in `mqttpublisher/`) lets agents publish to your MQTT broker: their status for a dashboard such as Home Assistant, or commands to anything in the lab that listens on MQTT.
+
+| Tool | What it does | Approval by default |
+|---|---|---|
+| `list_publish_topics()` | Shows the agent where it may publish, and the size and rate limits. | Allow (read-only) |
+| `publish_status(name, state, detail, data, retain)` | Publishes JSON `{"agent", "state", "detail", "data", "at"}` to `agent-hq/agents/<name>/status`, retained so subscribers see the latest state straight away. | Allow |
+| `publish(topic, payload, qos, retain)` | Publishes to one topic on the allow-list. Text is sent as-is; objects and lists are sent as JSON. Not retained unless asked. | **Ask** |
+
+**Setup:**
+1. On your broker, create a user for the publisher with **write access only to the topics you'll allow**. The broker then enforces the same limits as the publisher.
+2. In `.env`, set `MQTT_PUBLISH_URL=mqtt://agent-hq-pub:<password>@<broker>:1883` (`mqtts://` for TLS; for a step-ca certificate, mount your root certificate and set `MQTT_PUBLISH_CA_FILE`). Set `MQTT_PUBLISH_ALLOW` to the topic filters `publish` may use, for example `agent-hq/agents/#,homelab/cmd/#`.
+3. Run `docker compose up -d mqtt-publisher`.
+4. Under **Settings → Tools**, register HTTP `http://mqtt-publisher:8810/mcp`, untick **Prefix tool names**, and leave **Controls an agent desktop** unticked. Then tick it on the agents that should publish.
+
+**Safeguards:**
+- Topics with wildcards, broker system topics (`$SYS/…`) and anything matching `MQTT_PUBLISH_DENY` (default `agent-hq/notifications/#`, so agents can't fake your notifications) are refused.
+- Payloads are capped at `MQTT_PUBLISH_MAX_BYTES` (16 KB), and the server sends at most `MQTT_PUBLISH_RATE_PER_MINUTE` (30) messages a minute across all agents.
+- `publish` asks for your approval by default, with the usual card in the conversation and the Requests inbox. Once you trust an agent with a topic, set the tool to **Allow** under **Settings → Tools → (server) → Approvals**, or approve with "don't ask again" (an hour, for that agent in that conversation).
+- **Watch for loops.** If an Events subscription matches a topic agents publish to, every publish wakes an agent again (the cooldown limits the damage). Keep publish topics outside your subscription filters.
+- The agent passes its own name to `publish_status`; the server can't verify it, so status topics are informational and should not be used for access decisions.
 
 ## Model providers
 
@@ -914,6 +940,7 @@ frontend/src/app/    app shell (sidebar of conversations), chat, and the Setting
                      Scheduler; icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
+mqttpublisher/       outbound MQTT as an MCP server (:8810): agent status and allow-listed publishes
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 deploy/caddy/        HTTPS (step-ca ACME) and sign-in-protected desktop viewers
 deploy/egress/       the workbenches' allowlisting egress proxy (PyPI by default)
@@ -924,7 +951,6 @@ examples/            example crew (providers, agents, pools, tools, subscription
 
 ## Next steps worth building
 
-- **Outbound MQTT:** a small MCP server that lets agents publish status or commands back to the lab.
 - **Schema migrations:** new columns on existing tables are added automatically at startup; add Alembic once you need renames or data changes.
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.

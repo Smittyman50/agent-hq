@@ -64,6 +64,23 @@ services:
       WEBREADER_ALLOW_HOSTS: ${WEBREADER_ALLOW_HOSTS:-}   # internal hosts agents may read
       WEBREADER_MAX_CHARS: ${WEBREADER_MAX_CHARS:-12000}
 
+  # Outbound MQTT: agents publish their status and allow-listed commands to your broker.
+  # Register in the UI (Settings -> Tools): HTTP, http://mqtt-publisher:8810/mcp, untick
+  # "Prefix tool names", leave "Controls an agent desktop" unticked. `publish` asks you first.
+  mqtt-publisher:
+    build: ./mqttpublisher
+    restart: unless-stopped
+    environment:
+      MQTT_PUBLISH_URL: ${MQTT_PUBLISH_URL:-}                       # its own broker user, with write access
+      MQTT_PUBLISH_ALLOW: ${MQTT_PUBLISH_ALLOW:-agent-hq/agents/#}  # topics `publish` may use
+      MQTT_PUBLISH_DENY: ${MQTT_PUBLISH_DENY:-agent-hq/notifications/#}
+      MQTT_PUBLISH_STATUS_PREFIX: ${MQTT_PUBLISH_STATUS_PREFIX:-agent-hq/agents}
+      MQTT_PUBLISH_RATE_PER_MINUTE: ${MQTT_PUBLISH_RATE_PER_MINUTE:-30}
+      MQTT_PUBLISH_CA_FILE: ${MQTT_PUBLISH_CA_FILE:-}                # e.g. /certs/root_ca.crt for mqtts://
+    # For mqtts:// with your step-ca, mount the root certificate:
+    # volumes:
+    #   - ./deploy/caddy/root_ca.crt:/certs/root_ca.crt:ro
+
   # HTTPS for the UI (certificate from your step-ca) and sign-in-protected desktop viewers.
   # Setup: deploy/caddy/Caddyfile and the README's "HTTPS" section.
   caddy:
