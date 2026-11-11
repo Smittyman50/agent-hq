@@ -5,6 +5,7 @@ delegate, the workbench in and out, files agents send back, and the download hea
 from __future__ import annotations
 
 import io
+import json
 import re
 import sys
 from pathlib import Path
@@ -332,3 +333,71 @@ def test_bytes_round_trip_on_postgres(postgres_url, tmp_path, monkeypatch):
     db.reset_engine()
     b = attachments.get(attachments.ref(a.id))
     assert b.data == data and b.kind == "image" and (b.width, b.height) == (40, 30)
+
+
+DESK_DIR = Path(__file__).resolve().parents[2] / "desktop"
+
+
+def desk_filer(messages, info):
+    """Copies the attachment to its desktop (twice: the second gets a new name), finds the
+    newest download, sends it back, and tries a path outside home."""
+    tools = {t.name for t in info.function_tools}
+    SEEN["desk_tools"] = sorted(tools)
+    ids = IDS.findall(_last_prompt(messages))
+    copied = _returns(messages, "attachment_to_desktop")
+    listed = _returns(messages, "list_desktop_files")
+    sent = _returns(messages, "send_from_desktop")
+    if len(copied) < 2:
+        return ModelResponse(parts=[ToolCallPart("attachment_to_desktop", {"attachment_id": ids[0]})])
+    if not listed:
+        return ModelResponse(parts=[ToolCallPart("list_desktop_files", {})])
+    if not sent:
+        newest = listed[0].content["files"][0]["path"]
+        return ModelResponse(parts=[ToolCallPart("send_from_desktop", {"path": newest})])
+    if len(sent) < 2:
+        return ModelResponse(parts=[ToolCallPart("send_from_desktop", {"path": "/etc/hostname"})])
+    return ModelResponse(parts=[TextPart(json.dumps({
+        "copied": [c.content.get("path") for c in reversed(copied)],
+        "listed": [f["path"] for f in listed[0].content["files"]],
+        "sent": [s.content for s in reversed(sent)]}))])
+
+
+SCRIPTS["desk-filer"] = desk_filer
+
+
+async def test_desktop_in_and_out(hq, tmp_path):
+    import os
+    import time
+
+    await hq.start_worker()
+    home, out = tmp_path / "home", tmp_path / "pw-out"
+    (home / "Downloads").mkdir(parents=True)
+    out.mkdir()
+    (home / "Downloads" / "old.txt").write_text("old")
+    os.utime(home / "Downloads" / "old.txt", (time.time() - 3600,) * 2)
+    (out / "invoice.pdf").write_bytes(b"%PDF-1.4 invoice 42")
+    launch = ("import sys; sys.path.insert(0, %r); import desktop_mcp as d; d.mcp.run()") % str(DESK_DIR)
+    srv = (await hq.http.post("/api/tool-servers", json={
+        "name": "desk", "transport": "stdio", "command": sys.executable, "args": ["-c", launch],
+        "env": {"DESKTOP_FILES_HOME": str(home), "PLAYWRIGHT_OUTPUT_DIR": str(out)},
+        "desktop": True})).json()
+    a = await hq.agent(name="Snake Eyes", model="fake:desk-filer", tool_server_ids=[srv["id"]])
+    t = await hq.thread(a["id"])
+    up = await upload(hq, t["id"], ("photo.png", png(), "image/png"))
+    await send(hq, t["id"], "upload this to the site", [up[0]["id"]])
+    (reply,) = await hq.wait_agent_replies(t["id"], 1, timeout=60)
+    got = json.loads(reply)
+
+    assert sorted(got["copied"]) == [str(home / "Uploads" / "photo (1).png"), str(home / "Uploads" / "photo.png")]
+    assert (home / "Uploads" / "photo.png").read_bytes() == png()
+    assert str(out / "invoice.pdf") in got["listed"] and "~/Downloads/old.txt" in got["listed"]
+    ok = next(x for x in got["sent"] if "error" not in x)
+    refused = next(x for x in got["sent"] if "error" in x)
+    assert ok["name"] == "invoice.pdf" and "outside the desktop's home folder" in refused["error"]
+    assert {"attachment_to_desktop", "list_desktop_files", "send_from_desktop"} <= set(SEEN["desk_tools"])
+    assert not any(n.startswith("ahq_") for n in SEEN["desk_tools"])
+    assert "attachment_to_workbench" not in SEEN["desk_tools"]  # a desktop isn't a workbench
+    (sent,) = next(m for m in hq.messages(t["id"]) if m.role == Role.agent).meta["attachments"]
+    assert sent["source"] == "desktop"
+    r = await hq.http.get(f"/api/attachments/{sent['id']}")
+    assert r.content == b"%PDF-1.4 invoice 42"

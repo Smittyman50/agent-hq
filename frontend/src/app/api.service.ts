@@ -158,7 +158,7 @@ export interface Message {
 /** A file in a conversation (yours, or one an agent made or sent from its workbench). */
 export interface Attachment {
   id: string; ref: string; name: string; mime: string; kind: 'image' | 'document' | 'text' | 'file';
-  size: number; width: number; height: number; source: 'user' | 'agent' | 'workbench';
+  size: number; width: number; height: number; source: 'user' | 'agent' | 'workbench' | 'desktop';
   agent_id: string | null; has_text: boolean; message_id: string | null; created_at: string | null;
 }
 

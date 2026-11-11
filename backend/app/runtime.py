@@ -896,8 +896,9 @@ class Runtime:
             toolsets.append((self._knowledge_suggest_toolset(), None))
         files_here = bool(thread_id) and att.has_any(thread_id)
         workbench = any(not desk for _, desk in toolsets[:mcp_count])
-        instructions.append(att.ATTACHMENT_RULES if files_here else att.NO_FILES_RULES)
-        toolsets.append((self._attachments_toolset(files_here, workbench), None))
+        on_desktop = any(desk for _, desk in toolsets[:mcp_count])
+        instructions.append(att.rules(files_here, workbench, on_desktop))
+        toolsets.append((self._attachments_toolset(files_here, workbench, on_desktop), None))
         mode = subagents.mode_of(agent)
         if mode != SubagentMode.off:
             instructions.append(subagent_rules(agent, mode))
@@ -1266,7 +1267,7 @@ class Runtime:
 
         return FunctionToolset([look, locate, click_on], id="vision")
 
-    def _attachments_toolset(self, files_here: bool, workbench: bool) -> FunctionToolset:
+    def _attachments_toolset(self, files_here: bool, workbench: bool, desktop: bool = False) -> FunctionToolset:
         """Reading the conversation's files, and sending files back to the user."""
 
         def files(ctx: RunContext[RunDeps], ids: list[str]):
@@ -1371,6 +1372,23 @@ class Runtime:
                 return {"error": str(e)}
             return att.Outgoing(a).result()
 
+        async def send_back(ctx: RunContext[RunDeps], where: str, path: str, name: str) -> dict:
+            if (fake := rehearsal(ctx, name or path)) is not None:
+                return fake
+            if made_count(ctx) >= MAX_FILES_PER_JOB:
+                return {"error": f"you can attach at most {MAX_FILES_PER_JOB} files per task"}
+            me = load_agent(ctx.deps.agent_id)
+            srv = await (att.desktop_server(me) if where == "desktop" else att.workbench_server(me))
+            if srv is None:
+                return {"error": f"you have no {where} that can send files (or it is not reachable)"}
+            try:
+                fname, data = await att.fetch_file(srv, path)
+                a = att.store(ctx.deps.thread_id, name or fname, data, source=where,
+                              agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
+            except Exception as e:
+                return {"error": str(e)}
+            return att.Outgoing(a).result()
+
         async def send_from_workbench(ctx: RunContext[RunDeps], path: str, name: str = "") -> dict:
             """Give the user a file from your workbench (a chart, a spreadsheet, an export...).
 
@@ -1378,20 +1396,52 @@ class Runtime:
                 path: the file's path in your workspace, e.g. "out/chart.png".
                 name: the name to show the user (default: the file's own name).
             """
-            if (fake := rehearsal(ctx, name or path)) is not None:
-                return fake
-            if made_count(ctx) >= MAX_FILES_PER_JOB:
-                return {"error": f"you can attach at most {MAX_FILES_PER_JOB} files per task"}
-            srv = await att.workbench_server(load_agent(ctx.deps.agent_id))
+            return await send_back(ctx, "workbench", path, name)
+
+        async def send_from_desktop(ctx: RunContext[RunDeps], path: str, name: str = "") -> dict:
+            """Give the user a file from your desktop, e.g. one the browser downloaded.
+
+            Args:
+                path: the file's path, e.g. "~/Downloads/invoice.pdf" (see list_desktop_files).
+                name: the name to show the user (default: the file's own name).
+            """
+            return await send_back(ctx, "desktop", path, name)
+
+        async def list_desktop_files(ctx: RunContext[RunDeps], folder: str = "") -> dict:
+            """The newest files your desktop downloaded (~/Downloads and the browser's download folder).
+
+            Args:
+                folder: a folder to list instead, e.g. "~/Documents" or "~/Uploads".
+            """
+            srv = await att.desktop_server(load_agent(ctx.deps.agent_id))
             if srv is None:
-                return {"error": "you have no workbench that can send files (or it is not reachable)"}
+                return {"error": "your desktop can't list files (or it is not reachable)"}
             try:
-                fname, data = await att.from_workbench(srv, path)
-                a = att.store(ctx.deps.thread_id, name or fname, data, source="workbench",
-                              agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
+                return {"files": await att.list_desktop(srv, folder)}
             except Exception as e:
                 return {"error": str(e)}
-            return att.Outgoing(a).result()
+
+        async def attachment_to_desktop(ctx: RunContext[RunDeps], attachment_id: str) -> dict:
+            """Copy a file from this conversation onto your desktop (into ~/Uploads), e.g. to
+            upload it to a website. Returns its full path there.
+
+            Args:
+                attachment_id: e.g. att_ab12cd34ef56
+            """
+            try:
+                (a,) = files(ctx, [attachment_id])
+            except att.AttachmentError as e:
+                return {"error": str(e)}
+            srv = await att.desktop_server(load_agent(ctx.deps.agent_id))
+            if srv is None:
+                return {"error": "your desktop can't receive files (or it is not reachable)"}
+            try:
+                r = await att.to_desktop(srv, a)
+            except Exception as e:
+                return {"error": f"copy failed: {e}"}
+            return {"copied": True, **r,
+                    "next": "Click the page's upload button or file field, then call browser_file_upload "
+                            "with this path when the file chooser is waiting."}
 
         tools = [create_file]
         if files_here:
@@ -1400,6 +1450,10 @@ class Runtime:
             tools.append(send_from_workbench)
             if files_here:
                 tools.append(attachment_to_workbench)
+        if desktop:
+            tools += [list_desktop_files, send_from_desktop]
+            if files_here:
+                tools.append(attachment_to_desktop)
         return FunctionToolset(tools, id="attachments")
 
     def _escalate_toolset(self) -> FunctionToolset:

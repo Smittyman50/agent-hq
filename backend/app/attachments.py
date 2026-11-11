@@ -9,8 +9,11 @@
 * Agents whose own model is multimodal can be set to see images directly
   (AgentDef.sees_images): the images then go into the turn itself. They are taken out of
   the saved history afterwards, so the checkpoint doesn't grow by megabytes per picture.
-* Agents send files back with `create_file` (text they write) and `send_from_workbench`
-  (a file from their workbench, e.g. a chart a script made). Files made during a turn
+* Agents send files back with `create_file` (text they write), `send_from_workbench`
+  (a file from their workbench, e.g. a chart a script made) and `send_from_desktop` (a file
+  on their desktop, e.g. one the browser downloaded; `list_desktop_files` finds it).
+* `attachment_to_desktop` puts a file in the desktop's ~/Uploads, so the agent can upload it
+  to a website (Playwright MCP's browser_file_upload, or the file dialog). Files made during a turn
   appear on the agent's reply; files made by a delegate appear on its delegation card
   and are listed in its result, so the delegator can pick them up.
 
@@ -50,21 +53,36 @@ PREVIEW_CHARS = 1200
 READ_CHARS = 8000
 MAX_READ_CHARS = 30000
 
-ATTACHMENT_RULES = """\
-Files in this conversation:
-- Files the user attached are listed with your task, each with an ID like att_ab12cd34ef56.
-  Read documents and text with `read_attachment` (in pages; follow next_offset). Ask about
-  images with `look_at_attachment`. Never guess at a file's contents you haven't read.
-- To work on a file with code, copy it to your workbench with `attachment_to_workbench`.
-- When you delegate work that needs a file, pass its ID: delegate(..., attachment_ids=[...]).
-- To give the user a file, use `create_file` for text you write (Markdown, CSV, JSON, code)
-  or `send_from_workbench` for a file on your workbench. It appears with your reply; say
-  what it is, but don't paste its whole content into the reply as well."""
-
-NO_FILES_RULES = """\
-Files: to give the user a file (a report, CSV, JSON, config, script), use `create_file`
-(or `send_from_workbench` for a file on your workbench). It appears with your reply; say
-what it is, but don't paste its whole content into the reply as well."""
+def rules(files_here: bool, workbench: bool, desktop: bool) -> str:
+    """What the agent is told about files, for the tools it actually has."""
+    lines = ["Files:"]
+    if files_here:
+        lines += [
+            "- Files the user attached are listed with your task, each with an ID like att_ab12cd34ef56.",
+            "  Read documents and text with `read_attachment` (in pages; follow next_offset). Ask about",
+            "  images with `look_at_attachment`. Never guess at a file's contents you haven't read.",
+            "- When you delegate work that needs a file, pass its ID: delegate(..., attachment_ids=[...]).",
+        ]
+        if workbench:
+            lines.append("- To work on a file with code, copy it to your workbench with `attachment_to_workbench`.")
+        if desktop:
+            lines += [
+                "- To upload a file to a website, first copy it to your desktop with `attachment_to_desktop`;",
+                "  it returns the file's path there. Then click the page's upload button or file field and,",
+                "  when a file chooser is waiting, call `browser_file_upload` with that path (no dialog to",
+                "  click through). Without browser tools, type the path into the file dialog (ctrl+l, the",
+                "  path, Return).",
+            ]
+    send = ["`create_file` for text you write (Markdown, CSV, JSON, code)"]
+    if workbench:
+        send.append("`send_from_workbench` for a file on your workbench")
+    if desktop:
+        send.append("`send_from_desktop` for a file on your desktop (e.g. one the browser downloaded; "
+                    "`list_desktop_files` shows the newest)")
+    lines += ["- To give the user a file, use " + "; or ".join(send) + ".",
+              "  It appears with your reply; say what it is, but don't paste its whole content into the",
+              "  reply as well."]
+    return "\n".join(lines)
 
 
 class AttachmentError(ValueError):
@@ -361,9 +379,20 @@ _has_transfer: dict[str, bool] = {}
 
 async def workbench_server(agent) -> Any:
     """The agent's workbench (a tool server offering ahq_put_file), or None."""
+    return await _transfer_server(agent, desktop=False)
+
+
+async def desktop_server(agent) -> Any:
+    """The agent's desktop server that can take and give files, or None."""
+    return await _transfer_server(agent, desktop=True)
+
+
+async def _transfer_server(agent, *, desktop: bool) -> Any:
     from .runtime import agent_tool_servers, mcp_toolset
 
     for srv in agent_tool_servers(agent):
+        if bool(srv.desktop) != desktop:
+            continue
         if srv.id not in _has_transfer:
             try:
                 ts = mcp_toolset(srv)
@@ -395,7 +424,17 @@ async def to_workbench(srv, a: Attachment, path: str) -> dict:
                                              "data_b64": base64.b64encode(a.data).decode()})
 
 
-async def from_workbench(srv, path: str) -> tuple[str, bytes]:
+async def to_desktop(srv, a: Attachment) -> dict:
+    return await _call(srv, "ahq_put_file", {"name": a.name,
+                                             "data_b64": base64.b64encode(a.data).decode()})
+
+
+async def list_desktop(srv, folder: str = "") -> list[dict]:
+    return await _call(srv, "ahq_list_files", {"folder": folder})
+
+
+async def fetch_file(srv, path: str) -> tuple[str, bytes]:
+    """A file from a workbench or desktop: (name, bytes)."""
     r = await _call(srv, "ahq_get_file", {"path": path, "max_bytes": settings.attachment_max_bytes})
     if r.get("error"):
         raise AttachmentError(r["error"])

@@ -24,7 +24,7 @@ export function fileSize(n: number): string {
         <a class="file-chip" [href]="url(f.id, true)" [title]="'Download ' + f.name">
           <hq-icon name="file" [size]="15" />
           <span class="file-name">{{ f.name }}</span>
-          <span class="muted file-size">{{ size(f.size) }}@if (f.source === 'workbench') { · workbench }</span>
+          <span class="muted file-size">{{ size(f.size) }}@if (f.source === 'workbench' || f.source === 'desktop') { · {{ f.source }} }</span>
           @if (removable()) {
             <button type="button" class="file-x" title="Remove" (click)="drop($event, f)"><hq-icon name="x" [size]="12" /></button>
           } @else { <hq-icon name="download" [size]="13" class="muted" /> }

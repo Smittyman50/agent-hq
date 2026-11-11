@@ -604,7 +604,7 @@ class Attachment(SQLModel, table=True):
     # The message it belongs to (None = uploaded, not sent yet; or made during a run
     # whose message isn't written yet).
     message_id: str | None = Field(default=None, index=True)
-    source: str = "user"           # user | agent | workbench
+    source: str = "user"           # user | agent | workbench | desktop
     agent_id: str | None = None    # who made it, for agent files
     job_id: str | None = Field(default=None, index=True)  # the run that made it
     name: str

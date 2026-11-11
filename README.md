@@ -612,8 +612,15 @@ Attach files in the chat: the 📎 button, drag and drop onto the conversation, 
 | `attachment_to_workbench` | Copies a file to the agent's workbench (`inbox/<name>` by default) so scripts can work on it |
 | `create_file` | Gives you a file it wrote (a report, CSV, JSON, a script) |
 | `send_from_workbench` | Gives you a file from its workbench (a chart a script made, an export) |
+| `attachment_to_desktop` | Copies a file onto the agent's desktop, into `~/Uploads`, and returns its path there, so it can upload it to a website |
+| `list_desktop_files` | The newest files the desktop downloaded (`~/Downloads` and the browser's download folder) |
+| `send_from_desktop` | Gives you a file from the desktop, e.g. an invoice the browser downloaded |
 
-The reading tools only appear once a conversation has files; `create_file` is always there, and the workbench tools appear for agents with a workbench.
+The reading tools only appear once a conversation has files; `create_file` is always there. The workbench tools appear for agents with a workbench, and the desktop tools for agents with a desktop.
+
+**Uploading to a website:** the agent copies the file to its desktop, clicks the page's upload button or file field, then calls Playwright MCP's `browser_file_upload` with the path while the file chooser waits, so there's no dialog to click through. Playwright MCP only reads files inside its working folder; the desktop image starts it in `/config` (the desktop's home), which covers `~/Uploads`. Without the browser tools, the agent types the path into the file dialog. The file is also there for you in `~/Uploads` when you take over the desktop.
+
+**Getting downloads back:** pages the browser downloads land in `~/Downloads` or the Playwright MCP output folder (`/tmp/playwright-mcp`). `list_desktop_files` shows the newest of both, and `send_from_desktop` puts one in the chat. Desktop files can only be read from the desktop's home folder and that output folder.
 
 **Images, two ways** (Settings → Agents, under *Vision model*):
 - **Vision tool (the default):** the agent's own model never sees pixels. It asks its vision model with `look_at_attachment`, as it does with its desktop, so a text-only model on Ollama can still "see" a photo.
@@ -625,7 +632,9 @@ With neither, the agent can read documents but tells you it can't view images.
 
 **Files agents send back** appear under their reply, or on the delegation card for a delegate's files: images as thumbnails, everything else as a download.
 
-**Safety:** downloads are served with `Content-Security-Policy: sandbox` and `nosniff`, and only real images (PNG, JPEG, GIF, WebP, BMP, checked by decoding them) open in the browser. An uploaded HTML or SVG file always downloads; it never runs on Agent HQ's origin. Workbench transfers go through two internal `ahq_put_file` / `ahq_get_file` tools on the workbench server. Agents never see them; they use `attachment_to_workbench` and `send_from_workbench`. Agents on cloud models send the attachments they read to that provider.
+**After updating:** rebuild the workbench and desktop images. The file transfers use hidden `ahq_*` tools in them.
+
+**Safety:** downloads are served with `Content-Security-Policy: sandbox` and `nosniff`, and only real images (PNG, JPEG, GIF, WebP, BMP, checked by decoding them) open in the browser. An uploaded HTML or SVG file always downloads; it never runs on Agent HQ's origin. Workbench and desktop transfers go through internal `ahq_put_file` / `ahq_get_file` (and, on desktops, `ahq_list_files`) tools on those servers. Agents never see them; they use the tools in the table above. Agents on cloud models send the attachments they read to that provider.
 
 **API:** `POST /api/threads/{id}/attachments` (multipart `files`), then `POST /api/threads/{id}/messages` with `{"content": "…", "attachment_ids": ["…"]}`. `GET /api/attachments/{id}` returns the file (`?download=1` forces a download), `GET /api/attachments/{id}/text` its text, `GET /api/threads/{id}/attachments` the list. `DELETE /api/attachments/{id}` removes a file that hasn't been sent.
 
@@ -921,4 +930,3 @@ examples/            example crew (providers, agents, pools, tools, subscription
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
 - **OCR for scanned PDFs** in the knowledge library and in chat attachments.
-- **Attachments on desktops:** copy a file onto an agent's desktop so it can upload it to a website.
