@@ -723,7 +723,7 @@ class Runtime:
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
             skills.finish_job(job.id, "done")
             learning.job_finished(job.id, "done")
-            if (job.meta or {}).get("kind") == "mqtt":
+            if (job.meta or {}).get("kind") in ("mqtt", "webhook"):
                 await self._capture_event(job, reply)
         except Exception as e:
             log.exception("turn %s failed", job.id)
@@ -1148,7 +1148,8 @@ class Runtime:
         if not memory.get_settings()["capture_events"] or not memory_on(owner):
             return
         meta = job.meta or {}
-        text = (f"Event on MQTT topic {meta.get('topic', '?')}: {str(meta.get('event', ''))[:400]}\n"
+        via = "webhook event" if meta.get("kind") == "webhook" else "MQTT topic"
+        text = (f"Event on {via} {meta.get('topic', '?')}: {str(meta.get('event', ''))[:400]}\n"
                 f"{owner.name}'s assessment: {reply[:800]}")
         try:
             await memory.capture(text, kind="incident", scope="team", thread_id=job.origin_thread_id,

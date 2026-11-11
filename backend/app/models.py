@@ -830,3 +830,26 @@ class Subscription(SQLModel, table=True):
     min_interval_seconds: int = 60
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class WebhookEndpoint(SQLModel, table=True):
+    """An inbound webhook: POST /hooks/<name> turns a delivery into the event
+    webhook/<source>/<event>, which Events subscriptions route to agents like MQTT."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    # URL path part, lowercase letters, digits and dashes, e.g. gitea -> /hooks/gitea
+    name: str = Field(index=True, unique=True)
+    # Second topic level; empty = the name.
+    source: str = ""
+    # How the sender proves itself: "gitea" (X-Gitea-Signature, HMAC-SHA256 of the body
+    # with the secret) or "token" (the secret in X-Webhook-Token, a Bearer header or ?token=).
+    auth_mode: str = "token"
+    # Kept readable because HMAC checks need it; shown once when created or rotated.
+    secret: str = ""
+    # Where the event name (last topic level) comes from: this header, else this dotted
+    # JSON field, else "event". Empty header = the preset's (X-Gitea-Event for gitea).
+    event_header: str = ""
+    event_field: str = ""
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_now)
+    last_delivery_at: datetime | None = None

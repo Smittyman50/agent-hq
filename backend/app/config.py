@@ -68,6 +68,10 @@ class Settings:
     # Optional address of the web UI, e.g. http://shockwave:8000, used for links in notifications.
     public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "").rstrip("/"))
     mqtt_max_payload: int = field(default_factory=lambda: int(_env("MQTT_MAX_PAYLOAD", "4000")))
+    # Inbound webhooks (POST /hooks/<name>): largest body accepted, and how much of it
+    # reaches the agent's prompt (JSON bodies are bigger than MQTT payloads).
+    webhook_max_body: int = field(default_factory=lambda: int(_env("WEBHOOK_MAX_BODY", "1048576")))
+    webhook_max_payload: int = field(default_factory=lambda: int(_env("WEBHOOK_MAX_PAYLOAD", "8000")))
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))

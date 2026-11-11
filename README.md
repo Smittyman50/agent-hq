@@ -169,6 +169,39 @@ The page can also send a test event without a broker. The bridge runs in the API
 
 MQTT works in the other direction too. Agent HQ publishes your notifications (sub-agent requests and decisions, tool approvals) to `AHQ_MQTT_NOTIFY_TOPIC`, and agents can publish their own status and commands through the [MQTT publisher](#mqtt-publisher-agents-publish-back-to-the-lab).
 
+### Inbound webhooks
+
+Anything on your LAN that can send an HTTP POST can wake an agent too: Gitea, Proxmox notifications, Uptime Kuma, Grafana, Zabbix, Home Assistant, or a one-line `curl` in a cron job. A delivery becomes an event on the topic `webhook/<source>/<event>` and goes through the same router as MQTT, so the subscriptions, cooldowns, prompt templates and report conversations above apply unchanged. Webhooks work without an MQTT broker.
+
+```mermaid
+flowchart LR
+    G["Gitea push<br/>POST /hooks/gitea"] --> H{"signature or<br/>token OK?"}
+    H -- no --> R["401, logged in<br/>the sign-in audit log"]
+    H -- yes --> T["topic webhook/gitea/push"]
+    T --> S["Events subscriptions<br/>(same router as MQTT)"]
+    S --> A["agent investigates,<br/>delegates, reports"]
+    T --> OK["202 Accepted<br/>(straight away)"]
+```
+
+Create hooks on the **Settings → Events** page, under **Webhooks**:
+- **Name:** becomes the URL, `https://<site>/hooks/<name>`, served by Caddy like the rest of the UI.
+- **Source:** the second topic level (empty = the name).
+- **How the sender proves itself.** `/hooks/*` is outside the sign-in, so each hook checks its sender:
+  - **Gitea signature:** `X-Gitea-Signature`, the HMAC-SHA256 of the body keyed with the hook's secret. In Gitea, add a webhook of type *Gitea* with the URL, content type `application/json`, and the secret in *Secret*.
+  - **Secret token:** in an `X-Webhook-Token` header, an `Authorization: Bearer` header, or `?token=` for senders that can't set headers.
+- **Event header / event field:** where the last topic level comes from. Gitea hooks use `X-Gitea-Event` (`push`, `issues`, `pull_request`…) by default. Otherwise name a header, or a dotted JSON path such as `heartbeat.status_text`; with neither it is `event`. Values are lowercased and made topic-safe.
+
+The secret is shown once, when the hook is created or rotated. **New subscription for it** pre-fills a subscription with the filter `webhook/<source>/#`. Filters can be broader, e.g. `webhook/+/alert` for alerts from any source.
+
+```bash
+curl -X POST -H "X-Webhook-Token: $AHQ_HOOK_SECRET" -H "X-Event: done" \
+     --data-binary @report.txt https://shockwave.home.arpa/hooks/nightly-scan
+```
+
+Replies: `202` with `{"topic": ..., "queued_jobs": [...]}` (an empty list if no subscription matched or it is in cooldown); `401` for a missing or wrong signature or token; `404` for an unknown or disabled hook (the two look the same); `413` for a body over `AHQ_WEBHOOK_MAX_BODY` (1 MB). At most `AHQ_WEBHOOK_MAX_PAYLOAD` characters of the body (8000) reach the prompt. The default prompt tells the agent the body is data from another system, not instructions; your tool approvals still decide what it may do next.
+
+Webhooks are meant for the LAN. Don't expose `/hooks/*` to the internet. Secrets are stored readable in the database (HMAC checks need them), like provider API keys.
+
 ## Quick start (single machine, dev)
 
 You need Postgres, Valkey and (optionally) MQTT. The simplest route is the infra compose file, which always starts Postgres and Valkey:
@@ -913,7 +946,8 @@ backend/app/
   runtime.py         builds agents from rows; turns; delegation; report-back
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
-  mqtt_bridge.py     MQTT subscriptions -> turn jobs
+  mqtt_bridge.py     MQTT subscriptions -> turn jobs (also routes webhook events)
+  webhooks.py        inbound webhooks: sender checks (Gitea HMAC, token), event topics
   vision.py          look / locate / click_on via a per-agent vision model; questions about attached images
   attachments.py     chat attachments: storage, text, manifests, images to models, workbench transfer
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
@@ -931,6 +965,7 @@ backend/app/
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
+  api/webhooks.py    webhook management (/api/webhooks) and deliveries (POST /hooks/<name>)
   llm.py             model providers: build an agent's model; list a provider's models
   chatgpt.py         ChatGPT plan providers: Sign in with ChatGPT, stored tokens, cross-worker refresh lock
   api/               REST + WebSocket (/ws/threads/{id})

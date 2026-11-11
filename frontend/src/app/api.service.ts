@@ -237,6 +237,26 @@ export interface Subscription {
   enabled: boolean;
 }
 
+export interface Webhook {
+  id?: string;
+  name: string;
+  source: string;
+  auth_mode: 'gitea' | 'token';
+  event_header: string;
+  event_field: string;
+  enabled: boolean;
+  created_at?: string;
+  last_delivery_at?: string | null;
+  url?: string;
+  topic_prefix?: string;
+  has_secret?: boolean;
+  secret?: string | null;  // only right after create or rotate
+}
+
+export function blankWebhook(): Webhook {
+  return { name: '', source: '', auth_mode: 'token', event_header: '', event_field: '', enabled: true };
+}
+
 export interface WorkerInfo { name: string; pools: string[]; concurrency: number; busy: number; seen: string; }
 export interface QueueInfo { pool: string; entries: number; in_progress: number; }
 export interface SystemStatus { valkey: boolean; mqtt: boolean | null; embedded_worker: boolean; }
@@ -580,6 +600,14 @@ export class Api {
   testEvent(topic: string, payload: string) {
     return this.http.post<{ queued_jobs: string[] }>('/api/subscriptions/test', { topic, payload });
   }
+
+  webhooks() { return this.http.get<Webhook[]>('/api/webhooks'); }
+  saveWebhook(x: Webhook): Observable<Webhook> {
+    return x.id ? this.http.put<Webhook>(`/api/webhooks/${x.id}`, x)
+                : this.http.post<Webhook>('/api/webhooks', x);
+  }
+  deleteWebhook(id: string) { return this.http.delete(`/api/webhooks/${id}`); }
+  rotateWebhook(id: string) { return this.http.post<Webhook>(`/api/webhooks/${id}/rotate`, {}); }
 
   subagentRequests(status?: string) {
     return this.http.get<SubagentRequest[]>('/api/subagent-requests', { params: status ? { status } : {} });
