@@ -513,3 +513,14 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .kp-options { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .kp-options select { min-width: 200px; }
 .req-why.warn .k { color: var(--warn); }
+
+/* Code blocks in replies: a bar with the language (or file name) and Copy / Save */
+.md .code-block { margin: 0 0 .65em; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.md .code-block pre { margin: 0; border: 0; border-radius: 0; }
+.md .code-bar { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 12px; background: rgba(255,255,255,.04);
+  border-bottom: 1px solid var(--line); font-size: 12px; }
+.md .code-lang { flex: 1; color: var(--muted); font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md .code-btn { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--muted);
+  padding: 3px 7px; margin: 0; border-radius: 5px; font-size: 12px; cursor: pointer; }
+.md .code-btn:hover { color: var(--text); background: rgba(255,255,255,.07); }
+.md .code-btn.done { color: #7ee2a8; }
