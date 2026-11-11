@@ -384,7 +384,7 @@ It then may do three things:
 - **Model:** each agent's own, unless you pick a reflection model; a stronger one writes better skills for small local agents.
 - **Who never reflects:** agents whose learning is Off, and sub-agents.
 
-**Requests** has a sub-menu like Settings: **Tool approvals**, **Skill proposals**, **Profile updates** and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
+**Requests** has a sub-menu like Settings: **Tool approvals**, **Skill proposals**, **Profile updates**, **Knowledge** (documents agents suggest) and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
 
 ### Your profile
 
@@ -658,6 +658,31 @@ With neither, the agent can read documents but tells you it can't view images.
 
 Agents on cloud models send the excerpts they read to that provider. Keep private collections to agents on local models.
 
+### Documents agents suggest
+
+Agents can suggest additions to the library: a runbook they worked out, research findings, a summary of a long investigation. **Nothing goes in until you approve it.**
+
+**Where suggestions go:**
+- **Agent Findings,** a collection made for this and open to every agent. Suggestions go here unless an agent is asked to use another collection.
+- **Your own collections** only take suggestions when you allow it in the collection's settings. Under *Agents may suggest documents*, pick **No** (the default), **Any agent that can read it**, or **These agents**. An agent can also only suggest for collections it can read.
+
+**How they're made:**
+- An agent calls `suggest_knowledge` with a title, a reason, and either Markdown text or a file from the conversation (`attachment_id`). `knowledge_targets` lists the collections it may use.
+- A reflection can also suggest one document after a job that produced reference material: not a procedure (that's a skill), not a short fact (that's a lesson).
+- Agents get these tools when their learning mode isn't **off**. **Settings → Knowledge → Agents may suggest documents** turns them off for everyone.
+
+**Deciding:** a card appears in the conversation and in **Requests → Knowledge**, plus a `knowledge_proposal` MQTT notice with a link. You can approve or reject from either place:
+- **Edit** the title and text first.
+- **Move** it to any collection. Yours to choose, whatever the agent was allowed.
+- **Replace** a near-copy. If the document looks like one already in that collection, the card says so; when that one also came from an agent, you can replace it instead of adding a second.
+- **Reject** with a note. The agent is told your note if it suggests the same thing again.
+
+**Limits:** at most 5 suggestions waiting per agent, and at most 60,000 characters each.
+
+**What's stored:** approved documents go into the collection's **Suggested by agents** source. Each is tagged with the agent's name (`agent/scarlett`), and its citation links back to the conversation it came from. You can delete them like uploads.
+
+**Kept separate from your own sources:** suggestions are never written to your Obsidian vault or Git sources.
+
 ## Evals
 
 **Settings → Evals** shows whether agents, and the skills they learn, actually get better. A **test case** is three things:
@@ -861,6 +886,7 @@ backend/app/
   learning.py        the learning loop: ratings, corrections, reflections, skills from documents
   profile.py         your profile: in every agent's instructions; suggestions you approve
   knowledge.py       knowledge library: sources (upload, web, Git/Obsidian), chunking, hybrid search, recall
+  knowledge_proposals.py  documents agents suggest: where they may, near-duplicates, approving into a collection
   evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
   context.py         long conversations: context windows, compaction, trimming, overflow warnings
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
@@ -896,4 +922,3 @@ examples/            example crew (providers, agents, pools, tools, subscription
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
 - **OCR for scanned PDFs** in the knowledge library and in chat attachments.
 - **Attachments on desktops:** copy a file onto an agent's desktop so it can upload it to a website.
-- **Save an attachment to a knowledge collection** with one click.

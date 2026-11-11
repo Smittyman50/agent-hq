@@ -27,6 +27,7 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
           <p class="muted small">
             Readable by: {{ c.agent_ids.length ? names(c.agent_ids) : 'every agent' }}
             · {{ c.auto_recall ? 'excerpts come up by themselves' : 'search only' }}
+            · agents may suggest documents: {{ c.proposals === 'all' ? 'any that can read it' : c.proposals === 'chosen' ? (names(c.proposer_agent_ids) || 'nobody chosen') : 'no' }}
             @if (!c.enabled) { · <strong>switched off</strong> }
           </p>
         } @else {
@@ -46,6 +47,24 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
               </div>
               <p class="hint inline-hint">Sub-agents can read what their parent can. Agents on cloud models send the
                 excerpts they read to that provider; keep private collections to local-model agents.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Agents may suggest documents <small>you approve each one in Requests → Knowledge</small></legend>
+              <label class="check"><input type="radio" name="cprop" value="off" [(ngModel)]="c.proposals"> No</label>
+              <label class="check"><input type="radio" name="cprop" value="all" [(ngModel)]="c.proposals"> Any agent that can read it</label>
+              <label class="check"><input type="radio" name="cprop" value="chosen" [(ngModel)]="c.proposals"> These agents:</label>
+              @if (c.proposals === 'chosen') {
+                <div class="kn-agents">
+                  @for (a of ws.agents(); track a.id) {
+                    @if (!a.is_subagent) {
+                      <label class="check"><input type="checkbox" [checked]="c.proposer_agent_ids.includes(a.id!)"
+                        (change)="toggleProposer(c, a.id!)"> {{ a.name }}</label>
+                    }
+                  }
+                </div>
+              }
+              <p class="hint inline-hint">Agent Findings takes suggestions from every agent; it's where they go unless an
+                agent is asked to use another collection. Approved documents land in a “Suggested by agents” source.</p>
             </fieldset>
             <label class="check"><input type="checkbox" name="crecall" [(ngModel)]="c.auto_recall">
               Excerpts come up by themselves (like memories); otherwise agents search when they need to</label>
@@ -70,7 +89,9 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
                 @if (x.last_indexed_at) { · checked {{ x.last_indexed_at | date:'MMM d, h:mm a' }} }</span>
             </div>
             @if (x.url) { <div class="muted small mono">{{ x.url }}@if (x.branch) { · {{ x.branch }} }</div> }
-            @if (x.kind !== 'upload') {
+            @if (x.kind === 'agent') {
+              <div class="muted small">Documents agents suggested and you approved (Requests → Knowledge).</div>
+            } @else if (x.kind !== 'upload') {
               <div class="muted small">{{ x.refresh_minutes ? 'Checks for changes every ' + every(x.refresh_minutes) : 'Checks only when you ask' }}
                 @if (x.kind === 'git') { · {{ x.has_token ? 'token saved' : 'no token' }} }</div>
             }
@@ -106,7 +127,8 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
               </form>
             } @else {
               <div class="actions tight">
-                @if (x.kind === 'upload') {
+                @if (x.kind === 'agent') {
+                } @else if (x.kind === 'upload') {
                   <label class="button-like">Add files<input type="file" multiple hidden (change)="upload(x, $event)"
                     accept=".pdf,.docx,.pptx,.xlsx,.xls,.html,.htm,.md,.markdown,.txt,.csv,.json,.yaml,.yml,.epub"></label>
                 } @else {
@@ -198,7 +220,7 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
               </select>
               <button class="small" (click)="propose(d)" [disabled]="proposing() || !proposeAs">
                 {{ proposing() ? 'Reading…' : 'Propose skills' }}</button>
-              @if (sourceKind(d) === 'upload') { <button class="ghost small" (click)="deleteDoc(d)">Delete document</button> }
+              @if (sourceKind(d) === 'upload' || sourceKind(d) === 'agent') { <button class="ghost small" (click)="deleteDoc(d)">Delete document</button> }
             </div>
             @if (proposeNote(); as n) { <p class="hint">{{ n }} <a routerLink="/requests/skills">Review in Requests</a></p> }
             @for (s of d.sections ?? []; track $index) {
@@ -262,6 +284,9 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
           <label>Section size <small>characters</small><input type="number" min="500" max="8000" step="100" [(ngModel)]="k.chunk_chars"></label>
           <label>Largest file <small>MB</small><input type="number" min="1" max="200" [(ngModel)]="k.max_file_mb"></label>
         </div>
+        <label class="check"><input type="checkbox" [(ngModel)]="k.agent_suggestions"> Agents may suggest documents</label>
+        <p class="hint inline-hint">Agents whose learning isn't off suggest documents for Agent Findings (and collections
+          that allow it). You approve each one in Requests → Knowledge.</p>
         <p class="hint inline-hint">A new section size applies as documents change; use Re-index all to redo a source now.</p>
         <div class="actions"><button (click)="saveCfg()">Save settings</button> @if (cfgNote()) { <span class="hint">{{ cfgNote() }}</span> }</div>
       }
@@ -312,7 +337,7 @@ export class KnowledgePage implements OnInit, OnDestroy {
   names(ids: string[]) { return ids.map(i => this.ws.agentName(i)).join(', '); }
   every(m: number) { return m % 1440 === 0 ? `${m / 1440} day${m === 1440 ? '' : 's'}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`; }
   pill(s: string) { return ({ ready: 'done', error: 'failed', indexing: 'working', queued: 'queued' } as Record<string, string>)[s] ?? ''; }
-  kindLabel(x: KnowledgeSource) { return x.kind === 'git' ? (x.obsidian ? 'Obsidian vault' : 'Git') : x.kind === 'url' ? 'Web page' : 'Uploads'; }
+  kindLabel(x: KnowledgeSource) { return x.kind === 'git' ? (x.obsidian ? 'Obsidian vault' : 'Git') : x.kind === 'url' ? 'Web page' : x.kind === 'agent' ? 'From agents' : 'Uploads'; }
   addTitle(k: SourceKind) { return { obsidian: 'Obsidian vault (Git)', git: 'Git repository', url: 'Web page', upload: 'Uploaded files' }[k]; }
   sourceKind(d: KnowledgeDoc) { return this.sources().find(s => s.id === d.source_id)?.kind; }
 
@@ -364,6 +389,11 @@ export class KnowledgePage implements OnInit, OnDestroy {
       this.loadCollections(c.id);
       this.editing.set(true);
     });
+  }
+
+  toggleProposer(c: KnowledgeCollection, id: string) {
+    const ids = c.proposer_agent_ids ?? [];
+    c.proposer_agent_ids = ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id];
   }
 
   toggleAgent(c: KnowledgeCollection, id: string) {

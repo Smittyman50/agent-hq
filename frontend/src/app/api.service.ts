@@ -269,15 +269,16 @@ export function blankServer(): ToolServer {
     env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
 }
 
-export interface KnowledgeSettings { recall: boolean; recall_count: number; min_score: number; chunk_chars: number; max_file_mb: number; }
+export interface KnowledgeSettings { recall: boolean; recall_count: number; min_score: number; chunk_chars: number; max_file_mb: number; agent_suggestions: boolean; }
 
 export interface KnowledgeCollection {
   id: string; name: string; description: string; agent_ids: string[]; auto_recall: boolean; enabled: boolean;
+  proposals: 'off' | 'all' | 'chosen'; proposer_agent_ids: string[];
   docs?: number; chunks?: number; sources?: number;
 }
 
 export interface KnowledgeSource {
-  id: string; collection_id: string; kind: 'upload' | 'url' | 'git'; name: string; url: string | null;
+  id: string; collection_id: string; kind: 'upload' | 'url' | 'git' | 'agent'; name: string; url: string | null;
   branch: string; username: string; token?: string | null; has_token?: boolean;
   include: string[]; exclude: string[]; obsidian: boolean; vault_name: string; refresh_minutes: number;
   status: 'queued' | 'indexing' | 'ready' | 'error'; error: string | null; last_indexed_at: string | null;
@@ -334,7 +335,7 @@ export interface AgentContextInfo {
   instruction_tokens: number; reserve_tokens: number; room_for_conversation: number;
 }
 
-export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; total: number; }
+export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; knowledge: number; total: number; }
 
 export interface Profile { text: string; enabled: boolean; max_words: number; suggestions: boolean; updated_at: string | null; words: number; }
 
@@ -342,6 +343,16 @@ export interface ProfileProposal {
   id: string; text: string; reason: string; source: string; agent_id: string; agent_name: string;
   thread_id: string | null; job_id: string | null; reflection_id: string | null;
   status: 'pending' | 'approved' | 'rejected'; note: string; created_at: string; decided_at: string | null;
+}
+
+/** An agent suggesting a document for a knowledge collection (Requests → Knowledge). */
+export interface KnowledgeProposal {
+  id: string; collection_id: string; collection: string; title: string; text: string; reason: string;
+  attachment_id: string | null; source: 'tool' | 'reflection'; agent_id: string; agent_name: string;
+  thread_id: string | null; job_id: string | null; reflection_id: string | null;
+  similar_doc_id: string | null; similar_title: string; similar_score: number | null; similar_replaceable: boolean;
+  status: 'pending' | 'approved' | 'rejected'; note: string; doc_id: string | null;
+  created_at: string; decided_at: string | null;
 }
 
 export interface MessageFeedback { rating: 'up' | 'down'; comment: string; }
@@ -470,6 +481,12 @@ export class Api {
   profile() { return this.http.get<Profile>('/api/profile'); }
   saveProfile(x: Partial<Profile>) { return this.http.put<Profile>('/api/profile', x); }
   profileProposals(status?: string) { return this.http.get<ProfileProposal[]>('/api/profile-proposals', { params: status ? { status } : {} }); }
+  knowledgeProposals(status?: string) { return this.http.get<KnowledgeProposal[]>('/api/knowledge-proposals', { params: status ? { status } : {} }); }
+  knowledgeProposal(id: string) { return this.http.get<KnowledgeProposal>(`/api/knowledge-proposals/${id}`); }
+  decideKnowledgeProposal(id: string, d: { approve: boolean; note?: string; title?: string; text?: string;
+                                            collection_id?: string; replace_doc_id?: string }) {
+    return this.http.post<KnowledgeProposal>(`/api/knowledge-proposals/${id}/decide`, d);
+  }
   profileProposal(id: string) { return this.http.get<ProfileProposal>(`/api/profile-proposals/${id}`); }
   decideProfileProposal(id: string, d: { approve: boolean; note?: string; text?: string }) {
     return this.http.post<ProfileProposal>(`/api/profile-proposals/${id}/decide`, d);

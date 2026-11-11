@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
     "min_score": 0.45,       # recall threshold (search shows everything)
     "chunk_chars": 2400,     # target section size
     "max_file_mb": 20,
+    "agent_suggestions": True,  # agents may suggest documents (into collections that allow it)
 }
 
 TEXT_EXT = {".md", ".markdown", ".txt", ".text", ".rst", ".org", ".csv", ".json", ".yaml", ".yml", ".log"}
@@ -87,6 +88,7 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     merged["min_score"] = max(0.0, min(1.0, float(merged["min_score"])))
     merged["chunk_chars"] = max(500, min(8000, int(merged["chunk_chars"])))
     merged["max_file_mb"] = max(1, min(200, int(merged["max_file_mb"])))
+    merged["agent_suggestions"] = bool(merged["agent_suggestions"])
     with db.session() as s:
         row = s.get(SystemSetting, "knowledge") or SystemSetting(key="knowledge")
         row.value = merged

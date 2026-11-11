@@ -13,13 +13,14 @@ import { RequestCard } from './request-card';
 import { ApprovalCard } from './approval-card';
 import { SkillProposalCard } from './skill-proposal-card';
 import { ProfileProposalCard } from './profile-proposal-card';
+import { KnowledgeProposalCard } from './knowledge-proposal-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, RouterLink],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, RouterLink],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
@@ -47,6 +48,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
           @for (m of messages(); track m.id) {
             @if (m.meta['kind'] === 'subagent_request' && m.meta['request_id']) {
               <hq-request-card [requestId]="$any(m.meta['request_id'])" [version]="$any(m.meta['status']) + ':' + $any(m.meta['used'])" />
+            } @else if (m.meta['kind'] === 'knowledge_proposal' && m.meta['knowledge_proposal_id']) {
+              <hq-knowledge-proposal-card [proposalId]="$any(m.meta['knowledge_proposal_id'])" [version]="m.meta['status']" />
             } @else if (m.meta['kind'] === 'profile_proposal' && m.meta['profile_proposal_id']) {
               <hq-profile-proposal-card [proposalId]="$any(m.meta['profile_proposal_id'])" [version]="m.meta['status']" />
             } @else if (m.meta['kind'] === 'skill_proposal' && m.meta['proposal_id']) {

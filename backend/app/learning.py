@@ -312,11 +312,19 @@ class ProfileIdea(BaseModel):
     reason: str = Field(description="what the user said that shows it's a standing preference")
 
 
+class KnowledgeIdea(BaseModel):
+    title: str = Field(description="a clear title, e.g. \"UPS failover runbook\"")
+    content: str = Field(description="the complete document in Markdown, written from what the "
+                         "record shows; self-contained, so it makes sense without this conversation")
+    reason: str = Field(description="why the team should keep it")
+
+
 class ReflectionOut(BaseModel):
     summary: str = Field(description="one or two sentences: what happened and what you took from it")
     skills: list[SkillIdea] = Field(default_factory=list, description="usually none or one")
     lessons: list[Lesson] = Field(default_factory=list, description="usually none to two")
     profile: list[ProfileIdea] = Field(default_factory=list, description="usually none; see the rules")
+    knowledge: list[KnowledgeIdea] = Field(default_factory=list, description="usually none; see the rules")
 
 
 REFLECT_RULES = """\
@@ -342,6 +350,11 @@ Rules:
   always know, and only when the user stated it as a rule ("always", "from now on", "I
   prefer") or it repeats something already in memory. Not for anything in their profile
   already (shown below, if they have one). These always wait for the user's approval.
+- knowledge: reference material worth keeping in the team's library (Agent Findings),
+  only when this job produced some: research findings, a how-to or runbook written out
+  in full, a summary of a long investigation. Not a procedure to follow (that's a skill),
+  not a short fact (that's a lesson), not something already suggested in this
+  conversation. These always wait for the user's approval.
 - Empty lists are a normal, good outcome when there's nothing worth keeping.
 - Write `summary` in the first person, one or two sentences."""
 
@@ -549,9 +562,22 @@ async def reflect(rt, r_id: str) -> Reflection:
                                          job_id=r.job_id, reflection_id=r.id)
             if p is not None:
                 profile_ids.append(p.id)
+    from . import knowledge_proposals as kprop
+
+    knowledge_ids = []
+    if out.knowledge and kprop.enabled() and skills.mode_of(agent) != LearningMode.off:
+        for idea in out.knowledge[:1]:
+            got = await rt.suggest_knowledge(agent, title=idea.title, text=idea.content,
+                                             reason=idea.reason, thread_id=r.thread_id, job_id=r.job_id,
+                                             source="reflection", reflection_id=r.id)
+            if got.get("proposal_id"):
+                knowledge_ids.append(got["proposal_id"])
+            else:
+                notes.append(f"document {idea.title!r} not suggested: {got.get('summary', '')}")
     summary = out.summary.strip() + ("\n" + "\n".join(notes) if notes else "")
     return _finish(r_id, status="done", summary=summary[:4000], proposal_ids=proposal_ids,
-                   memory_ids=memory_ids, profile_proposal_ids=profile_ids, model=model_name)
+                   memory_ids=memory_ids, profile_proposal_ids=profile_ids,
+                   knowledge_proposal_ids=knowledge_ids, model=model_name)
 
 
 async def run_due(rt, limit: int = 3) -> list[Reflection]:

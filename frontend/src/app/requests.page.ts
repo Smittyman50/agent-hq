@@ -1,13 +1,14 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Api, ProfileProposal, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
+import { Api, KnowledgeProposal, ProfileProposal, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
 import { ApprovalCard } from './approval-card';
 import { Avatar } from './avatar';
 import { RequestCard } from './request-card';
 import { SkillProposalCard } from './skill-proposal-card';
 import { Workspace } from './workspace';
 import { ProfileProposalCard } from './profile-proposal-card';
+import { KnowledgeProposalCard } from './knowledge-proposal-card';
 
 /** Requests → Tool approvals: calls waiting for your OK, then recent decisions. */
 @Component({
@@ -179,4 +180,40 @@ export class ProfileInbox implements OnInit {
     this.reload();
   }
   reload() { this.api.profileProposals().subscribe(p => this.all.set(p)); this.ws.refreshPending(); }
+}
+
+/** Requests → Knowledge: documents agents suggest for the knowledge library. */
+@Component({
+  selector: 'hq-knowledge-inbox',
+  imports: [KnowledgeProposalCard],
+  template: `
+  <div class="editor inbox">
+    <p class="hint inline-hint">Documents agents think the team should keep: runbooks they worked out, research findings,
+      summaries. They go to Agent Findings unless you allow agents to suggest for another collection (Settings → Knowledge).
+      Edit, move or reject them; nothing reaches the library until you add it.</p>
+    @if (linked(); as id) { <hq-knowledge-proposal-card [proposalId]="id" [showThread]="true" (decided)="reload()" class="linked" /> }
+    @for (p of pending(); track p.id) {
+      @if (p.id !== linked()) { <hq-knowledge-proposal-card [proposalId]="p.id" [showThread]="true" (decided)="reload()" /> }
+    } @empty { @if (!linked()) { <div class="empty-box">No documents waiting.</div> } }
+    @if (recent().length) {
+      <details class="recent"><summary>Recent decisions ({{ recent().length }})</summary>
+        @for (p of recent(); track p.id) { <hq-knowledge-proposal-card [proposalId]="p.id" [showThread]="true" /> }
+      </details>
+    }
+  </div>`,
+})
+export class KnowledgeInbox implements OnInit {
+  private api = inject(Api);
+  private route = inject(ActivatedRoute);
+  private ws = inject(Workspace);
+  all = signal<KnowledgeProposal[]>([]);
+  linked = signal<string | null>(null);
+  pending = computed(() => this.all().filter(p => p.status === 'pending'));
+  recent = computed(() => this.all().filter(p => p.status !== 'pending' && p.id !== this.linked()).slice(0, 20));
+
+  ngOnInit() {
+    this.linked.set(this.route.snapshot.queryParamMap.get('document'));
+    this.reload();
+  }
+  reload() { this.api.knowledgeProposals().subscribe(p => this.all.set(p)); this.ws.refreshPending(); }
 }

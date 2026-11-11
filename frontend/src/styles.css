@@ -505,3 +505,11 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .conversation.dropping { outline: 2px dashed #5aa9e6; outline-offset: -6px; }
 .upload-note { font-size: 12px; }
 .upload-note.err { color: #e66; }
+
+/* Suggested knowledge documents */
+.kp-doc { border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px 12px; max-height: 320px; overflow: auto; }
+.kp-doc h4 { margin: 2px 0 6px; }
+.kp-text { width: 100%; resize: vertical; }
+.kp-options { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.kp-options select { min-width: 200px; }
+.req-why.warn .k { color: var(--warn); }

@@ -12,7 +12,7 @@ import { EvalsPage } from './evals.page';
 import { KnowledgePage } from './knowledge.page';
 import { ProfilePage } from './profile.page';
 import { SchedulesPage } from './schedules.page';
-import { ApprovalsInbox, SkillsInbox, SubagentInbox, ProfileInbox } from './requests.page';
+import { ApprovalsInbox, SkillsInbox, SubagentInbox, ProfileInbox, KnowledgeInbox } from './requests.page';
 import { RequestsHome, RequestsLayout } from './requests';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
@@ -33,6 +33,7 @@ export const routes: Routes = [
       { path: 'approvals', component: ApprovalsInbox },
       { path: 'skills', component: SkillsInbox },
       { path: 'profile', component: ProfileInbox },
+      { path: 'knowledge', component: KnowledgeInbox },
         { path: 'subagents', component: SubagentInbox },
     ],
   },

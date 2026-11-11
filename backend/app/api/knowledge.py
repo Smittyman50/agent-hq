@@ -10,8 +10,9 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import func, select
 
+from .. import knowledge_proposals as kprop
 from .. import db, knowledge
-from ..models import AgentDef, KnowledgeChunk, KnowledgeCollection, KnowledgeDoc, KnowledgeSource
+from ..models import AgentDef, KnowledgeChunk, KnowledgeCollection, KnowledgeDoc, KnowledgeProposal, KnowledgeSource
 
 router = APIRouter(tags=["knowledge"])
 
@@ -64,6 +65,13 @@ class CollectionIn(BaseModel):
     agent_ids: list[str] = Field(default_factory=list)
     auto_recall: bool = True
     enabled: bool = True
+    proposals: str = "off"  # off | all | chosen: which agents may suggest documents here
+    proposer_agent_ids: list[str] = Field(default_factory=list)
+
+
+def _check_collection(body: CollectionIn) -> None:
+    if body.proposals not in ("off", "all", "chosen"):
+        raise HTTPException(422, "proposals is off, all or chosen")
 
 
 def _collection_out(c: KnowledgeCollection) -> dict[str, Any]:
@@ -76,6 +84,8 @@ def _collection_out(c: KnowledgeCollection) -> dict[str, Any]:
 
 @router.get("/api/knowledge/collections")
 def list_collections():
+    if kprop.enabled():
+        kprop.findings_collection()  # where agents' suggestions go by default
     with db.session() as s:
         rows = list(s.exec(select(KnowledgeCollection).order_by(KnowledgeCollection.name)).all())
     return [_collection_out(c) for c in rows]
@@ -85,6 +95,7 @@ def list_collections():
 def create_collection(body: CollectionIn):
     if not body.name.strip():
         raise HTTPException(422, "a collection needs a name")
+    _check_collection(body)
     c = KnowledgeCollection(**body.model_dump())
     c.name = c.name.strip()
     with db.session() as s:
@@ -96,6 +107,7 @@ def create_collection(body: CollectionIn):
 
 @router.put("/api/knowledge/collections/{collection_id}")
 def update_collection(collection_id: str, body: CollectionIn):
+    _check_collection(body)
     with db.session() as s:
         c = s.get(KnowledgeCollection, collection_id)
         if c is None:
@@ -295,7 +307,7 @@ def delete_doc(doc_id: str):
         if d is None:
             raise HTTPException(404)
         src = s.get(KnowledgeSource, d.source_id)
-    if src and src.kind != "upload":
+    if src and src.kind not in ("upload", "agent"):
         raise HTTPException(422, "remove it from the repository or page instead; it would come back on the next sync")
     knowledge.remove_docs([doc_id])
     if src:
@@ -346,3 +358,47 @@ async def propose_skills(doc_id: str, body: ProposeIn, request: Request):
         return await learning.skills_from_document(request.app.state.runtime, agent, d)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
+
+
+# --------------------------------------------------------------------------- agents' suggestions
+
+
+@router.get("/api/knowledge-proposals")
+def list_knowledge_proposals(status: str | None = None, limit: int = 100):
+    q = select(KnowledgeProposal).order_by(KnowledgeProposal.created_at.desc()).limit(max(1, min(limit, 500)))
+    if status:
+        q = q.where(KnowledgeProposal.status == status)
+    with db.session() as s:
+        rows = list(s.exec(q).all())
+    return [kprop.out(p) for p in rows]
+
+
+@router.get("/api/knowledge-proposals/{proposal_id}")
+def get_knowledge_proposal(proposal_id: str):
+    with db.session() as s:
+        p = s.get(KnowledgeProposal, proposal_id)
+    if p is None:
+        raise HTTPException(404)
+    return kprop.out(p)
+
+
+class KnowledgeDecideIn(BaseModel):
+    approve: bool
+    note: str = ""
+    title: str | None = None          # your edits
+    text: str | None = None
+    collection_id: str | None = None  # put it in another collection
+    replace_doc_id: str | None = None # update this (agent-suggested) document instead of adding one
+
+
+@router.post("/api/knowledge-proposals/{proposal_id}/decide")
+async def decide_knowledge_proposal(proposal_id: str, body: KnowledgeDecideIn, request: Request):
+    try:
+        p = await request.app.state.runtime.decide_knowledge_proposal(
+            proposal_id, body.approve, note=body.note, title=body.title, text=body.text,
+            collection_id=body.collection_id, replace_doc_id=body.replace_doc_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(409 if "already" in str(e) else 422, str(e)) from None
+    return kprop.out(p)

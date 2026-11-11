@@ -282,6 +282,10 @@ class KnowledgeCollection(SQLModel, table=True):
     agent_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     auto_recall: bool = True   # matching excerpts come up by themselves, like memories
     enabled: bool = True
+    # Which agents may suggest documents for this collection (you approve each one):
+    # "off", "all" (every agent that can read it) or "chosen" (proposer_agent_ids).
+    proposals: str = "off"
+    proposer_agent_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -292,7 +296,7 @@ class KnowledgeSource(SQLModel, table=True):
 
     id: str = Field(default_factory=_id, primary_key=True)
     collection_id: str = Field(index=True)
-    kind: str = "upload"  # upload | url | git
+    kind: str = "upload"  # upload | url | git | agent (documents agents suggested, that you approved)
     name: str = ""
     url: str | None = None          # web page, or the repo's clone URL
     branch: str = ""                # git: blank = the repo's default branch
@@ -330,6 +334,37 @@ class KnowledgeDoc(SQLModel, table=True):
     chunks: int = 0
     stored_file: str | None = None  # uploads: the original, under the data folder
     updated_at: datetime = Field(default_factory=_now)
+
+
+class KnowledgeProposal(SQLModel, table=True):
+    """An agent suggesting a document for a knowledge collection (Requests → Knowledge).
+
+    Nothing reaches the library until you approve it. Approved documents go into the
+    collection's "Suggested by agents" source, with a link back to the conversation.
+    """
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    collection_id: str = Field(index=True)
+    title: str = ""
+    text: str = Field(default="", sa_column=Column(Text, default=""))
+    reason: str = Field(default="", sa_column=Column(Text, default=""))
+    attachment_id: str | None = None   # when it came from a file in the conversation
+    source: str = "tool"               # tool | reflection
+    agent_id: str = Field(index=True)
+    agent_name: str = ""
+    thread_id: str | None = None
+    job_id: str | None = None
+    reflection_id: str | None = None
+    message_id: str | None = None
+    # The closest document already in the collection, when it looks like a near-duplicate.
+    similar_doc_id: str | None = None
+    similar_title: str = ""
+    similar_score: float | None = None
+    status: str = Field(default="pending", index=True)  # pending | approved | rejected
+    note: str = ""
+    doc_id: str | None = None          # the document it became (or replaced)
+    created_at: datetime = Field(default_factory=_now)
+    decided_at: datetime | None = None
 
 
 class KnowledgeChunk(SQLModel, table=True):
@@ -469,6 +504,7 @@ class Reflection(SQLModel, table=True):
     proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     memory_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     profile_proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    knowledge_proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     model: str = ""
     error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=_now)

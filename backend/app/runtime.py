@@ -54,6 +54,7 @@ from redis.exceptions import LockError
 from sqlmodel import select
 
 from . import attachments as att
+from . import knowledge_proposals as kprop
 from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents
 from .broker import Broker
 from .config import settings
@@ -71,6 +72,8 @@ from .models import (
     LearningMode,
     MemoryKind,
     ProfileProposal,
+    KnowledgeCollection,
+    KnowledgeProposal,
     SkillProposal,
     SubagentMode,
     ToolApproval,
@@ -888,6 +891,9 @@ class Runtime:
             if skills_context:
                 instructions.append(skills_context)
             toolsets.append((self._skills_toolset(learning), None))
+        if learning != LearningMode.off and kprop.enabled():
+            instructions.append(kprop.SUGGEST_RULES)
+            toolsets.append((self._knowledge_suggest_toolset(), None))
         files_here = bool(thread_id) and att.has_any(thread_id)
         workbench = any(not desk for _, desk in toolsets[:mcp_count])
         instructions.append(att.ATTACHMENT_RULES if files_here else att.NO_FILES_RULES)
@@ -1720,6 +1726,102 @@ class Runtime:
                                 "text": text, "thread_id": thread_id,
                                 "link": subagents.link(f"/requests/profile?suggestion={p.id}")})
         return p
+
+    async def suggest_knowledge(self, me: AgentDef, *, title: str, text: str, reason: str,
+                                collection: str = "", thread_id: str, job_id: str | None = None,
+                                attachment_id: str | None = None, source: str = "tool",
+                                reflection_id: str | None = None) -> dict:
+        """An agent suggests a document for the knowledge library: it waits for you in
+        Requests → Knowledge and as a card in the conversation."""
+        try:
+            target = kprop.resolve_target(me, collection)
+            title, text = kprop.clean(title, text)
+        except ValueError as e:
+            return {"status": "not suggested", "summary": str(e)}
+        if kprop.pending_count(me.id) >= kprop.MAX_PENDING_PER_AGENT:
+            return {"status": "not suggested", "summary": f"you already have {kprop.MAX_PENDING_PER_AGENT} "
+                    "suggestions waiting for the user; wait for their decisions"}
+        dup = kprop.already_suggested(target.id, title, text)
+        if dup is not None:
+            return {"status": "not suggested", "summary": f"this was suggested already ({dup.status})"
+                    + (f"; the user's note: {dup.note}" if dup.note else "")}
+        similar, score = await kprop.closest(target.id, title, text)
+        p = KnowledgeProposal(collection_id=target.id, title=title, text=text,
+                              reason=reason.strip()[:1000], attachment_id=attachment_id, source=source,
+                              agent_id=me.id, agent_name=me.name, thread_id=thread_id, job_id=job_id,
+                              reflection_id=reflection_id,
+                              similar_doc_id=similar.id if similar else None,
+                              similar_title=similar.title if similar else "", similar_score=score)
+        msg = await self.save_message(
+            thread_id, Role.event, f"{me.name} suggests adding “{title}” to {target.name}",
+            agent_id=me.id, kind="knowledge_proposal", knowledge_proposal_id=p.id, status="pending",
+            collection=target.name)
+        p.message_id = msg.id
+        with db.session() as s:
+            s.add(p)
+            s.commit()
+            s.refresh(p)
+        await subagents.notify({"type": "knowledge_proposal", "proposal_id": p.id, "agent": me.name,
+                                "title": title, "collection": target.name, "thread_id": thread_id,
+                                "link": subagents.link(f"/requests/knowledge?document={p.id}")})
+        out = {"status": "suggested", "proposal_id": p.id, "collection": target.name,
+               "summary": "It waits for the user's approval. Mention it in one line."}
+        if similar is not None:
+            out["note"] = f"It looks close to “{similar.title}”, already in {target.name}; the user will see that."
+        return out
+
+    async def decide_knowledge_proposal(self, proposal_id: str, approve: bool, *, note: str = "",
+                                        title: str | None = None, text: str | None = None,
+                                        collection_id: str | None = None,
+                                        replace_doc_id: str | None = None) -> KnowledgeProposal:
+        p = await kprop.decide(proposal_id, approve, note=note, title=title, text=text,
+                               collection_id=collection_id, replace_doc_id=replace_doc_id)
+        if p.message_id:
+            with db.session() as s:
+                c = s.get(KnowledgeCollection, p.collection_id)
+            await self.update_message(p.message_id, status=p.status, note=p.note, doc_id=p.doc_id,
+                                      collection=c.name if c else "")
+        return p
+
+    def _knowledge_suggest_toolset(self) -> FunctionToolset:
+        rt = self
+
+        async def knowledge_targets(ctx: RunContext[RunDeps]) -> list[dict]:
+            """The knowledge collections you may suggest documents for (the first is the default)."""
+            me = load_agent(ctx.deps.agent_id)
+            return [{"collection": c.name, "description": c.description} for c in kprop.targets(me)]
+
+        async def suggest_knowledge(ctx: RunContext[RunDeps], title: str, reason: str,
+                                    content: str = "", attachment_id: str = "",
+                                    collection: str = "") -> dict:
+            """Suggest a document for the knowledge library. The user approves it first.
+
+            Args:
+                title: A clear title, e.g. "UPS failover runbook".
+                reason: Why it's worth keeping for the team.
+                content: The document (Markdown), complete and self-contained. Or leave it
+                    empty and give attachment_id to keep the text of a file instead.
+                attachment_id: A file in this conversation to keep, e.g. att_ab12cd34ef56.
+                collection: Only when the user asked for a particular collection (see
+                    knowledge_targets). Empty means Agent Findings.
+            """
+            me = load_agent(ctx.deps.agent_id)
+            if ctx.deps.replay is not None:  # a test run: nothing is stored
+                return {"status": "suggested", "proposal_id": "test", "summary": "(test run)"}
+            text, att_id = content, None
+            if attachment_id.strip():
+                try:
+                    (a,) = att.in_thread(ctx.deps.thread_id, [attachment_id])
+                except att.AttachmentError as e:
+                    return {"status": "not suggested", "summary": str(e)}
+                if a.text is None:
+                    return {"status": "not suggested", "summary": f"{a.name} has no text to keep"}
+                text, att_id = (content.strip() + "\n\n" if content.strip() else "") + a.text, a.id
+            return await rt.suggest_knowledge(me, title=title, text=text, reason=reason,
+                                              collection=collection, thread_id=ctx.deps.thread_id,
+                                              job_id=ctx.deps.job_id, attachment_id=att_id)
+
+        return FunctionToolset([knowledge_targets, suggest_knowledge], id="knowledge_suggestions")
 
     async def decide_profile_proposal(self, proposal_id: str, approve: bool, *, note: str = "",
                                       text: str | None = None) -> ProfileProposal:
