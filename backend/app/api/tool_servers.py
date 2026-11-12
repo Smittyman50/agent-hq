@@ -27,6 +27,8 @@ class ToolServerIn(BaseModel):
     # {tool name or "*": "allow" | "ask" | "block"}. None (left out) keeps the current rules.
     approval_rules: dict[str, str] | None = None
     eval_live: dict[str, bool] | None = None  # tools safe to run for real in tests
+    shown_tools: list[str] | None = None  # None (left out) keeps the current list; [] = all
+    read_only: bool = False
     enabled: bool = True
 
 
@@ -41,13 +43,17 @@ def list_servers(s: Session = Depends(get_session)):
     return s.exec(select(ToolServer).order_by(ToolServer.name)).all()
 
 
+def _shown(names: list[str] | None) -> list[str]:
+    return sorted({x.strip() for x in names or [] if x.strip()})
+
+
 @router.post("", response_model=ToolServer, status_code=201)
 def create_server(body: ToolServerIn, s: Session = Depends(get_session)):
     if s.exec(select(ToolServer).where(ToolServer.name == body.name)).first():
         raise HTTPException(409, f"a tool server named '{body.name}' already exists")
     _check_rules(body.approval_rules)
     t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {},
-                      "eval_live": body.eval_live or {}})
+                      "eval_live": body.eval_live or {}, "shown_tools": _shown(body.shown_tools)})
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -60,12 +66,14 @@ def update_server(server_id: str, body: ToolServerIn, s: Session = Depends(get_s
     if not t:
         raise HTTPException(404)
     _check_rules(body.approval_rules)
-    for k, v in body.model_dump(exclude={"approval_rules", "eval_live"}).items():
+    for k, v in body.model_dump(exclude={"approval_rules", "eval_live", "shown_tools"}).items():
         setattr(t, k, v)
     if body.approval_rules is not None:
         t.approval_rules = {k: v for k, v in body.approval_rules.items() if v}
     if body.eval_live is not None:
         t.eval_live = {k: bool(v) for k, v in body.eval_live.items()}
+    if body.shown_tools is not None:
+        t.shown_tools = _shown(body.shown_tools)
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -99,11 +107,12 @@ async def probe_server(server_id: str, s: Session = Depends(get_session)):
         for x in tools:
             hint = approvals.suggested(getattr(x, "meta", None))
             ann = getattr(x, "annotations", None)
-            read_only = bool(ann and getattr(ann, "readOnlyHint", None))
+            read_only = bool(ann and getattr(ann, "readOnlyHint", None)) or t.read_only
             out.append({"name": x.name, "description": x.description, "suggested_approval": hint,
                         "approval": approvals.mode_for(t.approval_rules, x.name, getattr(x, "meta", None)),
                         "read_only_hint": read_only,
-                        "safe_in_tests": (t.eval_live or {}).get(x.name, read_only)})
+                        "safe_in_tests": (t.eval_live or {}).get(x.name, read_only),
+                        "shown": not t.shown_tools or x.name in t.shown_tools})
         return out
     except Exception as e:
         raise HTTPException(502, f"could not reach {t.name}: {e}") from e

@@ -1,0 +1,68 @@
+# What lab tools instances can see and act on (docs/labtools.md). Shared by every instance.
+# No secrets here: each instance's credentials are in deploy/lab/<instance>.env.
+#   cp deploy/lab/inventory.example.yaml deploy/lab/inventory.yaml   # then edit
+#
+# HTTPS is verified against deploy/caddy/root_ca.crt (your step-ca). For a device with a
+# self-signed certificate, set `verify_tls: false` on it, or the path of its CA file.
+
+# MikroTik RouterOS 7 devices (REST API: enable the www-ssl service).
+#   expected_up:          interfaces that should always be up (uplinks, trunks, servers);
+#                         ports that have been up since boot count as expected too.
+#   protected_interfaces: write instances may never disable or bounce these (uplinks, management).
+mikrotik:
+  - name: crs-core
+    host: crs-core.home.arpa
+    role: core switch / router
+    expected_up: [sfp-sfpplus1, sfp-sfpplus2]
+    protected_interfaces: [sfp-sfpplus1, sfp-sfpplus2, ether1]
+  - name: hap-office
+    host: hap-office.home.arpa
+    role: access point
+    protected_interfaces: [ether1]
+
+# Switches read over SNMP (read-only). version: 2c (SNMP_COMMUNITY) or 3 (SNMP_USER ...).
+snmp:
+  - name: usw-garage
+    host: usw-garage.home.arpa
+    kind: ubiquiti
+    role: garage access switch
+  - name: gs308e-desk
+    host: gs308e-desk.home.arpa
+    kind: netgear
+    version: 2c
+
+technitium:
+  url: https://dns.home.arpa:53443     # web console / API
+  dns_server: 192.168.1.53             # where dns_lookup sends queries
+
+kea:
+  url: http://dhcp.home.arpa:8000      # Kea Control Agent
+
+proxmox:
+  url: https://pve1.home.arpa:8006     # any node; the API covers the whole cluster
+
+truenas:
+  url: wss://nas.home.arpa/api/current
+
+prometheus:
+  url: http://prometheus.home.arpa:9090
+  alertmanager_url: http://alertmanager.home.arpa:9093
+
+zabbix:
+  url: https://zabbix.home.arpa        # api_jsonrpc.php is added
+
+graylog:
+  url: https://graylog.home.arpa       # the web interface address; /api is added
+
+# Hosts the ssh integration may reach, and the only services / containers a write
+# instance may restart. `user` defaults to LABTOOLS_SSH_USER (agent-hq).
+ssh_hosts:
+  - name: dhcp
+    host: dhcp.home.arpa
+    services: [isc-kea-dhcp4-server, isc-kea-ctrl-agent]
+  - name: dns
+    host: dns.home.arpa
+    services: [dns]                    # Technitium's systemd unit
+  - name: graylog
+    host: graylog.home.arpa
+    containers: [graylog, opensearch, mongodb]

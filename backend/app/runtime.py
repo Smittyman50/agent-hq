@@ -274,7 +274,9 @@ def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | Non
         if wrap is not None:
             ts = wrap(ts, srv)
         # ahq_* tools are for Agent HQ itself (e.g. moving attachments to a workbench).
-        ts = ts.filtered(lambda ctx, td: not td.name.startswith("ahq_"))
+        shown = set(srv.shown_tools or [])
+        ts = ts.filtered(lambda ctx, td, shown=shown: not td.name.startswith("ahq_")
+                         and (not shown or td.name in shown))
         out.append((PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts,
                     srv.id if srv.desktop else None))
     return out
@@ -484,6 +486,7 @@ class ApprovalToolset(WrapperToolset):
     server_id: str = ""
     server_name: str = ""
     rules: dict[str, str] | None = None
+    read_only: bool = False  # you marked the whole server read-only
 
     eval_live: dict[str, bool] | None = None
 
@@ -491,8 +494,8 @@ class ApprovalToolset(WrapperToolset):
         metadata = (getattr(tool, "tool_def", None) and tool.tool_def.metadata) or {}
         meta = metadata.get("meta")
         mode = approvals.mode_for(self.rules, name, meta)
+        read_only = self.read_only or bool((metadata.get("annotations") or {}).get("readOnlyHint"))
         if ctx.deps.replay is not None:  # a test run: only Allow + safe-in-tests tools run for real
-            read_only = bool((metadata.get("annotations") or {}).get("readOnlyHint"))
             live = (self.eval_live or {}).get(name, read_only)
             if mode != "allow" or not live or not ctx.deps.replay.live_allowed:
                 return ctx.deps.replay.not_available(name, tool_args, mode, live)
@@ -502,7 +505,7 @@ class ApprovalToolset(WrapperToolset):
             return (f"Not allowed: the user has blocked {name} on {self.server_name}. "
                     "Don't try to do the same thing another way; say what you needed it for.")
         reason = ""
-        if mode == "allow" and ctx.deps.cautious and not (metadata.get("annotations") or {}).get("readOnlyHint"):
+        if mode == "allow" and ctx.deps.cautious and not read_only:
             mode = "ask"
             reason = "This work was started by a webhook, so tools that can change things ask first."
         if mode == "ask" and not approvals.remembered(ctx.deps.agent_id, ctx.deps.thread_id,
@@ -1901,7 +1904,7 @@ class Runtime:
 
     def _with_approvals(self, ts, srv: ToolServer):
         return ApprovalToolset(ts, rt=self, server_id=srv.id, server_name=srv.name,
-                               rules=dict(srv.approval_rules or {}),
+                               rules=dict(srv.approval_rules or {}), read_only=bool(srv.read_only),
                                eval_live=dict(srv.eval_live or {}))
 
     async def ask_approval(self, deps: RunDeps, server_id: str, server_name: str, tool: str,

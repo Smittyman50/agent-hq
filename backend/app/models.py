@@ -188,6 +188,12 @@ class ToolServer(SQLModel, table=True):
     # ({"list_vms": true}); unset tools follow the server's read-only hint. Only tools set to
     # Allow ever run in a test.
     eval_live: dict[str, bool] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Tools agents see (server's own names); empty = all. Keeps big servers usable by small
+    # local models: hidden tools aren't listed to the model at all (a blocked one still is).
+    shown_tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # You know this server only reads (e.g. gitea-mcp --read-only): every tool counts as
+    # read-only, as if it carried readOnlyHint (webhook caution, Safe in tests).
+    read_only: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
 

@@ -81,6 +81,10 @@ services:
     # volumes:
     #   - ./deploy/caddy/root_ca.crt:/certs/root_ca.crt:ro
 
+  # Lab tools (docs/labtools.md): MCP servers for your lab's systems, as many instances as you
+  # like, each with its own integrations, read or write access and credentials. They live in
+  # an overlay: docker compose -f docker-compose.yml -f deploy/lab/compose.example.yml up -d
+
   # HTTPS for the UI (certificate from your step-ca) and sign-in-protected desktop viewers.
   # Setup: deploy/caddy/Caddyfile and the README's "HTTPS" section.
   caddy:

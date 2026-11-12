@@ -42,6 +42,8 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
           <label class="check"><input type="checkbox" name="prefix" [(ngModel)]="d.prefix_tools"> Prefix tool names</label>
           <label class="check" title="Its tools pause while you have control of the desktop, and agents using it can ask you to take over">
             <input type="checkbox" name="desktop" [(ngModel)]="d.desktop"> Controls an agent desktop</label>
+          <label class="check" title="Every tool counts as read-only (as if the server marked it so): webhook-started work doesn't ask before them, and they start ticked as safe in tests. Only for servers you know can't change anything, e.g. gitea-mcp --read-only.">
+            <input type="checkbox" name="readonly" [(ngModel)]="d.read_only"> Only reads</label>
           <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>
         </div>
         @if (error()) { <p class="error">{{ error() }}</p> }
@@ -58,13 +60,15 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
             OK (in the chat, the Requests inbox and on MQTT). <b>Block</b> refuses it. Your rules here override
             what the server suggests. Sub-agents follow the same rules.</p>
           <table class="grid approvals">
-            <tr><th>Tool</th><th>Approval</th><th title="In a test run (Settings → Evals), may this tool run for real when the test has no recorded result for the call? Only Allow tools ever do.">Safe in tests</th><th></th></tr>
-            <tr><td><i>Every tool without its own rule</i></td>
+            <tr><th title="Listed to agents. Untick tools agents never need: small local models choose better from a short list. Hidden tools aren't offered at all.">Shown</th><th>Tool</th><th>Approval</th><th title="In a test run (Settings → Evals), may this tool run for real when the test has no recorded result for the call? Only Allow tools ever do.">Safe in tests</th><th></th></tr>
+            <tr><td></td><td><i>Every tool without its own rule</i></td>
               <td><select [name]="'rule_all'" [ngModel]="d.approval_rules['*'] ?? ''" (ngModelChange)="setRule(d, '*', $event)">
                 <option value="">Server's suggestion, else allow</option>
                 @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td><td></td></tr>
             @for (t of tools(); track t.name) {
-              <tr><td><code>{{ t.name }}</code><div class="muted small">{{ t.description | slice:0:140 }}</div></td>
+              <tr><td class="center"><input type="checkbox" [name]="'shown_' + t.name" [checked]="isShown(d, t)"
+                  (change)="setShown(d, t, $any($event.target).checked)"></td>
+                <td><code>{{ t.name }}</code><div class="muted small">{{ t.description | slice:0:140 }}</div></td>
                 <td><select [name]="'rule_' + t.name" [ngModel]="d.approval_rules[t.name] ?? ''" (ngModelChange)="setRule(d, t.name, $event)">
                   <option value="">Default ({{ label(defaultFor(d, t)) }})</option>
                   @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td>
@@ -75,12 +79,14 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
                   @if (t.read_only_hint) { read-only }</td></tr>
             }
             @for (name of ruleOnly(d); track name) {
-              <tr><td><code>{{ name }}</code> <span class="muted small">(not offered right now)</span></td>
+              <tr><td></td><td><code>{{ name }}</code> <span class="muted small">(not offered right now)</span></td>
                 <td><select [name]="'rule_' + name" [ngModel]="d.approval_rules[name]" (ngModelChange)="setRule(d, name, $event)">
                   <option value="">Remove rule</option>
                   @for (m of modes; track m.value) { <option [value]="m.value">{{ m.label }}</option> }</select></td><td></td><td></td></tr>
             }
           </table>
+          <p class="hint inline-hint"><b>Shown</b>: {{ shownCount(d) }} of {{ tools().length }} tools are listed to agents.
+            All ticked = every tool, including ones the server adds later.</p>
           <p class="hint inline-hint"><b>Safe in tests</b>: when a test case (Settings → Evals) has no recorded result for a
             call, a ticked tool set to Allow runs for real; others answer “not available in a test run”. Tools the
             server marks read-only start ticked.</p>
@@ -118,6 +124,14 @@ export class ToolsPage implements OnInit {
     return this.modes.find(x => x.value === m)?.label ?? 'Allow';
   }
 
+  isShown(d: ToolServer, t: ProbedTool) { return !d.shown_tools?.length || d.shown_tools.includes(t.name); }
+  shownCount(d: ToolServer) { return this.tools().filter(t => this.isShown(d, t)).length; }
+  setShown(d: ToolServer, t: ProbedTool, on: boolean) {
+    const all = this.tools().map(x => x.name);
+    const cur = new Set(d.shown_tools?.length ? d.shown_tools : all);
+    if (on) cur.add(t.name); else cur.delete(t.name);
+    d.shown_tools = all.every(n => cur.has(n)) ? [] : [...cur].sort();
+  }
   safe(d: ToolServer, t: ProbedTool) { return d.eval_live?.[t.name] ?? !!t.read_only_hint; }
   setSafe(d: ToolServer, t: ProbedTool, on: boolean) {
     const next = { ...(d.eval_live ?? {}) };

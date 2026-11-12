@@ -1,0 +1,80 @@
+# Lab tools instances (docs/labtools.md). An example: rename, merge or split instances to
+# fit how you want to give tools to your agents. Run alongside the main file:
+#   docker compose -f docker-compose.yml -f deploy/lab/compose.example.yml up -d --build
+# Each instance listens on http://<service name>:8820/mcp; register it under Settings ->
+# Tools (HTTP, untick "Prefix tool names") and tick it on the agents that should have it.
+#
+# Every instance needs deploy/lab/inventory.yaml (copy inventory.example.yaml) and its own
+# deploy/lab/<service name>.env with credentials (copy instance.env.example).
+
+x-labtools: &labtools
+  build: ./labtools
+  restart: unless-stopped
+  volumes:
+    - ./deploy/lab/inventory.yaml:/etc/labtools/inventory.yaml:ro
+    - ./deploy/caddy/root_ca.crt:/etc/labtools/root_ca.crt:ro   # your step-ca root
+  environment: &labtools-env
+    LAB_CA_FILE: /etc/labtools/root_ca.crt
+
+services:
+  # Read-only: network devices, DNS, DHCP and probes.
+  lab-network:
+    <<: *labtools
+    env_file: [./deploy/lab/lab-network.env]
+    environment:
+      <<: *labtools-env
+      LABTOOLS_NAME: lab-network
+      LABTOOLS_INTEGRATIONS: mikrotik,snmp,dns,dhcp,probes
+      LABTOOLS_ACCESS: read
+
+  # Read-only: hypervisors and storage.
+  lab-systems:
+    <<: *labtools
+    env_file: [./deploy/lab/lab-systems.env]
+    environment:
+      <<: *labtools-env
+      LABTOOLS_NAME: lab-systems
+      LABTOOLS_INTEGRATIONS: proxmox,truenas
+      LABTOOLS_ACCESS: read
+
+  # Read-only: monitoring and logs.
+  lab-monitoring:
+    <<: *labtools
+    env_file: [./deploy/lab/lab-monitoring.env]
+    environment:
+      <<: *labtools-env
+      LABTOOLS_NAME: lab-monitoring
+      LABTOOLS_INTEGRATIONS: zabbix,prometheus,graylog
+      LABTOOLS_ACCESS: read
+
+  # Read and write: every integration, with narrow write credentials. Each write tool asks
+  # you first in Agent HQ. Give it only to the agent(s) you want applying fixes.
+  lab-ops:
+    <<: *labtools
+    env_file: [./deploy/lab/lab-ops.env]
+    volumes:
+      - ./deploy/lab/inventory.yaml:/etc/labtools/inventory.yaml:ro
+      - ./deploy/caddy/root_ca.crt:/etc/labtools/root_ca.crt:ro
+      - ./deploy/lab/ssh:/etc/labtools/ssh:ro       # id_ed25519 + known_hosts
+    environment:
+      <<: *labtools-env
+      LABTOOLS_NAME: lab-ops
+      LABTOOLS_INTEGRATIONS: all
+      LABTOOLS_ACCESS: write
+      LABTOOLS_SSH_KEY: /etc/labtools/ssh/id_ed25519
+      LABTOOLS_SSH_KNOWN_HOSTS: /etc/labtools/ssh/known_hosts
+
+  # Gitea's official MCP server, read-only (-r hides every write tool), with only the
+  # tools listed in GITEA_TOOLS. Register it with "Only reads" ticked.
+  gitea-mcp:
+    image: docker.gitea.com/gitea-mcp-server
+    restart: unless-stopped
+    command: ["-t", "http", "--port", "8080"]
+    environment:
+      GITEA_HOST: ${GITEA_URL:-}
+      GITEA_ACCESS_TOKEN: ${GITEA_READ_TOKEN:-}
+      GITEA_READONLY: "true"
+      GITEA_TOOLS: actions_run_read,issue_read,list_issues,list_pull_requests,pull_request_read,search_repos
+      SSL_CERT_FILE: /etc/ssl/certs/root_ca.crt
+    volumes:
+      - ./deploy/caddy/root_ca.crt:/etc/ssl/certs/root_ca.crt:ro

@@ -1,0 +1,4 @@
+# Your inventory and each instance's credentials stay local.
+inventory.yaml
+*.env
+!instance.env.example

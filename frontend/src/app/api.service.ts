@@ -126,6 +126,8 @@ export interface ToolServer {
   enabled: boolean;
   approval_rules: Record<string, ApprovalMode>;
   eval_live?: Record<string, boolean>;
+  shown_tools?: string[];                    // empty = all
+  read_only?: boolean;
 }
 
 export type ApprovalMode = 'allow' | 'ask' | 'block';
@@ -135,6 +137,7 @@ export interface ProbedTool {
   approval: ApprovalMode;                    // what applies now
   read_only_hint?: boolean;                  // the server says it only reads
   safe_in_tests?: boolean;                   // may run for real in an eval
+  shown?: boolean;                           // listed to agents
 }
 export interface ToolApproval {
   id: string; agent_id: string; agent_name: string; thread_id: string; thread_title: string;

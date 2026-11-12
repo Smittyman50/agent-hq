@@ -221,6 +221,16 @@ Replies: `202` with `{"delivery": ..., "status": ..., "topic": ..., "queued_jobs
 
 **Cleanup.** Deliveries older than `AHQ_WEBHOOK_KEEP_DAYS` (7) are removed hourly, on top of the per-hook limit.
 
+### Lab tools: MCP servers for your homelab
+
+`labtools/` is one image of MCP servers for common homelab systems: MikroTik, SNMP switches, Technitium DNS, Kea DHCP, Proxmox VE, TrueNAS SCALE, Zabbix, Prometheus/Alertmanager, Graylog, allow-listed SSH restarts, and ping/port probes. Run as many instances as you like. Each picks its **integrations** (`LABTOOLS_INTEGRATIONS`), **read or write access** (`LABTOOLS_ACCESS`) and **its own credentials**, so you decide which agents can see what and which can change anything.
+
+Read tools are marked read-only. Write tools are typed and narrow, ask you first, and respect guards from the inventory: protected interfaces, SSH allow-lists, bounded silences, no node actions. [docs/labtools.md](docs/labtools.md) covers integrations, configuration and credentials. [docs/lab-alerts.md](docs/lab-alerts.md) covers getting each system's alerts into webhooks. [docs/examples/homelab-crew.md](docs/examples/homelab-crew.md) is a worked example: two read-only watchers and a fixer.
+
+Two tool-server settings help with any MCP server, yours or someone else's (Settings → Tools):
+- **Shown** per tool: untick tools agents never need. Hidden tools aren't listed to the model at all, which matters for small local models; a *blocked* tool is still listed, it just can't run.
+- **Only reads**: every tool of the server counts as read-only, as if it carried `readOnlyHint`, so webhook-started work doesn't ask before using it. Only tick it for servers you know can't change anything, e.g. `gitea-mcp -r`.
+
 ## Quick start (single machine, dev)
 
 You need Postgres, Valkey and (optionally) MQTT. The simplest route is the infra compose file, which always starts Postgres and Valkey:
@@ -274,6 +284,7 @@ Without `AHQ_DB_URL`, the system falls back to SQLite files in `AHQ_DATA_DIR`. T
 
 ```bash
 cd backend && pytest
+cd labtools && pip install -r requirements-dev.txt && pytest   # the lab tool servers
 ```
 
 The tests use scripted fake models (no LLM needed), a real `valkey-server` or `redis-server` started on a free port, an in-process MQTT broker, and a throwaway Postgres cluster when Postgres is installed. They cover:
@@ -998,13 +1009,17 @@ frontend/src/app/    app shell (sidebar of conversations), chat, and the Setting
                      Scheduler; icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
+labtools/            lab tools image: integrations composed per instance (:8820; docs/labtools.md)
+docs/                labtools.md, lab-alerts.md (senders -> webhooks), examples/homelab-crew.md
+deploy/lab/          compose overlay example, inventory and per-instance credentials templates,
+                     Zabbix media type script, SSH key folder
 mqttpublisher/       outbound MQTT as an MCP server (:8810): agent status and allow-listed publishes
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 deploy/caddy/        HTTPS (step-ca ACME) and sign-in-protected desktop viewers
 deploy/egress/       the workbenches' allowlisting egress proxy (PyPI by default)
 workbench/           an agent's workbench: Python venv, files, shell, saved scripts (MCP)
 deploy/searxng/      a private SearXNG for the web reader's search (JSON on, limiter off)
-examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON
+examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON; homelab-crew.json (a worked example)
 ```
 
 ## Next steps worth building

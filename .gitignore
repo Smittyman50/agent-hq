@@ -14,3 +14,5 @@ deploy/infra/postgres/
 deploy/infra/valkey/
 deploy/infra/mosquitto/data/
 deploy/infra/mosquitto/config/passwd
+deploy/lab/inventory.yaml
+.pytest_cache/
