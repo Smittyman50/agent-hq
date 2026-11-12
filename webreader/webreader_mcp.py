@@ -153,7 +153,7 @@ def _discover_feed(html: str, base: str) -> str | None:
     return None
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True})
 async def read_feed(url: str, limit: int = 10) -> dict[str, Any]:
     """Read an RSS or Atom feed: the newest items with title, link, date and summary.
 
@@ -186,7 +186,7 @@ async def read_feed(url: str, limit: int = 10) -> dict[str, Any]:
     return {"feed": parsed.feed.get("title", ""), "url": url, "items": items}
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True})
 async def fetch_page(url: str, offset: int = 0) -> dict[str, Any]:
     """Read a web page as clean Markdown text: the article or documentation, without
     menus, ads or scripts. Long pages come back in parts: if `more` is true, call again
@@ -274,7 +274,7 @@ async def search_web(query: str, limit: int = 8, time_range: str = "", categorie
 
 
 if SEARXNG_URL:
-    mcp.tool(search_web)
+    mcp.tool(search_web, annotations={"readOnlyHint": True})
 
 
 if __name__ == "__main__":

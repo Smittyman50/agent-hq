@@ -1,11 +1,11 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, DeliveryDetail, DeliveryReply, DeliveryStatus, DeliverySummary, EventOutcome, Subscription, Thread, Webhook, blankSubscription, blankWebhook } from './api.service';
+import { AgentDef, Api, DeliveryDetail, DeliveryReply, DeliveryStatus, DeliverySummary, EventOutcome, Subscription, Thread, Webhook, WebhookSettings, blankSubscription, blankWebhook } from './api.service';
 
 const STATUS_LABEL: Record<DeliveryStatus, string> = {
   accepted: 'accepted', no_match: 'no match', cooldown: 'cooldown', duplicate: 'duplicate',
-  rejected: 'rejected', too_large: 'too large',
+  rejected: 'rejected', too_large: 'too large', blocked: 'blocked address', rate_limited: 'rate limited',
 };
 
 @Component({
@@ -104,6 +104,12 @@ const STATUS_LABEL: Record<DeliveryStatus, string> = {
           <input name="hfield" [(ngModel)]="h.event_field" placeholder="action"></label>
         <label>Delivery ID header <small>a repeat of the same ID within 24 hours is logged as a duplicate and not run; empty = {{ h.auth_mode === 'gitea' ? 'X-Gitea-Delivery' : 'no duplicate check' }}</small>
           <input name="hdelivery" [(ngModel)]="h.delivery_header" [placeholder]="h.auth_mode === 'gitea' ? 'X-Gitea-Delivery' : 'X-Request-Id'"></label>
+        <label>Accept from <small>addresses or networks, comma-separated; empty = {{ cfg()?.default_networks || 'your LAN' }}</small>
+          <input name="hnets" [(ngModel)]="h.allowed_networks" placeholder="e.g. 192.168.1.10 or 192.168.10.0/24"></label>
+        <label>Requests per minute <small>more get 429; 0 = no limit</small>
+          <input name="hrate" type="number" min="0" [(ngModel)]="h.rate_per_minute" [placeholder]="'' + (cfg()?.default_rate_per_minute ?? 60)"></label>
+        <label class="check"><input type="checkbox" name="hcautious" [(ngModel)]="h.cautious">
+          <span>Ask before tools that change things <small>turns this hook starts, and work they delegate, ask before any tool not marked read-only, even where your rules say allow</small></span></label>
         <label class="check"><input type="checkbox" name="henabled" [(ngModel)]="h.enabled"> Enabled</label>
         @if (error()) { <p class="error">{{ error() }}</p> }
         <div class="actions">
@@ -115,6 +121,10 @@ const STATUS_LABEL: Record<DeliveryStatus, string> = {
           }
         </div>
 
+        @if (cfg() && !cfg()!.encryption) {
+          <p class="hint" style="padding: 10px 0 0"><span class="pill cooldown" style="margin-left: 0">not encrypted</span> Webhook secrets are stored as they are.
+            Set <code>AHQ_SECRET_KEY</code> in <code>.env</code> and restart to encrypt them.</p>
+        }
         @if (secret(); as s) {
           <h3>Secret</h3>
           <p class="hint inline-hint">Copy it now: it isn't shown again. Rotate to get a new one.</p>
@@ -224,6 +234,7 @@ export class EventsPage implements OnInit {
   hookTestEvent = 'test';
   hookTestBody = '';
   respectCooldown = false;
+  cfg = signal<WebhookSettings | null>(null);
 
   enabledAgents = computed(() => this.agents().filter(a => a.enabled));
   agentThreads = computed(() => this.threads().filter(t => t.agent_id === this.draft()?.agent_id));
@@ -237,6 +248,7 @@ export class EventsPage implements OnInit {
   load() {
     this.api.subscriptions().subscribe(s => this.subs.set(s));
     this.api.webhooks().subscribe(h => this.hooks.set(h));
+    this.api.webhookSettings().subscribe(c => this.cfg.set(c));
   }
   agentName(id: string) { return this.agents().find(a => a.id === id)?.name ?? '—'; }
   open(threadId: string) { this.router.navigate(['/chat', threadId]); }

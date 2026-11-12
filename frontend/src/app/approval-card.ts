@@ -21,6 +21,7 @@ import { Workspace } from './workspace';
           <span class="spacer"></span>
           <span class="muted small">{{ r.created_at | date:'MMM d, h:mm a' }}</span>
         </div>
+        @if (r.reason) { <div class="muted small">{{ r.reason }}</div> }
         @for (a of shown(); track a.key) {
           <div class="arg">
             <span class="k">{{ a.key }}</span>

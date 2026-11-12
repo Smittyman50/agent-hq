@@ -527,6 +527,8 @@ class ToolApproval(SQLModel, table=True):
     # pending | approved | denied | expired
     status: str = Field(default="pending", index=True)
     note: str = Field(default="", sa_column=Column(Text, default=""))
+    # Why it asks when your rules would allow it, e.g. the work was started by a webhook.
+    reason: str = ""
     # On approval: don't ask again for this tool, agent and conversation until then.
     remember_until: datetime | None = None
     message_id: str | None = None
@@ -853,6 +855,13 @@ class WebhookEndpoint(SQLModel, table=True):
     # Header carrying the sender's delivery ID, for the duplicate check. Empty = the
     # preset's (X-Gitea-Delivery for gitea); token hooks without one aren't checked.
     delivery_header: str = ""
+    # Comma-separated CIDRs the sender must come from; empty = AHQ_WEBHOOK_NETWORKS (your LAN).
+    allowed_networks: str = ""
+    # Requests per minute before 429; 0 = no limit.
+    rate_per_minute: int = 60
+    # Turns this hook starts (and work they delegate) ask before using any tool that isn't
+    # marked read-only, even where your approval rules say allow.
+    cautious: bool = True
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
     last_delivery_at: datetime | None = None
@@ -866,7 +875,7 @@ class WebhookDelivery(SQLModel, table=True):
     id: str = Field(default_factory=_id, primary_key=True)
     hook_id: str = Field(index=True)
     at: datetime = Field(default_factory=_now, index=True)
-    # accepted | no_match | cooldown | duplicate | rejected | too_large
+    # accepted | no_match | cooldown | duplicate | rejected | too_large | blocked | rate_limited
     status: str = Field(index=True)
     topic: str = ""
     event: str = ""

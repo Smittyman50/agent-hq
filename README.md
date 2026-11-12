@@ -206,7 +206,20 @@ Replies: `202` with `{"delivery": ..., "status": ..., "topic": ..., "queued_jobs
 
 **Send test and Replay.** *Send a test delivery* routes an event name and body as the hook would, without a signature since you're signed in. *Replay* sends a logged delivery through again as a new row linked to the original. Both skip the duplicate check and, unless you tick *Respect cooldowns*, the cooldown. *Use as test delivery* copies a logged body into the test form to edit.
 
-Webhooks are meant for the LAN. Don't expose `/hooks/*` to the internet. Secrets are stored readable in the database (HMAC checks need them), like provider API keys.
+**Safety.** Webhooks are meant for the LAN. Don't expose `/hooks/*` to the internet. Each delivery passes these checks in order:
+
+1. **Address.** The sender must be in the hook's **Accept from** networks, or, if that's empty, in `AHQ_WEBHOOK_NETWORKS` (private and loopback ranges, i.e. your LAN). Otherwise it gets `403`, logged as *blocked address*. The address is the first `X-Forwarded-For` hop, which Caddy sets, so keep the API's own port off the network (`AHQ_HTTP_BIND`); otherwise a sender could claim any address.
+2. **Rate.** Each hook accepts **Requests per minute** (60 for new hooks, `AHQ_WEBHOOK_RATE_PER_MINUTE`; 0 = no limit). After that it answers `429`, and only the first refusal each minute is logged.
+3. **Size, then signature or token**, as above.
+4. **Duplicate check**, then routing.
+
+**Webhook turns ask before changing things.** A webhook body carries text other people wrote: an issue title, a commit message, an alert from a device. It can try to give your agents instructions ("ignore previous instructions and restart…"). The default prompt marks the body as data, but the real safety net is your tools. With **Ask before tools that change things** on (the default), turns a hook starts, the work they delegate, and the report-backs that follow ask before any tool not marked read-only (`readOnlyHint`), even where your rules say *allow*. The approval card says it's asking because a webhook started the work. Your *block* rules still win, read-only tools (listing VMs, reading pages, searching) still just run, and "approve, don't ask again" works as usual. Turn it off only for hooks whose senders you trust completely.
+
+**Secrets at rest.** Set `AHQ_SECRET_KEY` (any long random string) and hook secrets are encrypted in the database. Existing ones are encrypted at the next start. Keep the key safe and don't change it: if it changes, hooks answer `503` and their log says the secret can't be read; rotate their secrets to fix it. Without a key, secrets are stored as they are, and the Events page says so.
+
+**Tracing.** Each delivery is a `webhook <name>` span in Phoenix, with its topic, status and body. The turns it starts, and everything they delegate, continue that trace.
+
+**Cleanup.** Deliveries older than `AHQ_WEBHOOK_KEEP_DAYS` (7) are removed hourly, on top of the per-hook limit.
 
 ## Quick start (single machine, dev)
 
@@ -450,6 +463,7 @@ A rule on `*` covers every tool on that server that doesn't have its own rule. A
 - **While it waits:** the agent's worker slot is freed for other work.
 - **If you don't decide** within `AHQ_APPROVAL_TIMEOUT_MINUTES` (default 30), the call isn't made, and the agent is told it's waiting for approval.
 - **Sub-agents** follow the same rules as everyone else.
+- **Work started by a webhook** asks before any tool not marked read-only, even where the rule says allow (see [Inbound webhooks](#inbound-webhooks)).
 
 The same table has a **Safe in tests** column. It decides which tools may run for real in an eval when a test case has no recording for the call. Tools the server marks read-only (`readOnlyHint`) start ticked. Only tools set to Allow ever run in a test.
 
@@ -953,7 +967,8 @@ backend/app/
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
   mqtt_bridge.py     MQTT subscriptions -> turn jobs (also routes webhook events)
-  webhooks.py        inbound webhooks: sender checks (Gitea HMAC, token), event topics
+  webhooks.py        inbound webhooks: sender checks (Gitea HMAC, token), allowed networks, rate
+                     limits, secrets encrypted at rest, event topics
   vision.py          look / locate / click_on via a per-agent vision model; questions about attached images
   attachments.py     chat attachments: storage, text, manifests, images to models, workbench transfer
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up

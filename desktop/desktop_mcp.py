@@ -61,7 +61,7 @@ def _pt(x: int, y: int) -> tuple[str, str]:
     return str(round(x * _scale)), str(round(y * _scale))
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True})
 def screenshot() -> Image:
     """Capture the whole screen. Returns a PNG, scaled down to at most 1280px wide."""
     global _scale

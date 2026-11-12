@@ -141,6 +141,7 @@ export interface ToolApproval {
   job_id: string | null; server_id: string; server_name: string; tool: string;
   args: Record<string, unknown>; status: 'pending' | 'approved' | 'denied' | 'expired';
   note: string; remember_until: string | null; created_at: string; decided_at: string | null;
+  reason?: string;
 }
 
 export interface Thread { id: string; agent_id: string; title: string; created_at: string; }
@@ -245,12 +246,16 @@ export interface Webhook {
   event_header: string;
   event_field: string;
   delivery_header: string;
+  allowed_networks: string;
+  rate_per_minute: number | null;
+  cautious: boolean;
   enabled: boolean;
   created_at?: string;
   last_delivery_at?: string | null;
   url?: string;
   topic_prefix?: string;
   has_secret?: boolean;
+  encrypted?: boolean;
   secret?: string | null;  // only right after create or rotate
 }
 
@@ -259,7 +264,13 @@ export interface EventOutcome {
   job_id: string | null; thread_id: string | null; missing: string[]; prompt: string;
 }
 
-export type DeliveryStatus = 'accepted' | 'no_match' | 'cooldown' | 'duplicate' | 'rejected' | 'too_large';
+export type DeliveryStatus = 'accepted' | 'no_match' | 'cooldown' | 'duplicate' | 'rejected' | 'too_large'
+  | 'blocked' | 'rate_limited';
+
+export interface WebhookSettings {
+  encryption: boolean; default_networks: string; default_rate_per_minute: number;
+  keep_days: number; keep_per_hook: number; dedupe_hours: number; max_body: number;
+}
 
 export interface DeliverySummary {
   id: string; hook_id: string; hook: string; at: string; status: DeliveryStatus;
@@ -277,7 +288,8 @@ export interface DeliveryReply {
 }
 
 export function blankWebhook(): Webhook {
-  return { name: '', source: '', auth_mode: 'token', event_header: '', event_field: '', delivery_header: '', enabled: true };
+  return { name: '', source: '', auth_mode: 'token', event_header: '', event_field: '', delivery_header: '',
+    allowed_networks: '', rate_per_minute: null, cautious: true, enabled: true };
 }
 
 export interface WorkerInfo { name: string; pools: string[]; concurrency: number; busy: number; seen: string; }
@@ -631,6 +643,7 @@ export class Api {
   }
   deleteWebhook(id: string) { return this.http.delete(`/api/webhooks/${id}`); }
   rotateWebhook(id: string) { return this.http.post<Webhook>(`/api/webhooks/${id}/rotate`, {}); }
+  webhookSettings() { return this.http.get<WebhookSettings>('/api/webhooks/settings'); }
   hookDeliveries(id: string, limit = 50) {
     return this.http.get<DeliverySummary[]>(`/api/webhooks/${id}/deliveries`, { params: { limit } });
   }

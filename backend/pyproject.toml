@@ -28,6 +28,7 @@ dependencies = [
   # Knowledge library: PDF, Word, PowerPoint, Excel and HTML to Markdown; note frontmatter
   "markitdown[pdf,docx,pptx,xlsx]>=0.1.2",
   "pyyaml>=6",
+  "cryptography>=42",           # webhook secrets encrypted at rest (AHQ_SECRET_KEY)
 ]
 
 [project.optional-dependencies]

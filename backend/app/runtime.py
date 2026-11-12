@@ -131,6 +131,9 @@ class RunDeps:
     replay: Any = None
     # Files given with this turn or task (Attachment IDs), see app/attachments.py.
     attachment_ids: list[str] = field(default_factory=list)
+    # Work started by an outside event (a webhook): tools that aren't marked read-only ask
+    # first, even where the rules say allow. Passed on to delegated work and report-backs.
+    cautious: bool = False
 
 
 def _brief(value: Any, n: int = 300) -> str:
@@ -498,10 +501,14 @@ class ApprovalToolset(WrapperToolset):
         if mode == "block":
             return (f"Not allowed: the user has blocked {name} on {self.server_name}. "
                     "Don't try to do the same thing another way; say what you needed it for.")
+        reason = ""
+        if mode == "allow" and ctx.deps.cautious and not (metadata.get("annotations") or {}).get("readOnlyHint"):
+            mode = "ask"
+            reason = "This work was started by a webhook, so tools that can change things ask first."
         if mode == "ask" and not approvals.remembered(ctx.deps.agent_id, ctx.deps.thread_id,
                                                       self.server_id, name):
             decision = await self.rt.ask_approval(ctx.deps, self.server_id, self.server_name,
-                                                  name, tool_args)
+                                                  name, tool_args, reason=reason)
             if decision["status"] != "approved":
                 return decision["message"]
         return await super().call_tool(name, tool_args, ctx, tool)
@@ -691,8 +698,10 @@ class Runtime:
         thread_id = config["configurable"]["thread_id"]
         agent = load_agent(state["agent_id"])
         history = ModelMessagesTypeAdapter.validate_python(state.get("history") or [])
+        job = load_job(state["job_id"]) if state.get("job_id") else None
         deps = RunDeps(thread_id=thread_id, agent_id=agent.id, depth=0, chain=[agent.id],
-                       job_id=state.get("job_id"), attachment_ids=list(state.get("attachments") or []))
+                       job_id=state.get("job_id"), attachment_ids=list(state.get("attachments") or []),
+                       cautious=bool(job and (job.meta or {}).get("cautious")))
         try:
             reply, messages = await self.run_agent(agent, state["prompt"], deps, history=history)
         finally:
@@ -752,7 +761,8 @@ class Runtime:
         requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
         deps = RunDeps(thread_id=job.origin_thread_id, agent_id=assignee.id, depth=job.depth,
                        chain=list(job.chain), job_id=job.id,
-                       attachment_ids=list((job.meta or {}).get("attachments") or []))
+                       attachment_ids=list((job.meta or {}).get("attachments") or []),
+                       cautious=bool((job.meta or {}).get("cautious")))
         await self.broker.publish(job.origin_thread_id, "delegation_started", job_id=job.id,
                                   from_agent=requester.name if requester else None,
                                   to_agent=assignee.name, task=job.task,
@@ -822,7 +832,8 @@ class Runtime:
         # Background jobs (including waits that timed out) report into the origin thread.
         if load_job(job.id).background:
             await self.enqueue_turn(job.origin_thread_id, self._report_prompt(job, assignee, result),
-                                    from_user=False)
+                                    from_user=False,
+                                    **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
 
     @staticmethod
     def _report_prompt(job: Job, assignee: AgentDef, result: WorkResult) -> str:
@@ -1546,7 +1557,8 @@ class Runtime:
                 assignee_agent_id=target.id, parent_job_id=ctx.deps.job_id, task=full_task,
                 background=background, depth=ctx.deps.depth + 1,
                 chain=[*ctx.deps.chain, target.id], pool=target.pool,
-                meta={"attachments": [a.id for a in given]} if given else {})
+                meta={**({"attachments": [a.id for a in given]} if given else {}),
+                      **({"cautious": True} if ctx.deps.cautious else {})})
             # Show the exchange in the conversation right away; it's updated in place as the
             # task starts and finishes. Created before queueing, so a fast worker can't win.
             msg = await rt.save_message(
@@ -1893,16 +1905,17 @@ class Runtime:
                                eval_live=dict(srv.eval_live or {}))
 
     async def ask_approval(self, deps: RunDeps, server_id: str, server_name: str, tool: str,
-                           args: dict) -> dict:
+                           args: dict, reason: str = "") -> dict:
         """Post an approval card and wait for your decision (or the timeout)."""
         agent = load_agent(deps.agent_id)
         row = ToolApproval(agent_id=agent.id, agent_name=agent.name, thread_id=deps.thread_id,
                            job_id=deps.job_id, server_id=server_id, server_name=server_name,
-                           tool=tool, args=args or {})
+                           tool=tool, args=args or {}, reason=reason)
         msg = await self.save_message(
             deps.thread_id, Role.event, f"{agent.name} wants to run {tool} on {server_name}",
             agent_id=agent.id, kind="tool_approval", approval_id=row.id, status="pending",
-            agent=agent.name, tool=tool, server=server_name, depth=deps.depth)
+            agent=agent.name, tool=tool, server=server_name, depth=deps.depth,
+            **({"reason": reason} if reason else {}))
         row.message_id = msg.id
         with db.session() as s:
             s.add(row)
@@ -1911,6 +1924,7 @@ class Runtime:
                                   agent=agent.name, tool=tool, server=server_name, depth=deps.depth)
         await subagents.notify({"type": "tool_approval", "approval_id": row.id, "agent": agent.name,
                                 "tool": tool, "server": server_name, "thread_id": deps.thread_id,
+                                **({"reason": reason} if reason else {}),
                                 "args": {k: (str(v)[:500]) for k, v in (args or {}).items()},
                                 "link": subagents.link(f"/requests/approvals?approval={row.id}")})
         wait = approvals.timeout_seconds()
@@ -2058,7 +2072,8 @@ class Runtime:
             job = Job(kind=JobKind.task, origin_thread_id=ctx.deps.thread_id, requester_agent_id=me.id,
                       assignee_agent_id=sub.id, parent_job_id=ctx.deps.job_id, task=task,
                       background=background, depth=ctx.deps.depth + 1,
-                      chain=[*ctx.deps.chain, sub.id], pool=sub.pool)
+                      chain=[*ctx.deps.chain, sub.id], pool=sub.pool,
+                      meta={"cautious": True} if ctx.deps.cautious else {})
             msg = await rt.save_message(
                 ctx.deps.thread_id, Role.event, f"{me.name} → {sub.name}: {task}",
                 agent_id=me.id, kind="delegation_result", job_id=job.id, status="queued",

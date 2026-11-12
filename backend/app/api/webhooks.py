@@ -3,7 +3,8 @@ deliveries (POST /hooks/<name>, checked by each hook's own secret)."""
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -16,6 +17,7 @@ from .. import webhooks as wh
 from ..config import settings
 from ..db import get_session
 from ..models import WebhookDelivery, WebhookEndpoint, _now
+from ..telemetry import delivery_span
 
 router = APIRouter(prefix="/api/webhooks", tags=["events"])
 public = APIRouter(tags=["events"])
@@ -28,6 +30,9 @@ class WebhookIn(BaseModel):
     event_header: str = ""
     event_field: str = ""
     delivery_header: str = ""
+    allowed_networks: str = ""
+    rate_per_minute: int | None = None  # None: the default for a new hook, unchanged on edit
+    cautious: bool = True
     enabled: bool = True
 
 
@@ -39,12 +44,16 @@ class WebhookOut(BaseModel):
     event_header: str
     event_field: str
     delivery_header: str
+    allowed_networks: str
+    rate_per_minute: int
+    cautious: bool
     enabled: bool
     created_at: datetime
     last_delivery_at: datetime | None
     url: str
     topic_prefix: str
     has_secret: bool
+    encrypted: bool
     # Only in the answer to create and rotate; never listed afterwards.
     secret: str | None = None
 
@@ -53,13 +62,15 @@ def _base_url(request: Request) -> str:
     return settings.public_url or str(request.base_url).rstrip("/")
 
 
-def _out(request: Request, h: WebhookEndpoint, *, with_secret: bool = False) -> WebhookOut:
+def _out(request: Request, h: WebhookEndpoint, *, secret: str | None = None) -> WebhookOut:
     return WebhookOut(
         id=h.id, name=h.name, source=h.source, auth_mode=h.auth_mode, event_header=h.event_header,
-        event_field=h.event_field, delivery_header=h.delivery_header, enabled=h.enabled, created_at=h.created_at,
+        event_field=h.event_field, delivery_header=h.delivery_header,
+        allowed_networks=h.allowed_networks, rate_per_minute=h.rate_per_minute, cautious=h.cautious,
+        enabled=h.enabled, created_at=h.created_at,
         last_delivery_at=h.last_delivery_at, url=f"{_base_url(request)}/hooks/{h.name}",
         topic_prefix=f"webhook/{wh._topic_level(h.source or h.name)}/", has_secret=bool(h.secret),
-        secret=h.secret if with_secret else None)
+        encrypted=h.secret.startswith(wh.SEALED), secret=secret)
 
 
 def _validate(s: Session, body: WebhookIn, own_id: str | None = None) -> None:
@@ -68,6 +79,13 @@ def _validate(s: Session, body: WebhookIn, own_id: str | None = None) -> None:
     body.event_header = body.event_header.strip()
     body.event_field = body.event_field.strip()
     body.delivery_header = body.delivery_header.strip()
+    body.allowed_networks = ", ".join(p for p in re.split(r"[,\s]+", body.allowed_networks.strip()) if p)
+    try:
+        wh.parse_networks(body.allowed_networks)
+    except ValueError as e:
+        raise HTTPException(422, f"allowed networks: {e}")
+    if body.rate_per_minute is not None and body.rate_per_minute < 0:
+        raise HTTPException(422, "rate per minute: 0 (no limit) or more")
     if not wh.NAME_RE.match(body.name):
         raise HTTPException(422, "name: lowercase letters, digits and dashes (it becomes /hooks/<name>)")
     if body.auth_mode not in wh.AUTH_MODES:
@@ -75,6 +93,16 @@ def _validate(s: Session, body: WebhookIn, own_id: str | None = None) -> None:
     other = s.exec(select(WebhookEndpoint).where(WebhookEndpoint.name == body.name)).first()
     if other and other.id != own_id:
         raise HTTPException(409, f"a webhook named '{body.name}' already exists")
+
+
+@router.get("/settings")
+def webhook_settings():
+    """Server-wide webhook settings (from .env), for the Events page."""
+    return {"encryption": wh.encryption_on(), "default_networks": settings.webhook_networks,
+            "default_rate_per_minute": settings.webhook_rate_per_minute,
+            "keep_days": settings.webhook_keep_days, "keep_per_hook": settings.webhook_keep_deliveries,
+            "dedupe_hours": settings.webhook_dedupe_seconds / 3600,
+            "max_body": settings.webhook_max_body}
 
 
 @router.get("", response_model=list[WebhookOut])
@@ -86,11 +114,15 @@ def list_webhooks(request: Request, s: Session = Depends(get_session)):
 @router.post("", response_model=WebhookOut, status_code=201)
 def create_webhook(body: WebhookIn, request: Request, s: Session = Depends(get_session)):
     _validate(s, body)
-    h = WebhookEndpoint(**body.model_dump(), secret=wh.new_secret())
+    fields = body.model_dump()
+    if fields["rate_per_minute"] is None:
+        fields["rate_per_minute"] = settings.webhook_rate_per_minute
+    secret = wh.new_secret()
+    h = WebhookEndpoint(**fields, secret=wh.seal(secret))
     s.add(h)
     s.commit()
     s.refresh(h)
-    return _out(request, h, with_secret=True)
+    return _out(request, h, secret=secret)
 
 
 @router.put("/{hook_id}", response_model=WebhookOut)
@@ -100,6 +132,8 @@ def update_webhook(hook_id: str, body: WebhookIn, request: Request, s: Session =
         raise HTTPException(404)
     _validate(s, body, hook_id)
     for k, v in body.model_dump().items():
+        if k == "rate_per_minute" and v is None:
+            continue
         setattr(h, k, v)
     s.add(h)
     s.commit()
@@ -113,11 +147,12 @@ def rotate_secret(hook_id: str, request: Request, s: Session = Depends(get_sessi
     h = s.get(WebhookEndpoint, hook_id)
     if not h:
         raise HTTPException(404)
-    h.secret = wh.new_secret()
+    secret = wh.new_secret()
+    h.secret = wh.seal(secret)
     s.add(h)
     s.commit()
     s.refresh(h)
-    return _out(request, h, with_secret=True)
+    return _out(request, h, secret=secret)
 
 
 @router.delete("/{hook_id}", status_code=204)
@@ -199,14 +234,14 @@ async def _route(request: Request, hook: WebhookEndpoint, topic: str, body: byte
 
     ctx = {"source": topic.split("/")[1], "event": topic.rsplit("/", 1)[-1], "hook": hook.name}
     return await route_event(request.app.state.runtime, topic, body, "webhook", ctx=ctx,
-                             skip_cooldown=skip_cooldown)
+                             skip_cooldown=skip_cooldown, cautious=hook.cautious)
 
 
 def _reply(row: WebhookDelivery, status_code: int = 202, **extra: Any) -> JSONResponse:
-    return JSONResponse({"accepted": status_code == 202, "delivery": row.id, "status": row.status,
-                         "topic": row.topic,
-                         "queued_jobs": [o["job_id"] for o in row.outcomes if o.get("job_id")],
-                         **extra}, status_code=status_code)
+    return JSONResponse(
+        {"accepted": status_code == 202, "delivery": row.id, "status": row.status, "topic": row.topic,
+         "queued_jobs": [o["job_id"] for o in row.outcomes if o.get("job_id")], **extra},
+        status_code=status_code, headers={"x-ahq-status": row.status})
 
 
 @public.post("/hooks/{name}", status_code=202)
@@ -219,21 +254,48 @@ async def receive(name: str, request: Request):
         raise HTTPException(404, "No such webhook")
     headers = {k.lower(): v for k, v in request.headers.items()}
     ip = auth.client_ip(headers, request.client.host if request.client else None)
+    with delivery_span(hook.name, ip) as span:
+        reply = await _receive(request, hook, headers, ip, span)
+        span.set_attribute("agent_hq.webhook.status", reply.headers.get("x-ahq-status", ""))
+        return reply
+
+
+async def _receive(request: Request, hook: WebhookEndpoint, headers: dict[str, str], ip: str,
+                   span) -> JSONResponse:
+    def refuse(status: str, code: int, message: str, **log_kw: Any) -> JSONResponse:
+        log_delivery(hook, status, ip=ip, headers=headers, **log_kw)
+        return JSONResponse({"detail": message}, status_code=code, headers={"x-ahq-status": status})
+
+    if not wh.address_allowed(hook, ip):
+        return refuse("blocked", 403, "Not accepted from this address",
+                      detail=f"{ip or 'unknown address'} isn't in the allowed networks")
+    over = await wh.over_rate(request.app.state.runtime.broker, hook)
+    if over:
+        if over == hook.rate_per_minute + 1:  # log the first one over, not the whole flood
+            log_delivery(hook, "rate_limited", ip=ip, headers=headers,
+                         detail=f"over {hook.rate_per_minute} a minute; more this minute aren't logged")
+        return JSONResponse({"detail": "Too many requests"}, status_code=429,
+                            headers={"retry-after": "60", "x-ahq-status": "rate_limited"})
     try:
         body = await _read_body(request)
     except TooLarge as e:
-        log_delivery(hook, "too_large", ip=ip, headers=headers, body_bytes=e.args[0],
-                     detail=f"over {settings.webhook_max_body} bytes")
-        raise HTTPException(413, f"body larger than {settings.webhook_max_body} bytes")
-    if not wh.check_sender(hook, headers, dict(request.query_params), body):
+        return refuse("too_large", 413, f"body larger than {settings.webhook_max_body} bytes",
+                      body_bytes=e.args[0], detail=f"over {settings.webhook_max_body} bytes")
+    try:
+        ok = wh.check_sender(hook, headers, dict(request.query_params), body)
+    except wh.SecretUnavailable as e:
+        return refuse("rejected", 503, "This webhook can't check senders right now",
+                      body_bytes=len(body), detail=f"can't read the hook's secret: {e}")
+    if not ok:
         what = "signature" if hook.auth_mode == "gitea" else "token"
         auth.record("webhook_rejected", ip=ip, user_agent=headers.get("user-agent", ""),
                     detail=f"hook {hook.name}: missing or wrong {what}")
-        log_delivery(hook, "rejected", ip=ip, headers=headers, body_bytes=len(body),
-                     detail=f"missing or wrong {what}")
-        raise HTTPException(401, "Signature or token check failed")
+        return refuse("rejected", 401, "Signature or token check failed", body_bytes=len(body),
+                      detail=f"missing or wrong {what}")
     topic = wh.topic_for(hook, headers, body)
     event = topic.rsplit("/", 1)[-1]
+    span.set_attribute("agent_hq.webhook.topic", topic)
+    span.set_attribute("input.value", body[:4000].decode("utf-8", errors="replace"))
     did = wh.delivery_id(hook, headers)
     if did and not await request.app.state.runtime.broker.first_seen(
             f"{hook.id}:{did}", settings.webhook_dedupe_seconds):
@@ -243,7 +305,38 @@ async def receive(name: str, request: Request):
     outcomes = await _route(request, hook, topic, body)
     row = log_delivery(hook, _status(outcomes), topic=topic, event=event, ip=ip, delivery_id=did,
                        headers=headers, body=body, outcomes=outcomes)
+    span.set_attribute("output.value", ", ".join(
+        f"{o['subscription']}: {o['result']}" for o in outcomes) or "no subscription matched")
     return _reply(row)
+
+
+def delete_old_deliveries(days: float | None = None) -> int:
+    days = settings.webhook_keep_days if days is None else days
+    if days <= 0:
+        return 0
+    cutoff = _now() - timedelta(days=days)
+    with db.session() as s:
+        rows = s.exec(select(WebhookDelivery).where(WebhookDelivery.at < cutoff)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+    return len(rows)
+
+
+async def cleanup_loop(every: float = 3600) -> None:
+    """Hourly: remove deliveries older than AHQ_WEBHOOK_KEEP_DAYS."""
+    import asyncio
+    import logging
+
+    log = logging.getLogger("agent_hq.webhooks")
+    while True:
+        try:
+            n = delete_old_deliveries()
+            if n:
+                log.info("removed %d webhook deliveries older than %g days", n, settings.webhook_keep_days)
+        except Exception:
+            log.exception("webhook delivery cleanup failed")
+        await asyncio.sleep(every)
 
 
 # --------------------------------------------------------------------------- log, test, replay

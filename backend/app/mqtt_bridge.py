@@ -155,11 +155,15 @@ def ensure_thread(sub: Subscription) -> str:
 
 
 async def route_event(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt", *,
-                      ctx: dict[str, str] | None = None, skip_cooldown: bool = False) -> list[dict]:
+                      ctx: dict[str, str] | None = None, skip_cooldown: bool = False,
+                      cautious: bool = False) -> list[dict]:
     """Route one event (an MQTT message, or a webhook delivery with source="webhook") to
     the subscriptions that match it. Returns one outcome per matching subscription:
     {"subscription", "subscription_id", "result": "queued"|"cooldown", "job_id",
-     "thread_id", "missing", "prompt"}."""
+     "thread_id", "missing", "prompt"}.
+
+    `cautious`: the turns (and work they delegate) ask before any tool that isn't marked
+    read-only, whatever the approval rules say (see ApprovalToolset)."""
     payload = prompt_payload(raw, source)
     data = parse_json(raw)
     label = "Webhook" if source == "webhook" else "MQTT"
@@ -180,7 +184,7 @@ async def route_event(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt",
         job = await rt.enqueue_turn(
             thread_id, prompt, from_user=False,
             event_text=f"{label} {topic}: {payload[:500]}", kind=source, topic=topic,
-            subscription=sub.name)
+            subscription=sub.name, **({"cautious": True} if cautious else {}))
         out.update(result="queued", job_id=job.id, thread_id=thread_id, missing=missing,
                    prompt=prompt[:4000])
     return outcomes

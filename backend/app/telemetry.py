@@ -169,6 +169,19 @@ def job_span(job, agent_name: str, worker: str):
         _job_attrs.reset(token)
 
 
+@contextlib.contextmanager
+def delivery_span(hook: str, ip: str):
+    """A span for one webhook delivery. Jobs it queues continue this trace (they store the
+    current traceparent), so Phoenix shows delivery -> turn -> delegations as one trace."""
+    tracer = trace.get_tracer(TRACER)
+    with tracer.start_as_current_span(
+        f"webhook {hook}", kind=trace.SpanKind.SERVER,
+        attributes={"openinference.span.kind": "CHAIN", "agent_hq.webhook": hook,
+                    "agent_hq.webhook.ip": ip},
+    ) as span:
+        yield span
+
+
 def set_output(span, value: Any) -> None:
     if span is not None and span.is_recording():
         text = value if isinstance(value, str) else json.dumps(value, default=str)

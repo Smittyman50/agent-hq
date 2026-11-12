@@ -76,6 +76,18 @@ class Settings:
     # deliveries per hook the log keeps.
     webhook_dedupe_seconds: int = field(default_factory=lambda: int(_env("WEBHOOK_DEDUPE_SECONDS", "86400")))
     webhook_keep_deliveries: int = field(default_factory=lambda: int(_env("WEBHOOK_KEEP_DELIVERIES", "200")))
+    # ...and for how many days (older ones are removed hourly).
+    webhook_keep_days: float = field(default_factory=lambda: float(_env("WEBHOOK_KEEP_DAYS", "7")))
+    # Addresses webhooks are accepted from, unless a hook names its own: private and
+    # loopback ranges, i.e. your LAN. Comma-separated CIDRs.
+    webhook_networks: str = field(default_factory=lambda: _env(
+        "WEBHOOK_NETWORKS", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7,fe80::/10"))
+    # Requests per minute a new hook accepts (0 = no limit); each hook can change it.
+    webhook_rate_per_minute: int = field(default_factory=lambda: int(_env("WEBHOOK_RATE_PER_MINUTE", "60")))
+    # Encrypts webhook secrets in the database. Any long random string, e.g.
+    # `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Keep it safe: hooks
+    # stop verifying senders if it changes (rotate their secrets then).
+    secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", ""))
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))
