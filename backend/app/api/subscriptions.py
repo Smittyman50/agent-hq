@@ -83,7 +83,30 @@ class TestEvent(BaseModel):
 @router.post("/test")
 async def test_event(body: TestEvent, request: Request):
     """Inject a message as if it came from MQTT (cooldowns apply)."""
-    from ..mqtt_bridge import handle_message
+    from ..mqtt_bridge import route_event
 
-    jobs = await handle_message(request.app.state.runtime, body.topic, body.payload.encode())
-    return {"queued_jobs": jobs}
+    outcomes = await route_event(request.app.state.runtime, body.topic, body.payload.encode())
+    return {"queued_jobs": [o["job_id"] for o in outcomes if o["job_id"]], "outcomes": outcomes}
+
+
+class PreviewIn(BaseModel):
+    prompt_template: str = ""
+    topic: str
+    payload: str
+    source: str = "mqtt"
+
+
+@router.post("/preview")
+def preview(body: PreviewIn):
+    """What a template turns into for this event, without queuing anything."""
+    from ..mqtt_bridge import parse_json, prompt_payload, render_full
+
+    source = "webhook" if body.source == "webhook" or body.topic.startswith("webhook/") else "mqtt"
+    raw = body.payload.encode()
+    ctx = None
+    if source == "webhook":
+        parts = body.topic.split("/")
+        ctx = {"source": parts[1] if len(parts) > 1 else "", "event": parts[-1]}
+    sub = Subscription(name="preview", topic_filter="#", agent_id="", prompt_template=body.prompt_template)
+    prompt, missing = render_full(sub, body.topic, prompt_payload(raw, source), source, ctx, parse_json(raw))
+    return {"prompt": prompt, "missing": missing}

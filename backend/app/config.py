@@ -72,6 +72,10 @@ class Settings:
     # reaches the agent's prompt (JSON bodies are bigger than MQTT payloads).
     webhook_max_body: int = field(default_factory=lambda: int(_env("WEBHOOK_MAX_BODY", "1048576")))
     webhook_max_payload: int = field(default_factory=lambda: int(_env("WEBHOOK_MAX_PAYLOAD", "8000")))
+    # How long a sender's delivery ID is remembered for the duplicate check, and how many
+    # deliveries per hook the log keeps.
+    webhook_dedupe_seconds: int = field(default_factory=lambda: int(_env("WEBHOOK_DEDUPE_SECONDS", "86400")))
+    webhook_keep_deliveries: int = field(default_factory=lambda: int(_env("WEBHOOK_KEEP_DELIVERIES", "200")))
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))

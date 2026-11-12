@@ -135,6 +135,10 @@ class Broker:
     def thread_lock(self, thread_id: str, ttl: float):
         return self.r.lock(f"ahq:lock:thread:{thread_id}", timeout=ttl, blocking_timeout=None)
 
+    async def first_seen(self, key: str, seconds: int) -> bool:
+        """True the first time `key` is seen within `seconds` (webhook duplicate check)."""
+        return bool(await self.r.set(f"ahq:hook:dup:{key}", "1", nx=True, ex=max(seconds, 1)))
+
     async def try_cooldown(self, key: str, seconds: int) -> bool:
         """True if not in cooldown (and starts one)."""
         if seconds <= 0:

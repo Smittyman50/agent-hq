@@ -11,7 +11,10 @@ process; run only one API process with AHQ_MQTT_URL set, or events are handled t
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 import aiomqtt
@@ -49,9 +52,85 @@ def topic_matches(topic_filter: str, topic: str) -> bool:
     return len(f_parts) == len(t_parts)
 
 
-def render_prompt(sub: Subscription, topic: str, payload: str, source: str = "mqtt") -> str:
+FIELD_MAX = 2000
+_PLACEHOLDER = re.compile(r"\{(topic|payload|event|source|hook)((?:\.[A-Za-z0-9_-]+)+)?\}")
+
+
+def _lookup(data: Any, path: list[str]) -> tuple[bool, Any]:
+    for part in path:
+        if isinstance(data, dict) and part in data:
+            data = data[part]
+        elif isinstance(data, list) and part.isdigit() and int(part) < len(data):
+            data = data[int(part)]
+        else:
+            return False, None
+    return True, data
+
+
+def _as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, bool) or isinstance(value, (dict, list)):
+        text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    else:
+        text = str(value)
+    return text if len(text) <= FIELD_MAX else text[:FIELD_MAX] + "…"
+
+
+def render_template(template: str, values: dict[str, str], data: Any = None) -> tuple[str, list[str]]:
+    """Fill {topic}, {payload}, {event}, {source}, {hook} and {payload.a.b.0} fields.
+
+    `data` is the parsed JSON body (None if it isn't JSON). A field that isn't there becomes
+    an empty string and is listed in the second return value. Other {braces} are left alone.
+    """
+    missing: list[str] = []
+
+    def fill(m: re.Match) -> str:
+        name, path = m.group(1), m.group(2)
+        if not path:
+            return values.get(name, "")
+        if name != "payload":
+            return m.group(0)
+        found, value = (False, None) if data is None else _lookup(data, path[1:].split("."))
+        if not found:
+            missing.append(m.group(0)[1:-1])
+            return ""
+        return _as_text(value)
+
+    return _PLACEHOLDER.sub(fill, template), missing
+
+
+def parse_json(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def render_prompt(sub: Subscription, topic: str, payload: str, source: str = "mqtt",
+                  ctx: dict[str, str] | None = None, data: Any = None) -> str:
+    return render_full(sub, topic, payload, source, ctx, data)[0]
+
+
+def render_full(sub: Subscription, topic: str, payload: str, source: str = "mqtt",
+                ctx: dict[str, str] | None = None, data: Any = None) -> tuple[str, list[str]]:
     template = sub.prompt_template or (DEFAULT_WEBHOOK_PROMPT if source == "webhook" else DEFAULT_PROMPT)
-    return template.replace("{topic}", topic).replace("{payload}", payload)
+    return render_template(template, event_values(topic, payload, source, ctx), data)
+
+
+def event_values(topic: str, payload: str, source: str, ctx: dict[str, str] | None = None) -> dict[str, str]:
+    """The plain placeholders. MQTT: event = the last topic level, source = "mqtt"."""
+    ctx = ctx or {}
+    return {"topic": topic, "payload": payload, "event": ctx.get("event", topic.rsplit("/", 1)[-1]),
+            "source": ctx.get("source", source), "hook": ctx.get("hook", "")}
+
+
+def prompt_payload(raw: bytes, source: str) -> str:
+    payload = raw.decode("utf-8", errors="replace")
+    limit = settings.webhook_max_payload if source == "webhook" else settings.mqtt_max_payload
+    return payload if len(payload) <= limit else payload[:limit] + "\n…[truncated]"
 
 
 def load_subscriptions() -> list[Subscription]:
@@ -75,28 +154,43 @@ def ensure_thread(sub: Subscription) -> str:
         return t.id
 
 
-async def handle_message(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt") -> list[str]:
-    """Route one event (an MQTT message, or a webhook delivery with source="webhook").
-    Returns the IDs of the turn jobs queued."""
-    payload = raw.decode("utf-8", errors="replace")
-    limit = settings.webhook_max_payload if source == "webhook" else settings.mqtt_max_payload
-    if len(payload) > limit:
-        payload = payload[:limit] + "\n…[truncated]"
+async def route_event(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt", *,
+                      ctx: dict[str, str] | None = None, skip_cooldown: bool = False) -> list[dict]:
+    """Route one event (an MQTT message, or a webhook delivery with source="webhook") to
+    the subscriptions that match it. Returns one outcome per matching subscription:
+    {"subscription", "subscription_id", "result": "queued"|"cooldown", "job_id",
+     "thread_id", "missing", "prompt"}."""
+    payload = prompt_payload(raw, source)
+    data = parse_json(raw)
     label = "Webhook" if source == "webhook" else "MQTT"
-    queued = []
+    outcomes = []
     for sub in load_subscriptions():
         if not topic_matches(sub.topic_filter, topic):
             continue
-        if not await rt.broker.try_cooldown(sub.id, sub.min_interval_seconds):
+        out = {"subscription": sub.name, "subscription_id": sub.id, "result": "cooldown",
+               "job_id": None, "thread_id": sub.thread_id, "missing": [], "prompt": ""}
+        outcomes.append(out)
+        if not skip_cooldown and not await rt.broker.try_cooldown(sub.id, sub.min_interval_seconds):
             log.info("subscription %s in cooldown; skipping %s", sub.name, topic)
             continue
+        prompt, missing = render_full(sub, topic, payload, source, ctx, data)
+        if missing:
+            log.info("subscription %s: fields not in the payload: %s", sub.name, ", ".join(missing))
         thread_id = ensure_thread(sub)
         job = await rt.enqueue_turn(
-            thread_id, render_prompt(sub, topic, payload, source), from_user=False,
+            thread_id, prompt, from_user=False,
             event_text=f"{label} {topic}: {payload[:500]}", kind=source, topic=topic,
             subscription=sub.name)
-        queued.append(job.id)
-    return queued
+        out.update(result="queued", job_id=job.id, thread_id=thread_id, missing=missing,
+                   prompt=prompt[:4000])
+    return outcomes
+
+
+async def handle_message(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt",
+                         ctx: dict[str, str] | None = None) -> list[str]:
+    """Route one event. Returns the IDs of the turn jobs queued."""
+    outcomes = await route_event(rt, topic, raw, source, ctx=ctx)
+    return [o["job_id"] for o in outcomes if o["job_id"]]
 
 
 def client_args(url: str) -> dict:

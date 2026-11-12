@@ -1,7 +1,12 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankWebhook } from './api.service';
+import { AgentDef, Api, DeliveryDetail, DeliveryReply, DeliveryStatus, DeliverySummary, EventOutcome, Subscription, Thread, Webhook, blankSubscription, blankWebhook } from './api.service';
+
+const STATUS_LABEL: Record<DeliveryStatus, string> = {
+  accepted: 'accepted', no_match: 'no match', cooldown: 'cooldown', duplicate: 'duplicate',
+  rejected: 'rejected', too_large: 'too large',
+};
 
 @Component({
   selector: 'hq-events',
@@ -31,7 +36,7 @@ import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankW
         <h2>{{ d.id ? 'Edit ' + d.name : 'New subscription' }}</h2>
         <label>Name<input name="name" [(ngModel)]="d.name" required></label>
         <label>Topic filter <small>+ matches one level, # matches the rest; webhooks arrive as webhook/&lt;source&gt;/&lt;event&gt;</small>
-          <input name="topic" [(ngModel)]="d.topic_filter" placeholder="homelab/alerts/#"></label>
+          <input name="topic" [(ngModel)]="d.topic_filter" (blur)="loadPickable(d.topic_filter)" placeholder="homelab/alerts/#"></label>
         <label>Agent that handles it
           <select name="agent" [(ngModel)]="d.agent_id">
             @for (a of enabledAgents(); track a.id) { <option [value]="a.id">{{ a.name }}</option> }
@@ -41,7 +46,8 @@ import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankW
             <option [ngValue]="null">Dedicated events thread</option>
             @for (t of agentThreads(); track t.id) { <option [ngValue]="t.id">{{ t.title }}</option> }
           </select></label>
-        <label>Prompt template <small>{{ '{' }}topic{{ '}' }} and {{ '{' }}payload{{ '}' }} are filled in; empty = default</small>
+        <label>Prompt template <small>{{ '{' }}topic{{ '}' }}, {{ '{' }}payload{{ '}' }}, {{ '{' }}event{{ '}' }}, {{ '{' }}source{{ '}' }}, {{ '{' }}hook{{ '}' }}
+            and JSON fields like {{ '{' }}payload.repository.full_name{{ '}' }} or {{ '{' }}payload.commits.0.message{{ '}' }}; empty = default</small>
           <textarea name="tpl" rows="5" [(ngModel)]="d.prompt_template"
             placeholder="An event arrived on MQTT topic {topic}: {payload} …"></textarea></label>
         <label>Cooldown (seconds) <small>ignore repeats for this long after one fires</small>
@@ -56,15 +62,29 @@ import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankW
           }
         </div>
 
-        @if (d.id) {
-          <h3>Send a test event</h3>
-          <div class="inline">
-            <input name="ttopic" [(ngModel)]="testTopic" placeholder="homelab/alerts/test">
-            <input name="tpayload" [(ngModel)]="testPayload" placeholder="payload">
-            <button type="button" class="ghost" (click)="sendTest()">Send</button>
-          </div>
-          @if (testResult()) { <p class="hint">{{ testResult() }}</p> }
+        <h3>Try it</h3>
+        @if (pickable().length) {
+          <label>Start from a recent webhook delivery <small>matching this filter</small>
+            <select name="pick" [ngModel]="''" (ngModelChange)="pickDelivery($event)">
+              <option value="">—</option>
+              @for (p of pickable(); track p.id) {
+                <option [value]="p.id">{{ when(p.at) }} · {{ p.topic }} ({{ size(p.body_bytes) }})</option>
+              }
+            </select></label>
         }
+        <label>Topic<input name="ttopic" [(ngModel)]="testTopic" placeholder="homelab/alerts/test"></label>
+        <label>Payload<textarea name="tpayload" rows="4" [(ngModel)]="testPayload" placeholder="payload"></textarea></label>
+        <div class="actions">
+          <button type="button" class="ghost" (click)="preview()">Preview prompt</button>
+          @if (d.id) { <button type="button" class="ghost" (click)="sendTest()">Send test event</button> }
+        </div>
+        @if (previewText() !== null) {
+          @if (previewMissing().length) {
+            <p class="hint inline-hint"><span class="pill missing">not in payload</span> {{ previewMissing().join(', ') }} (filled in as empty)</p>
+          }
+          <pre class="payload">{{ previewText() }}</pre>
+        }
+        @if (testResult()) { <p class="hint">{{ testResult() }}</p> }
       </form>
     } @else if (hookDraft(); as h) {
       <form class="editor" (ngSubmit)="saveHook()">
@@ -82,6 +102,8 @@ import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankW
           <input name="hheader" [(ngModel)]="h.event_header" [placeholder]="h.auth_mode === 'gitea' ? 'X-Gitea-Event' : 'X-Event'"></label>
         <label>Event field <small>used when the header is missing: a dotted JSON path, e.g. heartbeat.status_text; otherwise "event"</small>
           <input name="hfield" [(ngModel)]="h.event_field" placeholder="action"></label>
+        <label>Delivery ID header <small>a repeat of the same ID within 24 hours is logged as a duplicate and not run; empty = {{ h.auth_mode === 'gitea' ? 'X-Gitea-Delivery' : 'no duplicate check' }}</small>
+          <input name="hdelivery" [(ngModel)]="h.delivery_header" [placeholder]="h.auth_mode === 'gitea' ? 'X-Gitea-Delivery' : 'X-Request-Id'"></label>
         <label class="check"><input type="checkbox" name="henabled" [(ngModel)]="h.enabled"> Enabled</label>
         @if (error()) { <p class="error">{{ error() }}</p> }
         <div class="actions">
@@ -117,6 +139,63 @@ import { AgentDef, Api, Subscription, Thread, Webhook, blankSubscription, blankW
      --data-binary &#64;report.txt {{ h.url }}</code></pre>
           }
           <p class="hint inline-hint">Last delivery: {{ h.last_delivery_at ? when(h.last_delivery_at) : 'none yet' }}</p>
+
+          <h3>Send a test delivery</h3>
+          <p class="hint inline-hint">Routed as this hook would route it, without a signature (you're signed in). Logged as a test.</p>
+          <label>Event<input name="hevent" [(ngModel)]="hookTestEvent" placeholder="push"></label>
+          <label>Body<textarea name="hbody" rows="4" [(ngModel)]="hookTestBody" placeholder='{"ref": "refs/heads/main"}'></textarea></label>
+          <div class="actions">
+            <button type="button" class="ghost" (click)="sendHookTest(h)">Send</button>
+            <label class="check"><input type="checkbox" name="hrespect" [(ngModel)]="respectCooldown"> Respect cooldowns</label>
+          </div>
+          @if (hookResult()) { <p class="hint inline-hint">{{ hookResult() }}</p> }
+
+          <div class="list-head" style="padding: 12px 0 8px; border: 0">
+            <h3 style="margin: 0">Recent deliveries</h3>
+            <button type="button" class="ghost" (click)="loadDeliveries(h)">Refresh</button>
+          </div>
+          @if (deliveries().length) {
+            <table class="grid deliveries">
+              <tr><th>When</th><th>Event</th><th>Status</th><th>Subscriptions</th></tr>
+              @for (x of deliveries(); track x.id) {
+                <tr class="pick" [class.active]="detail()?.id === x.id" (click)="showDelivery(x.id)">
+                  <td>{{ when(x.at) }}</td>
+                  <td><code>{{ x.event || '—' }}</code>@if (x.test) { <span class="pill">test</span> }@if (x.replay_of) { <span class="pill">replay</span> }</td>
+                  <td><span class="pill" [class]="x.status">{{ label(x.status) }}</span></td>
+                  <td>{{ x.subscriptions.length ? x.subscriptions.join(', ') : '—' }}</td>
+                </tr>
+              }
+            </table>
+          } @else { <p class="hint inline-hint">No deliveries yet.</p> }
+
+          @if (detail(); as x) {
+            <h3>Delivery {{ when(x.at) }} <span class="pill" [class]="x.status">{{ label(x.status) }}</span></h3>
+            <p class="hint inline-hint">
+              @if (x.topic) { <code>{{ x.topic }}</code> · }
+              from {{ x.ip || '?' }} · {{ size(x.body_bytes) }}
+              @if (x.delivery_id) { · delivery ID <code>{{ x.delivery_id }}</code> }
+              @if (x.detail) { · {{ x.detail }} }
+            </p>
+            @for (o of x.outcomes; track o.subscription_id) {
+              <div class="outcome">
+                <strong>{{ o.subscription }}</strong> <span class="pill" [class]="o.result">{{ o.result }}</span>
+                @if (o.thread_id) { <button type="button" class="ghost" (click)="open(o.thread_id)">Open conversation</button> }
+                @if (o.missing.length) { <p class="hint inline-hint"><span class="pill missing">not in payload</span> {{ o.missing.join(', ') }}</p> }
+                @if (o.prompt) { <details><summary>Prompt the agent got</summary><pre class="payload">{{ o.prompt }}</pre></details> }
+              </div>
+            }
+            @if (x.body !== null) {
+              <details open><summary>Body</summary><pre class="payload">{{ pretty(x.body) }}</pre></details>
+            } @else { <p class="hint inline-hint">Body not kept for {{ label(x.status) }} deliveries.</p> }
+            <details><summary>Headers</summary><pre class="payload">{{ headersText(x.headers) }}</pre></details>
+            @if (x.body !== null) {
+              <div class="actions">
+                <button type="button" class="ghost" (click)="replay(h, x.id)">Replay</button>
+                <button type="button" class="ghost" (click)="useAsTest(x.event, x.body)">Use as test delivery</button>
+                <label class="check"><input type="checkbox" name="rrespect" [(ngModel)]="respectCooldown"> Respect cooldowns</label>
+              </div>
+            }
+          }
         }
       </form>
     } @else { <div class="empty">Select a subscription or webhook, or create one.</div> }
@@ -136,6 +215,15 @@ export class EventsPage implements OnInit {
   testResult = signal('');
   testTopic = 'homelab/alerts/test';
   testPayload = 'Test alert from the UI';
+  previewText = signal<string | null>(null);
+  previewMissing = signal<string[]>([]);
+  pickable = signal<DeliverySummary[]>([]);
+  deliveries = signal<DeliverySummary[]>([]);
+  detail = signal<DeliveryDetail | null>(null);
+  hookResult = signal('');
+  hookTestEvent = 'test';
+  hookTestBody = '';
+  respectCooldown = false;
 
   enabledAgents = computed(() => this.agents().filter(a => a.enabled));
   agentThreads = computed(() => this.threads().filter(t => t.agent_id === this.draft()?.agent_id));
@@ -154,12 +242,53 @@ export class EventsPage implements OnInit {
   open(threadId: string) { this.router.navigate(['/chat', threadId]); }
   when(iso: string) { return new Date(iso).toLocaleString(); }
   copy(text: string) { navigator.clipboard?.writeText(text); }
+  label(s: DeliveryStatus) { return STATUS_LABEL[s] ?? s; }
+  size(n: number) { return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`; }
+  pretty(body: string) {
+    try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+  }
+  headersText(h: Record<string, string>) { return Object.entries(h).map(([k, v]) => `${k}: ${v}`).join('\n'); }
+
+  private outcomeText(outcomes: EventOutcome[]): string {
+    if (!outcomes.length) return 'No subscription matched.';
+    return outcomes.map(o => {
+      const what = o.result === 'queued' ? 'queued a turn' : 'skipped (cooldown)';
+      const miss = o.missing.length ? `; not in payload: ${o.missing.join(', ')}` : '';
+      return `${o.subscription}: ${what}${miss}`;
+    }).join(' · ') + (outcomes.some(o => o.result === 'queued') ? '. The answer appears in its conversation.' : '');
+  }
 
   edit(x: Subscription | null) {
     this.error.set(''); this.testResult.set(''); this.hookDraft.set(null); this.secret.set('');
     const first = this.enabledAgents().find(a => a.is_default) ?? this.enabledAgents()[0];
     this.draft.set(x ? structuredClone(x) : blankSubscription(first?.id ?? ''));
     if (x) this.testTopic = x.topic_filter.replace('#', 'test').replace(/\+/g, 'x');
+    this.previewText.set(null);
+    this.loadPickable(x?.topic_filter ?? '');
+  }
+
+  loadPickable(filter: string) {
+    this.pickable.set([]);
+    if (!filter.startsWith('webhook/') && !filter.startsWith('+') && !filter.startsWith('#')) return;
+    this.api.recentDeliveries(filter, true, 20).subscribe(r => this.pickable.set(r));
+  }
+
+  pickDelivery(id: string) {
+    if (!id) return;
+    this.api.delivery(id).subscribe(x => {
+      this.testTopic = x.topic;
+      this.testPayload = x.body ?? '';
+      this.preview();
+    });
+  }
+
+  preview() {
+    const d = this.draft();
+    if (!d) return;
+    this.api.previewTemplate(d.prompt_template, this.testTopic, this.testPayload).subscribe({
+      next: r => { this.previewText.set(r.prompt); this.previewMissing.set(r.missing); },
+      error: e => { this.previewText.set(null); this.testResult.set(e.error?.detail ?? 'Preview failed'); },
+    });
   }
 
   save() {
@@ -177,9 +306,7 @@ export class EventsPage implements OnInit {
   sendTest() {
     this.api.testEvent(this.testTopic, this.testPayload).subscribe({
       next: r => {
-        this.testResult.set(r.queued_jobs.length
-          ? `Queued ${r.queued_jobs.length} turn(s). The agent's answer appears in its conversation.`
-          : 'No subscription matched (or it is in cooldown).');
+        this.testResult.set(this.outcomeText(r.outcomes ?? []));
         this.load();
         this.api.subscriptions().subscribe(s => {
           const cur = s.find(x => x.id === this.draft()?.id);
@@ -195,6 +322,45 @@ export class EventsPage implements OnInit {
   editHook(h: Webhook | null) {
     this.error.set(''); this.draft.set(null); this.secret.set('');
     this.hookDraft.set(h ? structuredClone(h) : blankWebhook());
+    this.detail.set(null); this.hookResult.set(''); this.deliveries.set([]);
+    if (h?.id) this.loadDeliveries(h);
+  }
+
+  loadDeliveries(h: Webhook) {
+    this.api.hookDeliveries(h.id!).subscribe(r => this.deliveries.set(r));
+  }
+
+  showDelivery(id: string) {
+    this.api.delivery(id).subscribe(x => this.detail.set(x));
+  }
+
+  private afterSend(h: Webhook, r: DeliveryReply, what: string) {
+    const n = r.queued_jobs.length;
+    this.hookResult.set(`${what} as ${r.topic}: ${this.label(r.status)}` +
+      (n ? `, ${n} turn(s) queued.` : r.status === 'no_match' ? '. Add a subscription for it.' : '.'));
+    this.loadDeliveries(h);
+    this.showDelivery(r.delivery);
+    this.load();
+  }
+
+  sendHookTest(h: Webhook) {
+    this.api.sendHookTest(h.id!, this.hookTestEvent, this.hookTestBody, this.respectCooldown).subscribe({
+      next: r => this.afterSend(h, r, 'Sent'),
+      error: e => this.hookResult.set(e.error?.detail ?? 'Failed'),
+    });
+  }
+
+  replay(h: Webhook, id: string) {
+    this.api.replayDelivery(id, this.respectCooldown).subscribe({
+      next: r => this.afterSend(h, r, 'Replayed'),
+      error: e => this.hookResult.set(e.error?.detail ?? 'Replay failed'),
+    });
+  }
+
+  useAsTest(event: string, body: string) {
+    this.hookTestEvent = event || 'test';
+    this.hookTestBody = body;
+    this.hookResult.set('Copied into Send a test delivery above; edit it and press Send.');
   }
 
   private shown(h: Webhook) {
@@ -228,5 +394,6 @@ export class EventsPage implements OnInit {
     d.topic_filter = `${h.topic_prefix}#`;
     this.draft.set({ ...d });
     this.testTopic = `${h.topic_prefix}test`;
+    this.loadPickable(d.topic_filter);
   }
 }

@@ -850,6 +850,34 @@ class WebhookEndpoint(SQLModel, table=True):
     # JSON field, else "event". Empty header = the preset's (X-Gitea-Event for gitea).
     event_header: str = ""
     event_field: str = ""
+    # Header carrying the sender's delivery ID, for the duplicate check. Empty = the
+    # preset's (X-Gitea-Delivery for gitea); token hooks without one aren't checked.
+    delivery_header: str = ""
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
     last_delivery_at: datetime | None = None
+
+
+class WebhookDelivery(SQLModel, table=True):
+    """One request to a webhook, for the delivery log on the Events page. Accepted,
+    duplicate and cooldown rows keep the body; rejected and too-large ones only metadata.
+    The newest AHQ_WEBHOOK_KEEP_DELIVERIES per hook are kept."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    hook_id: str = Field(index=True)
+    at: datetime = Field(default_factory=_now, index=True)
+    # accepted | no_match | cooldown | duplicate | rejected | too_large
+    status: str = Field(index=True)
+    topic: str = ""
+    event: str = ""
+    ip: str = ""
+    delivery_id: str = ""  # the sender's, e.g. X-Gitea-Delivery
+    # Request headers without secrets (Authorization, tokens, signatures, cookies).
+    headers: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    body: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    body_bytes: int = 0
+    # One per matching subscription: result (queued/cooldown), job, thread, missing fields, prompt.
+    outcomes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    test: bool = False  # sent from the Events page
+    replay_of: str | None = None
+    detail: str = ""

@@ -524,3 +524,14 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
   padding: 3px 7px; margin: 0; border-radius: 5px; font-size: 12px; cursor: pointer; }
 .md .code-btn:hover { color: var(--text); background: rgba(255,255,255,.07); }
 .md .code-btn.done { color: #7ee2a8; }
+
+/* Webhook delivery log (Settings -> Events) */
+.pill.accepted { color: var(--ok); border-color: var(--ok); }
+.pill.cooldown, .pill.missing { color: var(--warn); border-color: var(--warn); }
+.pill.rejected, .pill.too_large { color: var(--bad); border-color: var(--bad); }
+.pill.no_match, .pill.duplicate { color: var(--muted); }
+.deliveries tr.pick { cursor: pointer; } .deliveries tr.pick:hover, .deliveries tr.active { background: var(--panel2); }
+.deliveries td .pill { margin-left: 0; }
+pre.payload { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 4px 0 8px; }
+.outcome { border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0; }

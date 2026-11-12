@@ -32,6 +32,8 @@ log = logging.getLogger("agent_hq.webhooks")
 AUTH_MODES = ("gitea", "token")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 PRESET_EVENT_HEADER = {"gitea": "X-Gitea-Event"}
+PRESET_DELIVERY_HEADER = {"gitea": "X-Gitea-Delivery"}
+_SECRET_HEADER = re.compile(r"authorization|cookie|token|signature|secret|api-key|apikey", re.I)
 
 
 def new_secret() -> str:
@@ -91,3 +93,13 @@ def event_name(hook: WebhookEndpoint, headers: dict[str, str], body: bytes) -> s
 
 def topic_for(hook: WebhookEndpoint, headers: dict[str, str], body: bytes) -> str:
     return f"webhook/{_topic_level(hook.source or hook.name)}/{event_name(hook, headers, body)}"
+
+
+def delivery_id(hook: WebhookEndpoint, headers: dict[str, str]) -> str:
+    header = (hook.delivery_header or PRESET_DELIVERY_HEADER.get(hook.auth_mode, "")).lower()
+    return headers.get(header, "").strip()[:200] if header else ""
+
+
+def safe_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Headers worth keeping in the delivery log: no secrets, nothing huge."""
+    return {k: v[:500] for k, v in headers.items() if not _SECRET_HEADER.search(k)}

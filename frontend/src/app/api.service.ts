@@ -244,6 +244,7 @@ export interface Webhook {
   auth_mode: 'gitea' | 'token';
   event_header: string;
   event_field: string;
+  delivery_header: string;
   enabled: boolean;
   created_at?: string;
   last_delivery_at?: string | null;
@@ -253,8 +254,30 @@ export interface Webhook {
   secret?: string | null;  // only right after create or rotate
 }
 
+export interface EventOutcome {
+  subscription: string; subscription_id: string; result: 'queued' | 'cooldown';
+  job_id: string | null; thread_id: string | null; missing: string[]; prompt: string;
+}
+
+export type DeliveryStatus = 'accepted' | 'no_match' | 'cooldown' | 'duplicate' | 'rejected' | 'too_large';
+
+export interface DeliverySummary {
+  id: string; hook_id: string; hook: string; at: string; status: DeliveryStatus;
+  topic: string; event: string; ip: string; delivery_id: string; body_bytes: number;
+  has_body: boolean; test: boolean; replay_of: string | null; detail: string;
+  subscriptions: string[]; queued: number;
+}
+
+export interface DeliveryDetail extends DeliverySummary {
+  headers: Record<string, string>; body: string | null; outcomes: EventOutcome[];
+}
+
+export interface DeliveryReply {
+  accepted: boolean; delivery: string; status: DeliveryStatus; topic: string; queued_jobs: string[];
+}
+
 export function blankWebhook(): Webhook {
-  return { name: '', source: '', auth_mode: 'token', event_header: '', event_field: '', enabled: true };
+  return { name: '', source: '', auth_mode: 'token', event_header: '', event_field: '', delivery_header: '', enabled: true };
 }
 
 export interface WorkerInfo { name: string; pools: string[]; concurrency: number; busy: number; seen: string; }
@@ -598,7 +621,7 @@ export class Api {
   }
   deleteSubscription(id: string) { return this.http.delete(`/api/subscriptions/${id}`); }
   testEvent(topic: string, payload: string) {
-    return this.http.post<{ queued_jobs: string[] }>('/api/subscriptions/test', { topic, payload });
+    return this.http.post<{ queued_jobs: string[]; outcomes: EventOutcome[] }>('/api/subscriptions/test', { topic, payload });
   }
 
   webhooks() { return this.http.get<Webhook[]>('/api/webhooks'); }
@@ -608,6 +631,22 @@ export class Api {
   }
   deleteWebhook(id: string) { return this.http.delete(`/api/webhooks/${id}`); }
   rotateWebhook(id: string) { return this.http.post<Webhook>(`/api/webhooks/${id}/rotate`, {}); }
+  hookDeliveries(id: string, limit = 50) {
+    return this.http.get<DeliverySummary[]>(`/api/webhooks/${id}/deliveries`, { params: { limit } });
+  }
+  recentDeliveries(topic_filter = '', with_body = false, limit = 20) {
+    return this.http.get<DeliverySummary[]>('/api/webhooks/deliveries', { params: { topic_filter, with_body, limit } });
+  }
+  delivery(id: string) { return this.http.get<DeliveryDetail>(`/api/webhooks/deliveries/${id}`); }
+  sendHookTest(id: string, event: string, body: string, respect_cooldown: boolean) {
+    return this.http.post<DeliveryReply>(`/api/webhooks/${id}/test`, { event, body, respect_cooldown });
+  }
+  replayDelivery(id: string, respect_cooldown: boolean) {
+    return this.http.post<DeliveryReply>(`/api/webhooks/deliveries/${id}/replay`, { respect_cooldown });
+  }
+  previewTemplate(prompt_template: string, topic: string, payload: string) {
+    return this.http.post<{ prompt: string; missing: string[] }>('/api/subscriptions/preview', { prompt_template, topic, payload });
+  }
 
   subagentRequests(status?: string) {
     return this.http.get<SubagentRequest[]>('/api/subagent-requests', { params: status ? { status } : {} });
