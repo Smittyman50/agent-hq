@@ -29,7 +29,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
         <header class="conv-head">
           <hq-avatar [agent]="agentById(thread()?.agent_id)" [size]="30" [active]="isActive(thread()?.agent_id)" />
           <strong>{{ agentName(thread()?.agent_id) }}</strong>
-          @if (busy()) { <span class="pill live">working…</span> }
+          @if (working()) { <span class="pill live">working…</span> }
           <span class="spacer"></span>
           <hq-icon name="monitor" [size]="16" class="muted" />
           <select [ngModel]="desktopAgentId()" (ngModelChange)="desktopAgentId.set($event)" name="desk">
@@ -63,6 +63,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                   <details><summary>What it kept</summary><pre class="kn-text">{{ m.meta['summary'] }}</pre></details>
                 }
               </div>
+            } @else if (m.meta['kind'] === 'stopped') {
+              <div class="note-line">■ {{ m.content }}</div>
             } @else if (m.meta['kind'] === 'context_warning') {
               <div class="note-line warn">⚠ {{ m.content }} <a routerLink="/settings/agents">Agent settings</a></div>
             } @else if (exchange(m); as x) {
@@ -168,6 +170,10 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
           </label>
           <textarea name="draft" [(ngModel)]="draft" placeholder="Message…  (Enter to send, Shift+Enter for a new line)"
             (keydown.enter)="onEnter($event)" (paste)="onPaste($event)"></textarea>
+          @if (working()) {
+            <button type="button" class="danger stop" (click)="stop()" [disabled]="stopping()"
+                    title="Stop this turn and everything it delegated">{{ stopping() ? 'Stopping…' : 'Stop' }}</button>
+          }
           <button type="submit" [disabled]="(!draft.trim() && !pending().length) || !!uploading()">Send</button>
         </form>
         @if (activity().length) {
@@ -243,6 +249,12 @@ export class ChatPage implements OnInit, OnDestroy {
   messages = signal<Message[]>([]);
   activity = signal<Activity[]>([]);
   busy = signal(false);
+  stopping = signal(false);
+  /** Something in this conversation is still running: the turn, or a task it delegated. */
+  working = computed(() => this.busy() || this.messages().some(m => {
+    const x = this.exchange(m);
+    return !!x && !x.finished && (x.status === 'queued' || x.status === 'working');
+  }));
   desktopAgentId = signal('');
   desk = signal<DesktopState | null>(null);
   deskNote = '';
@@ -420,12 +432,27 @@ export class ChatPage implements OnInit, OnDestroy {
     this.messages.set([]);
     this.activity.set([]);
     this.busy.set(false);
+    this.stopping.set(false);
     this.pending.set([]);
     this.uploadError.set('');
     if (!id) return;
     if (!this.threads().some(t => t.id === id)) this.ws.reloadThreads();  // started elsewhere
     this.api.messages(id).subscribe(m => { this.messages.set(m); this.scroll(); });
     this.sub = this.api.events(id).subscribe(ev => this.onEvent(ev));
+    // Opened (or reloaded) mid-run: the live "thinking" event was missed, so ask.
+    this.api.jobs(id).subscribe(jobs => {
+      if (this.threadId() === id && jobs.some(j => j.status === 'queued' || j.status === 'running')) this.busy.set(true);
+    });
+  }
+
+  stop() {
+    const id = this.threadId();
+    if (!id || this.stopping()) return;
+    this.stopping.set(true);
+    this.api.stop(id).subscribe({
+      next: () => { this.stopping.set(false); this.busy.set(false); },
+      error: e => { this.stopping.set(false); alert(e.error?.detail ?? 'Could not stop'); },
+    });
   }
 
   agentById(id: string | null | undefined) { return this.agents().find(a => a.id === id); }
@@ -465,6 +492,11 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'job_queued': {
         const who = this.agentById(ev['agent_id'])?.name ?? 'a sub-agent';
         this.log(ev, `queued ${ev['kind']} for ${who} on pool ${ev['pool']}`, 'queue');
+        break;
+      }
+      case 'job_stopped': {
+        const who = this.agentById(ev['agent_id'])?.name ?? 'a sub-agent';
+        this.log(ev, `stopped ${ev['kind']} for ${who}`, 'err');
         break;
       }
       case 'job_retry': this.log(ev, `job ${ev['job_id']} retried on ${ev['worker']} (attempt ${ev['attempt']})`, 'err'); break;

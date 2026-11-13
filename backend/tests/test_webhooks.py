@@ -507,6 +507,12 @@ async def test_delivery_is_a_span_and_the_turn_joins_its_trace(hq):
     hook_span = next(s for s in spans if s.name == "webhook gitea")
     assert hook_span.attributes["agent_hq.webhook.topic"] == "webhook/gitea/push"
     assert hook_span.attributes["agent_hq.webhook.status"] == "accepted"
+    # The turn's span closes just after its job is marked done: give it a moment.
+    for _ in range(40):
+        spans = exp.get_finished_spans()
+        if any(s.name.startswith("turn ") for s in spans):
+            break
+        await asyncio.sleep(0.05)
     turn = next(s for s in spans if s.name.startswith("turn "))
     assert turn.context.trace_id == hook_span.context.trace_id
     Agent.instrument_all(False)

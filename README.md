@@ -145,6 +145,13 @@ sequenceDiagram
 
 A rerun starts the job from the beginning. Tools that change systems should therefore be safe to repeat, or should go behind an approval step (see *Next steps*).
 
+### Stopping a conversation's work
+
+While anything in a conversation is still running, a **Stop** button sits next to Send. It stops the turn and every task delegated from it (background ones included), on whichever workers they run (`POST /api/threads/{id}/stop`).
+- **How:** Stop sets `ahq:stop:<job_id>` in Valkey for each queued or running job. Queued jobs are marked stopped at once and never start. A running job's worker checks for the flag every `AHQ_STOP_POLL` seconds (default 1), cancels the run and acks the job, so it is not retried like a crashed one.
+- **What you see:** the delegation cards say *stopped*, the conversation gets a "Stopped by you." line, and nobody reports back afterwards. Stopped jobs are saved as `failed` with the error "Stopped by you."; they count against neither skills nor the learning loop.
+- **Caveats:** a tool call already sent to a system can't be called back; Stop only keeps the agent from carrying on. The conversation's model history keeps only finished turns, so the next message starts from what was there before the stopped turn.
+
 ### MQTT events
 
 ```mermaid
@@ -452,6 +459,10 @@ It then may do three things:
 - **Who never reflects:** agents whose learning is Off, and sub-agents.
 
 **Requests** has a sub-menu like Settings: **Tool approvals**, **Skill proposals**, **Profile updates**, **Knowledge** (documents agents suggest) and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
+
+### The current date and time
+
+Models have no clock: left alone, they take "now" to be about when their training data ends, so "this weekend" can turn into a date months off. Every agent's instructions therefore end with the current date and time in your time zone, which you set with `AHQ_TIMEZONE` (an IANA name such as `America/New_York`; falls back to `TZ`, then UTC). The line goes last because it changes every minute, and providers that cache prompts reuse everything before the first change. Delegated agents and sub-agents get it the same way.
 
 ### Your profile
 
@@ -987,9 +998,10 @@ The API process reports as `agent-hq` and workers as `agent-hq-worker`, both in 
 backend/app/
   models.py          all the tables: providers, agents, tools, threads, messages, jobs, skills,
                      reflections, feedback, profile suggestions, knowledge, eval cases and runs…
-  runtime.py         builds agents from rows; turns; delegation; report-back
+  runtime.py         builds agents from rows; turns; delegation; report-back; Stop
+  clock.py           the current date and time every agent is told (AHQ_TIMEZONE)
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
-  broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns
+  broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns, stop flags
   mqtt_bridge.py     MQTT subscriptions -> turn jobs (also routes webhook events)
   webhooks.py        inbound webhooks: sender checks (Gitea HMAC, token), allowed networks, rate
                      limits, secrets encrypted at rest, event topics

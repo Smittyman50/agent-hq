@@ -56,7 +56,7 @@ from sqlmodel import select
 
 from . import attachments as att
 from . import knowledge_proposals as kprop
-from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking
+from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -664,10 +664,17 @@ class Runtime:
     # ------------------------------------------------------------ execution (workers)
 
     async def execute(self, job_id: str, worker: str) -> None:
-        """Run a job delivered to a worker. Safe to call again for a redelivered job."""
+        """Run a job delivered to a worker. Safe to call again for a redelivered job.
+
+        Returns normally when you stop the job (Stop in the UI), so the worker acks it;
+        raises CancelledError only when the worker itself is shutting down or dying.
+        """
         job = load_job(job_id)
         if job is None or job.status in (JobStatus.done, JobStatus.failed):
             return  # unknown, or already finished before a crash prevented the ack
+        if await self.broker.stop_requested(job.id):
+            await self._stopped(job)  # stopped while it waited in the queue
+            return
         attempts = job.attempts + 1
         if attempts > settings.max_attempts:
             await self._give_up(job)
@@ -677,6 +684,22 @@ class Runtime:
         if attempts > 1:
             await self.broker.publish(job.origin_thread_id, "job_retry", job_id=job.id,
                                       attempt=attempts, worker=worker)
+        stopped = asyncio.Event()
+        work = asyncio.create_task(self._execute(job, worker))
+        watch = asyncio.create_task(self._watch_stop(job.id, work, stopped))
+        try:
+            await work
+        except asyncio.CancelledError:
+            me = asyncio.current_task()
+            shutting_down = bool(me and getattr(me, "cancelling", lambda: 0)())  # 3.11+
+            if stopped.is_set() and not shutting_down:
+                await self._stopped(load_job(job.id))  # you pressed Stop: a finished job
+                return
+            raise  # shutdown or crash: leave it for another worker
+        finally:
+            watch.cancel()
+
+    async def _execute(self, job: Job, worker: str) -> None:
         assignee = load_agent(job.assignee_agent_id)
         with job_span(job, assignee.name, worker) as span:
             if job.kind == JobKind.turn:
@@ -685,6 +708,74 @@ class Runtime:
                 await self._run_task(job)
             set_output(span, (load_job(job.id).result or {}).get("reply")
                        or load_job(job.id).result)
+
+    async def _watch_stop(self, job_id: str, work: asyncio.Task, stopped: asyncio.Event) -> None:
+        """Cancel `work` once you press Stop. Polls, so a missed message can't lose a stop."""
+        while not work.done():
+            await asyncio.sleep(settings.stop_poll)
+            try:
+                if await self.broker.stop_requested(job_id):
+                    stopped.set()
+                    work.cancel()
+                    return
+            except Exception as e:  # Valkey hiccup: keep running, check again
+                log.warning("stop check for job %s failed: %s", job_id, e)
+
+    # ------------------------------------------------------------ stopping
+
+    STOPPED = "Stopped by you."
+
+    async def stop_thread(self, thread_id: str) -> dict:
+        """Stop everything still queued or running in a conversation: the turn and every
+        task delegated from it, on whichever workers they are. Running jobs stop within
+        about AHQ_STOP_POLL seconds; queued ones never start."""
+        with db.session() as s:
+            jobs = s.exec(select(Job).where(
+                Job.origin_thread_id == thread_id,
+                Job.status.in_([JobStatus.queued, JobStatus.running]))).all()
+        # Flags first: a worker that picks up a queued job after this sees the flag.
+        for j in jobs:
+            await self.broker.request_stop(j.id)
+        for j in jobs:
+            if j.status == JobStatus.queued:
+                await self._stopped(load_job(j.id))
+        if jobs:
+            await self.save_message(thread_id, Role.event, self.STOPPED, kind="stopped",
+                                    job_ids=[j.id for j in jobs])
+        await self.broker.publish(thread_id, "status", state="idle")
+        return {"stopped": len(jobs), "job_ids": [j.id for j in jobs]}
+
+    async def _stopped(self, job: Job | None) -> None:
+        """Record a job you stopped. Safe to call twice; the second call does nothing."""
+        if job is None or job.status in (JobStatus.done, JobStatus.failed):
+            return
+        result = WorkResult(status="failed", summary=self.STOPPED)
+        update_job(job.id, status=JobStatus.failed, error=self.STOPPED,
+                   result=result.model_dump(), finished_at=_now())
+        skills.finish_job(job.id, "stopped")
+        learning.job_finished(job.id, "stopped")  # not a failure worth reflecting on
+        await self.broker.publish(job.origin_thread_id, "job_stopped", job_id=job.id,
+                                  kind=job.kind, agent_id=job.assignee_agent_id)
+        if job.kind != JobKind.task:
+            return
+        assignee = load_agent(job.assignee_agent_id)
+        requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
+        await self.broker.publish(job.origin_thread_id, "delegation_finished", job_id=job.id,
+                                  from_agent=requester.name if requester else None,
+                                  to_agent=assignee.name,
+                                  result={**result.model_dump(), "status": "stopped"},
+                                  depth=job.depth)
+        if (job.meta or {}).get("message_id"):
+            await self.update_message(
+                job.meta["message_id"],
+                content=f"{assignee.name} → {requester.name if requester else 'you'}: [stopped] {self.STOPPED}",
+                status="stopped", result={**result.model_dump(), "status": "stopped"},
+                finished_at=_now().isoformat())
+        if assignee.is_subagent:
+            subagents.retire(assignee.id)
+        # Wake a delegator still waiting on it (normally stopped too). No report turn:
+        # you stopped the work, so nobody should start talking about it.
+        await self.broker.push_result(job.id, result.model_dump())
 
     async def _give_up(self, job: Job) -> None:
         msg = f"Abandoned after {settings.max_attempts} attempts (workers kept dying)."
@@ -921,6 +1012,7 @@ class Runtime:
             toolsets.append((self._subagent_toolset(mode), None))
         if agent.is_subagent:
             instructions.append(SUBAGENT_SELF_RULES)
+        instructions.append(clock.instructions())  # last: it changes every minute (caching)
         model = (build_model_for(agent.fallback_provider_id, agent.fallback_model,
                                  f"{agent.name} (fallback)")
                  if on_fallback else build_agent_model(agent))

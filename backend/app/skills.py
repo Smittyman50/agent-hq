@@ -148,7 +148,8 @@ def finish_job(job_id: str | None, outcome: str) -> None:
     """Record how a job that used skills turned out."""
     if not job_id:
         return
-    outcome = outcome if outcome in ("done", "partial", "failed") else "failed"
+    # "stopped": you pressed Stop, which says nothing about the skill either way.
+    outcome = outcome if outcome in ("done", "partial", "failed", "stopped") else "failed"
     try:
         with db.session() as s:
             for u in s.exec(select(SkillUse).where(SkillUse.job_id == job_id,

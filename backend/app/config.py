@@ -91,6 +91,11 @@ class Settings:
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))
+    # Your time zone (IANA name, e.g. America/New_York). Every agent is told the current
+    # date and time in it, so "today", "tomorrow" and "this weekend" mean the right days.
+    # Falls back to TZ, then UTC.
+    timezone: str = field(default_factory=lambda: _env("TIMEZONE", "").strip()
+                          or os.environ.get("TZ", "").strip() or "UTC")
     # How deep a delegation chain may go (A -> B -> C ...) before it is refused.
     max_delegation_depth: int = field(default_factory=lambda: int(_env("MAX_DELEGATION_DEPTH", "4")))
     # A waiting delegation switches to background mode after this many seconds.
@@ -106,6 +111,8 @@ class Settings:
     worker_heartbeat: float = field(default_factory=lambda: float(_env("WORKER_HEARTBEAT", "15")))
     claim_idle_ms: int = field(default_factory=lambda: int(_env("CLAIM_IDLE_MS", "60000")))
     max_attempts: int = field(default_factory=lambda: int(_env("MAX_ATTEMPTS", "3")))
+    # How often a running job checks whether you pressed Stop, in seconds.
+    stop_poll: float = field(default_factory=lambda: float(_env("STOP_POLL", "1")))
     # Worker identity and pools (used by `python -m app.worker` and by the embedded worker).
     # See default_worker_name(): AHQ_WORKER_NAME, or e.g. worker-shockwave-7090 in Docker.
     worker_name: str = field(default_factory=default_worker_name)

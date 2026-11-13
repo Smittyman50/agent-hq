@@ -75,6 +75,14 @@ async def post_message(thread_id: str, body: MessageIn, request: Request,
     return {"accepted": True, "job_id": job.id, "pool": job.pool}
 
 
+@router.post("/api/threads/{thread_id}/stop")
+async def stop_thread(thread_id: str, request: Request, s: Session = Depends(get_session)):
+    """Stop the conversation's running turn and everything it delegated (Stop in the UI)."""
+    if not s.get(Thread, thread_id):
+        raise HTTPException(404)
+    return await request.app.state.runtime.stop_thread(thread_id)
+
+
 @router.get("/api/threads/{thread_id}/jobs", response_model=list[Job])
 def list_jobs(thread_id: str, s: Session = Depends(get_session)):
     return s.exec(select(Job).where(Job.origin_thread_id == thread_id)

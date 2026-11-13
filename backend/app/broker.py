@@ -5,6 +5,7 @@ Key layout (all prefixed "ahq:"):
   ahq:result:<job_id>    list holding a finished task's WorkResult, for a waiting delegator
   ahq:events:<thread_id> pub/sub channel of live activity for the UI
   ahq:lock:thread:<id>   lock so turns of one conversation never overlap, across machines
+  ahq:stop:<job_id>      set when you press Stop; the job's worker cancels it (see Runtime)
   ahq:worker:<name>      heartbeat key of a live worker (expires if it dies)
   ahq:cooldown:<sub_id>  MQTT subscription cooldown marker
   ahq:desktop:<server_id>:control   set while you have control of a desktop
@@ -129,6 +130,15 @@ class Broker:
         finally:
             await pubsub.unsubscribe()
             await pubsub.aclose()
+
+    # ------------------------------------------------------------------ stopping jobs
+
+    async def request_stop(self, job_id: str) -> None:
+        """Ask whichever worker has (or will get) this job to stop it."""
+        await self.r.set(f"ahq:stop:{job_id}", "1", ex=86400)
+
+    async def stop_requested(self, job_id: str) -> bool:
+        return bool(await self.r.exists(f"ahq:stop:{job_id}"))
 
     # ------------------------------------------------------------------ locks & cooldowns
 

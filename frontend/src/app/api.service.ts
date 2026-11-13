@@ -705,6 +705,10 @@ export class Api {
   }
   removeAttachment(id: string) { return this.http.delete(`/api/attachments/${id}`); }
   jobs(threadId: string) { return this.http.get<Job[]>(`/api/threads/${threadId}/jobs`); }
+  /** Stop the conversation's running turn and everything it delegated. */
+  stop(threadId: string) {
+    return this.http.post<{ stopped: number; job_ids: string[] }>(`/api/threads/${threadId}/stop`, {});
+  }
 
   events(threadId: string): Observable<HqEvent> {
     return new Observable<HqEvent>(sub => {
