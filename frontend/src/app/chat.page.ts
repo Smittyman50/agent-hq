@@ -475,18 +475,22 @@ export class ChatPage implements OnInit, OnDestroy {
   }
 
   onEvent(ev: HqEvent) {
-    if (ev.type !== 'message') this.markActive(ev);
+    // Replayed events (sent when the conversation opens) only fill in the activity log
+    // and the delegation cards' steps; they don't re-run side effects.
+    const replay = !!ev['replay'];
+    if (ev.type !== 'message' && !replay) this.markActive(ev);
     switch (ev.type) {
       case 'message':
+        if (replay) break;
         if (!this.messages().some(m => m.id === ev['message'].id)) {
           this.messages.update(ms => [...ms, ev['message']]);
           this.scroll();
         }
         break;
       case 'message_updated':  // e.g. a delegation thread going from working to done
-        this.messages.update(ms => ms.map(m => m.id === ev['message'].id ? ev['message'] : m));
+        if (!replay) this.messages.update(ms => ms.map(m => m.id === ev['message'].id ? ev['message'] : m));
         break;
-      case 'status': this.busy.set(ev['state'] === 'thinking'); break;
+      case 'status': if (!replay) this.busy.set(ev['state'] === 'thinking'); break;
       case 'tool_call': this.log(ev, `${ev['agent']} → ${ev['tool']}(${JSON.stringify(ev['args'])})`, 'call'); break;
       case 'tool_result': this.log(ev, `${ev['agent']} ← ${ev['tool']}: ${ev['error'] ?? ev['preview']}`, ev['error'] ? 'err' : 'result'); break;
       case 'job_queued': {
@@ -511,9 +515,9 @@ export class ChatPage implements OnInit, OnDestroy {
       }
       case 'subagent_spawned': this.log(ev, `${ev['agent']} created sub-agent ${ev['subagent']} on ${ev['model']}`, 'deleg'); break;
       case 'skill_loaded': this.log(ev, `${ev['agent']} is following the skill ${ev['skill']} (v${ev['version']})`, 'deleg'); break;
-      case 'skill_proposed': this.log(ev, `${ev['agent']} proposed a skill: ${ev['skill']}`, 'queue'); this.ws.refreshPending(); break;
-      case 'approval_requested': this.log(ev, `${ev['agent']} is waiting for your OK to run ${ev['tool']} on ${ev['server']}`, 'queue'); this.ws.refreshPending(); break;
-      case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); this.ws.refreshPending(); break;
+      case 'skill_proposed': this.log(ev, `${ev['agent']} proposed a skill: ${ev['skill']}`, 'queue'); if (!replay) this.ws.refreshPending(); break;
+      case 'approval_requested': this.log(ev, `${ev['agent']} is waiting for your OK to run ${ev['tool']} on ${ev['server']}`, 'queue'); if (!replay) this.ws.refreshPending(); break;
+      case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); if (!replay) this.ws.refreshPending(); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;
       case 'model_fallback': this.log(ev, `${ev['agent']} → fallback model ${ev['to_model']}: ${ev['reason']}`, 'err'); break;
       case 'delegation_finished': {

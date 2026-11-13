@@ -1001,7 +1001,7 @@ backend/app/
   runtime.py         builds agents from rows; turns; delegation; report-back; Stop
   clock.py           the current date and time every agent is told (AHQ_TIMEZONE)
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
-  broker.py          all Valkey access: streams, results, pub/sub, locks, cooldowns, stop flags
+  broker.py          all Valkey access: job streams, results, live-event log, locks, cooldowns, stop flags
   mqtt_bridge.py     MQTT subscriptions -> turn jobs (also routes webhook events)
   webhooks.py        inbound webhooks: sender checks (Gitea HMAC, token), allowed networks, rate
                      limits, secrets encrypted at rest, event topics

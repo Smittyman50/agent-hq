@@ -715,9 +715,17 @@ export class Api {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       let ws: WebSocket | null = null;
       let closed = false;
+      // Opening replays recent activity; a reconnect resumes after the last event seen,
+      // so a dropped connection neither loses nor repeats events.
+      let lastEid = '';
       const open = () => {
-        ws = new WebSocket(`${proto}://${location.host}/ws/threads/${threadId}`);
-        ws.onmessage = e => { const ev = JSON.parse(e.data); if (ev.type !== 'ping') sub.next(ev); };
+        const after = lastEid ? `?after=${encodeURIComponent(lastEid)}` : '';
+        ws = new WebSocket(`${proto}://${location.host}/ws/threads/${threadId}${after}`);
+        ws.onmessage = e => {
+          const ev = JSON.parse(e.data);
+          if (ev.eid) lastEid = ev.eid;
+          if (ev.type !== 'ping') sub.next(ev);
+        };
         ws.onclose = () => { if (!closed) setTimeout(open, 2000); };
       };
       open();

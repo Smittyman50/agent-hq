@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -90,10 +91,14 @@ def list_jobs(thread_id: str, s: Session = Depends(get_session)):
 
 
 @router.websocket("/ws/threads/{thread_id}")
-async def thread_events(ws: WebSocket, thread_id: str):
+async def thread_events(ws: WebSocket, thread_id: str, after: str | None = None):
+    """Live events of a conversation. A reconnecting page passes the last "eid" it saw
+    as ?after= to get what it missed; a fresh page gets recent activity replayed."""
     await ws.accept()
     broker = ws.app.state.broker
-    events = broker.events(thread_id)
+    if after is not None and not re.fullmatch(r"\d+-\d+", after):
+        after = None
+    events = broker.events(thread_id, after=after)
     try:
         async for event in events:
             await ws.send_json(event)

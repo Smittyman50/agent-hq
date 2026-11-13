@@ -3,7 +3,9 @@
 Key layout (all prefixed "ahq:"):
   ahq:jobs:<pool>        stream of job IDs for a worker pool (consumer group "workers")
   ahq:result:<job_id>    list holding a finished task's WorkResult, for a waiting delegator
-  ahq:events:<thread_id> pub/sub channel of live activity for the UI
+  ahq:events:<thread_id> stream of a conversation's live activity for the UI: the last
+                         EVENTLOG_MAX events, kept EVENTLOG_TTL seconds after the latest, so
+                         a page that comes back mid-run can show what it missed
   ahq:lock:thread:<id>   lock so turns of one conversation never overlap, across machines
   ahq:stop:<job_id>      set when you press Stop; the job's worker cancels it (see Runtime)
   ahq:worker:<name>      heartbeat key of a live worker (expires if it dies)
@@ -25,6 +27,14 @@ import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
 GROUP = "workers"
+
+# The live-activity log of each conversation (see Broker.events).
+EVENTLOG_MAX = 500        # events kept per conversation (approximate trim)
+EVENTLOG_TTL = 6 * 3600   # seconds an idle conversation's log is kept
+EVENT_REPLAY = 200        # events sent to a page that opens the conversation
+# Replayed on open these would be stale: messages come from the database and whether the
+# turn is running from /jobs, so a page only replays the activity around them.
+NOT_REPLAYED = {"message", "message_updated", "status"}
 
 
 def _ts() -> str:
@@ -116,20 +126,47 @@ class Broker:
 
     # ------------------------------------------------------------------ live events
 
+    @staticmethod
+    def eventlog(thread_id: str) -> str:
+        return f"ahq:events:{thread_id}"
+
     async def publish(self, thread_id: str, type_: str, **data: Any) -> None:
         event = {"type": type_, "thread_id": thread_id, "ts": _ts(), **data}
-        await self.r.publish(f"ahq:events:{thread_id}", json.dumps(event, default=str))
+        key = self.eventlog(thread_id)
+        async with self.r.pipeline(transaction=False) as p:
+            p.xadd(key, {"e": json.dumps(event, default=str)}, maxlen=EVENTLOG_MAX, approximate=True)
+            p.expire(key, EVENTLOG_TTL)
+            await p.execute()
 
-    async def events(self, thread_id: str) -> AsyncIterator[dict]:
-        pubsub = self.r.pubsub()
-        await pubsub.subscribe(f"ahq:events:{thread_id}")
-        try:
-            while True:
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=25)
-                yield json.loads(msg["data"]) if msg else {"type": "ping"}
-        finally:
-            await pubsub.unsubscribe()
-            await pubsub.aclose()
+    async def events(self, thread_id: str, after: str | None = None,
+                     replay: int = EVENT_REPLAY) -> AsyncIterator[dict]:
+        """A conversation's live events, each with its log position as "eid".
+
+        A page opening the conversation (after=None) first gets up to `replay` recent
+        events marked "replay": true, minus NOT_REPLAYED, so a delegated task's steps
+        are there straight away instead of only from its next step on. A page that lost
+        its connection passes the last eid it saw and gets everything since, unmarked,
+        so nothing is missed or repeated. Reading one stream for both means no event
+        can slip between the backlog and the live part. Yields a ping when idle.
+        """
+        key = self.eventlog(thread_id)
+        last = after or "0-0"
+        if after is None and replay > 0:
+            backlog = await self.r.xrevrange(key, count=replay)
+            if backlog:
+                last = backlog[0][0]
+            for eid, fields in reversed(backlog):
+                event = json.loads(fields["e"])
+                if event.get("type") not in NOT_REPLAYED:
+                    yield {**event, "eid": eid, "replay": True}
+        while True:
+            got = await self.r.xread({key: last}, count=100, block=25_000)
+            if not got:
+                yield {"type": "ping"}
+                continue
+            for eid, fields in got[0][1]:
+                last = eid
+                yield {**json.loads(fields["e"]), "eid": eid}
 
     # ------------------------------------------------------------------ stopping jobs
 
