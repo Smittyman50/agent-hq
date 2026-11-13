@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { filter, map } from 'rxjs';
 import { DatePipe } from '@angular/common';
@@ -152,12 +152,20 @@ export class App {
 
   /** Agents whose chat lists are expanded (remembered across reloads). */
   expanded = signal<Set<string>>(this.loadExpanded());
+  /** The thread we last auto-expanded for, so it happens once per navigation. */
+  private autoExpandedFor: string | null = null;
 
   constructor() {
     // Opening a chat (from anywhere) expands its agent so it's visible in the list.
+    // Only on navigation: reading `expanded` untracked lets you collapse that agent afterwards.
     effect(() => {
+      const id = this.activeThreadId();
       const a = this.activeAgentId();
-      if (a && !this.expanded().has(a)) this.setExpanded(a, true);
+      untracked(() => {
+        if (!a || id === this.autoExpandedFor) return;
+        this.autoExpandedFor = id;
+        if (!this.expanded().has(a)) this.setExpanded(a, true);
+      });
     });
   }
 
