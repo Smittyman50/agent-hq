@@ -119,10 +119,14 @@ async def test_unreachable_ollama_still_sends_the_level(store):
 async def test_support_hint(store, ollama_url):
     ol = _provider(ProviderKind.ollama, ollama_url)
     oa = _provider(ProviderKind.openai)
-    assert (await thinking.support(ol, "qwen3:14b"))["supported"] is True
+    qwen = await thinking.support(ol, "qwen3:14b")
+    assert qwen["supported"] is True and qwen["levels"] is False  # on/off only
+    oss = await thinking.support(ol, "gpt-oss:20b")
+    assert oss["supported"] is True and oss["levels"] is True
     no = await thinking.support(ol, "llama3.1:8b")
     assert no["supported"] is False and "can't think" in no["note"]
-    assert (await thinking.support(oa, "gpt-5.2"))["supported"] is True
+    gpt = await thinking.support(oa, "gpt-5.2")
+    assert gpt["supported"] is True and gpt["levels"] is True
     assert (await thinking.support(oa, "gpt-4.1"))["supported"] is False
     assert (await thinking.support(oa, ""))["supported"] is None
 

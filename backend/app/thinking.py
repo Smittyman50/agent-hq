@@ -94,6 +94,12 @@ async def ollama_thinks(p: ModelProvider, model: str) -> bool | None:
     return found
 
 
+def ollama_has_levels(model: str) -> bool:
+    """Whether an Ollama model takes effort levels rather than just on/off. Ollama's
+    capabilities don't say, so this goes by family: gpt-oss is the one that does."""
+    return "gpt-oss" in model.lower()
+
+
 # --------------------------------------------------------------------------- settings
 
 
@@ -122,34 +128,39 @@ async def settings_for(agent: AgentDef, *, on_fallback: bool = False) -> ModelSe
 
 async def support(provider_id: str | None, model: str) -> dict[str, Any]:
     """Whether a thinking setting reaches this model, for the hint in the agent settings.
-    {"supported": True | False | None (unknown), "note": str}"""
+    {"supported": True | False | None (unknown), "levels": whether it takes effort levels
+    (False: on/off only; None: unknown), "note": str}"""
     if not model:
-        return {"supported": None, "note": ""}
+        return {"supported": None, "levels": None, "note": ""}
     p = _provider(provider_id)
     if p is not None and p.kind == ProviderKind.ollama:
         thinks = await ollama_thinks(p, model)
         if thinks is None:
-            return {"supported": None, "note": "Couldn't ask Ollama whether this model can think."}
+            return {"supported": None, "levels": None,
+                    "note": "Couldn't ask Ollama whether this model can think."}
         if not thinks:
-            return {"supported": False,
+            return {"supported": False, "levels": False,
                     "note": "Ollama says this model can't think, so this setting is ignored."}
-        return {"supported": True,
-                "note": "Sent to Ollama as reasoning_effort. Some models (gpt-oss) always think a "
-                        "little, so Off gives them their lowest effort; others only do on/off, "
-                        "so every level just turns thinking on."}
+        if ollama_has_levels(model):
+            return {"supported": True, "levels": True,
+                    "note": "Sent to Ollama as reasoning_effort. This model always thinks a little, "
+                            "so Off gives it its lowest effort."}
+        return {"supported": True, "levels": False,
+                "note": "Sent to Ollama as reasoning_effort."}
     try:
         from .llm import build_model_for
 
         m = build_model_for(provider_id, model, "this agent")
         profile = m.profile
     except Exception as e:
-        return {"supported": None, "note": f"Couldn't check this model: {e}"}
+        return {"supported": None, "levels": None, "note": f"Couldn't check this model: {e}"}
     get = profile.get if isinstance(profile, dict) else lambda k, d=None: getattr(profile, k, d)
     if not get("supports_thinking", False):
-        return {"supported": False,
+        return {"supported": False, "levels": False,
                 "note": "PydanticAI doesn't know how to set thinking for this model, so this "
                         "setting is ignored and it keeps its default."}
     if get("thinking_always_enabled", False):
-        return {"supported": True,
+        return {"supported": True, "levels": True,
                 "note": "This model always thinks, so Off gives it its lowest effort."}
-    return {"supported": True, "note": "Levels the model doesn't offer use the closest one it does."}
+    return {"supported": True, "levels": True,
+            "note": "Levels the model doesn't offer use the closest one it does."}

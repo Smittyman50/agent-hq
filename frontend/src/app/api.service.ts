@@ -391,7 +391,8 @@ export interface ConversationSettings {
 }
 export type ThinkingLevel = '' | 'off' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-export interface ThinkingSupport { supported: boolean | null; note: string; }
+// levels: false when the model only turns thinking on or off (no effort levels).
+export interface ThinkingSupport { supported: boolean | null; note: string; levels?: boolean | null; }
 
 export interface AgentContextInfo {
   window: number; source: string; detected: number | null; set: number | null;

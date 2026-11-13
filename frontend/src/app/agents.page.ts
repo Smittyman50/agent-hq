@@ -65,12 +65,19 @@ import { Avatar } from './avatar';
         <hq-model-picker label="Model" [providers]="providers()"
           [(providerId)]="d.provider_id" [(modelName)]="d.model"
           (providerIdChange)="checkThinking()" (modelNameChange)="checkThinking()" />
-        <label class="narrow">Thinking <small>how much the model reasons before it answers</small>
-          <select name="thinking" [(ngModel)]="d.thinking">
-            @for (t of thinkingLevels; track t.value) { <option [value]="t.value">{{ t.label }}</option> }
-          </select></label>
+        <div class="model-row">
+          <label>Thinking <small>whether the model reasons before it answers</small>
+            <select name="thinking" [ngModel]="thinkingMode(d)" (ngModelChange)="setThinkingMode(d, $event)">
+              @for (t of thinkingModes; track t.value) { <option [value]="t.value">{{ t.label }}</option> }
+            </select></label>
+          <label>Reasoning level <small>how hard it thinks when thinking is on</small>
+            <select name="reasoning" [ngModel]="reasoningLevel(d)" (ngModelChange)="setReasoningLevel(d, $event)"
+              [disabled]="thinkingMode(d) !== 'on' || thinkingInfo()?.levels === false">
+              @for (t of reasoningLevels; track t.value) { <option [value]="t.value">{{ t.label }}</option> }
+            </select></label>
+        </div>
         <p class="hint inline-hint" [class.needs-hint]="d.thinking && thinkingInfo()?.supported === false">
-          {{ thinkingHint(d.thinking ?? '') }}
+          {{ thinkingHint(d) }}
           @if (thinkingInfo()?.note) { {{ thinkingInfo()!.note }} }
           Also used by its fallback model and the sub-agents it creates.
         </p>
@@ -269,10 +276,13 @@ export class AgentsPage implements OnInit {
     { value: 'ask', label: 'Ask me first' },
     { value: 'allowed', label: 'Allowed within limits' },
   ] as const;
-  thinkingLevels = [
+  thinkingModes = [
     { value: '', label: 'Model default' },
     { value: 'off', label: 'Off' },
-    { value: 'on', label: 'On (provider\'s default effort)' },
+    { value: 'on', label: 'On' },
+  ] as const;
+  reasoningLevels = [
+    { value: '', label: 'Provider default' },
     { value: 'minimal', label: 'Minimal' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
@@ -280,6 +290,30 @@ export class AgentsPage implements OnInit {
     { value: 'xhigh', label: 'Extra high' },
     { value: 'max', label: 'Max' },
   ] as const;
+  /** The level last chosen, restored when thinking is switched off and back on. */
+  private lastLevel = '';
+
+  // The two boxes edit the agent's one `thinking` field: '' | off | on | <level>.
+  thinkingMode(d: AgentDef): '' | 'off' | 'on' {
+    const t = d.thinking ?? '';
+    return t === '' ? '' : t === 'off' ? 'off' : 'on';
+  }
+
+  reasoningLevel(d: AgentDef): string {
+    const t = d.thinking ?? '';
+    return t === '' || t === 'off' || t === 'on' ? '' : t;
+  }
+
+  setThinkingMode(d: AgentDef, mode: '' | 'off' | 'on') {
+    const level = this.reasoningLevel(d);
+    if (level) this.lastLevel = level;
+    d.thinking = mode === 'on' ? ((this.lastLevel || 'on') as AgentDef['thinking']) : mode;
+  }
+
+  setReasoningLevel(d: AgentDef, level: string) {
+    this.lastLevel = level;
+    d.thinking = (level || 'on') as AgentDef['thinking'];
+  }
   learningModes = [
     { value: 'off', label: 'Off' },
     { value: 'propose', label: 'Propose to me' },
@@ -296,9 +330,12 @@ export class AgentsPage implements OnInit {
     return 'New skills and improvements this agent writes wait in your Requests inbox for you to approve, edit or reject.';
   }
 
-  thinkingHint(level: string) {
-    if (!level) return 'Nothing is sent, so the model does what it does by default.';
-    if (level === 'off') return 'Asks the model not to reason first: fastest and cheapest.';
+  thinkingHint(d: AgentDef) {
+    const mode = this.thinkingMode(d);
+    if (!mode) return 'Nothing is sent, so the model does what it does by default.';
+    if (mode === 'off') return 'Asks the model not to reason first: fastest and cheapest.';
+    if (this.thinkingInfo()?.levels === false) return 'This model only turns thinking on or off, so there\'s no level to pick.';
+    if (!this.reasoningLevel(d)) return 'Thinking on, at the provider\'s default effort.';
     return 'Higher levels give better answers on hard tasks but are slower and, on local models, use more GPU time. Levels a model doesn\'t offer use the closest one it does.';
   }
 
@@ -343,6 +380,7 @@ export class AgentsPage implements OnInit {
     d.learning_mode ??= 'propose';
     d.use_profile ??= true;
     d.thinking ??= '';
+    this.lastLevel = this.reasoningLevel(d);
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
     d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
