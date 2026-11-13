@@ -1,6 +1,23 @@
 #!/usr/bin/with-contenv bash
 # s6 service: Playwright MCP on :8931, attached to the desktop's Chromium over CDP.
-until curl -fs http://127.0.0.1:9222/json/version >/dev/null; do sleep 1; done
+# If Chromium is running but its debugging port never answers (it can hang while
+# starting), waiting forever would leave :8931 silently closed. After CDP_WAIT seconds,
+# say so, end the stuck Chromium (the agent-browser service starts a fresh one) and exit,
+# so s6 runs this script again.
+CDP_WAIT=${CDP_WAIT:-60}
+waited=0
+until curl -fs --max-time 2 http://127.0.0.1:9222/json/version >/dev/null; do
+  if [ "$waited" -ge "$CDP_WAIT" ]; then
+    echo "playwright-mcp: Chromium's debugging port 9222 hasn't answered for ${CDP_WAIT}s;" \
+         "restarting Chromium" >&2
+    pkill -f -- '--remote-debugging-port=9222' || true
+    rm -f /config/agent-browser/Singleton*
+    sleep 5
+    exit 1
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
 export HOME=/config
 mkdir -p /tmp/playwright-mcp /config/Uploads && chown abc:abc /tmp/playwright-mcp /config/Uploads
 # Started in /config, so browser_file_upload / browser_drop can use files under it (Playwright

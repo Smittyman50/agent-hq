@@ -263,6 +263,41 @@ def desktop_servers(agent: AgentDef) -> list[ToolServer]:
     return [srv for srv in agent_tool_servers(agent) if srv.desktop]
 
 
+class ToolServerUnreachable(RuntimeError):
+    """An agent's tool server could not be reached when a run started."""
+
+    def __init__(self, server: str, where: str, reason: str) -> None:
+        super().__init__(f"Can't reach tool server {server} ({where}): {reason}. "
+                         "Check that it is running, or untick it on the agent.")
+        self.server = server
+
+
+def _root_reason(exc: BaseException) -> str:
+    """The innermost message of an exception chain (e.g. All connection attempts failed)."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    last = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        last = e
+        e = e.__cause__ or e.__context__
+    return str(last) or type(last).__name__
+
+
+@dataclass
+class ReachableToolset(WrapperToolset):
+    """Names the tool server when connecting to it fails, instead of a bare connect error."""
+
+    server_name: str = ""
+    where: str = ""
+
+    async def __aenter__(self):
+        try:
+            return await super().__aenter__()
+        except Exception as e:
+            raise ToolServerUnreachable(self.server_name, self.where, _root_reason(e)) from e
+
+
 def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | None]]:
     """[(toolset, desktop server id or None)] for the agent's MCP servers.
 
@@ -271,7 +306,8 @@ def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | Non
     """
     out = []
     for srv in agent_tool_servers(agent):
-        ts = mcp_toolset(srv)
+        ts = ReachableToolset(mcp_toolset(srv), server_name=srv.name,
+                              where=srv.url or srv.command or "no address")
         if wrap is not None:
             ts = wrap(ts, srv)
         # ahq_* tools are for Agent HQ itself (e.g. moving attachments to a workbench).
@@ -1112,7 +1148,14 @@ class Runtime:
         except asyncio.CancelledError:
             raise
         except BaseException as e:
-            if not has_fallback(agent) or not isinstance(e, Exception):
+            if not isinstance(e, Exception):
+                raise
+            # A tool server that is down: report it by name, and don't try the fallback
+            # model, which can't fix it.
+            down = _find_exc(e, ToolServerUnreachable)
+            if down is not None and not _find_exc(e, Escalation):
+                raise down
+            if not has_fallback(agent):
                 raise
             esc = _find_exc(e, Escalation)
             reason = f"escalated: {esc.reason}" if esc else f"{type(e).__name__}: {e}"

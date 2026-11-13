@@ -75,3 +75,23 @@ async def test_no_fallback_means_the_error_is_reported(hq):
             break
         await asyncio.sleep(0.05)
     assert events[0].startswith("Error:")
+
+
+async def test_unreachable_tool_server_is_named_and_skips_fallback(hq):
+    # A tool server that is down (here: nothing listens on port 9) can't be fixed by another
+    # model, so the fallback isn't tried and the error says which server and where.
+    await hq.start_worker()
+    srv = (await hq.http.post("/api/tool-servers", json={
+        "name": "deadbrowser", "transport": "http", "url": "http://127.0.0.1:9/mcp"})).json()
+    a = await hq.agent(name="Local", model="fake:strong", fallback_model="fake:strong",
+                       tool_server_ids=[srv["id"]])
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "hello")
+    import asyncio
+    for _ in range(200):
+        events = [m for m in hq.messages(t["id"]) if m.role == Role.event]
+        if events:
+            break
+        await asyncio.sleep(0.05)
+    assert [e.meta.get("kind") for e in events] == ["error"]  # no model_fallback first
+    assert "Can't reach tool server deadbrowser (http://127.0.0.1:9/mcp)" in events[0].content
