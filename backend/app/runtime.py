@@ -322,15 +322,27 @@ class Escalation(Exception):
         self.reason = reason
 
 
-def _find_exc(exc: BaseException, kind: type) -> BaseException | None:
-    if isinstance(exc, kind):
-        return exc
-    for sub in getattr(exc, "exceptions", ()) or ():
-        found = _find_exc(sub, kind)
-        if found:
-            return found
-    cause = exc.__cause__ or exc.__context__
-    return _find_exc(cause, kind) if cause is not None and cause is not exc else None
+def _find_exc(exc: BaseException | None, kind: type) -> BaseException | None:
+    """The first exception of `kind` in exc, its group members or its cause/context chain.
+
+    Walks iteratively and visits each exception once: exception chains can loop (an
+    ExceptionGroup re-raised "from" its own leaf's cause, as fastmcp's connection errors
+    are), which made the old recursive version run until RecursionError and hide the
+    real failure.
+    """
+    seen: set[int] = set()
+    stack = [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, kind):
+            return e
+        stack.append(e.__context__)
+        stack.append(e.__cause__)
+        stack.extend(reversed(list(getattr(e, "exceptions", ()) or ())))
+    return None
 
 
 def has_vision(agent: AgentDef) -> bool:
