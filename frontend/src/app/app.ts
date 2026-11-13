@@ -1,10 +1,13 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { filter, map } from 'rxjs';
 import { DatePipe } from '@angular/common';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Workspace } from './workspace';
 import { Session } from './session';
+import { Thread } from './api.service';
 
 /** The app shell: conversations in the sidebar, Settings at its foot. */
 @Component({
@@ -44,15 +47,43 @@ import { Session } from './session';
         <div class="side-label">Conversations</div>
       }
       <nav class="side-threads">
-        @for (t of threads(); track t.id) {
-          <a class="thread" [routerLink]="['/chat', t.id]" routerLinkActive="on"
-             [title]="ws.agentName(t.agent_id) + ' · ' + t.title">
-            <hq-avatar [agent]="ws.agent(t.agent_id)" [size]="collapsed() ? 28 : 26" [active]="ws.isActive(t.agent_id)" />
-            <span class="row-text label">
-              <span class="name">{{ ws.agentName(t.agent_id) }}</span>
-              <span class="sub">{{ subtitle(t) }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span>
-            </span>
-          </a>
+        @for (g of groups(); track g.agentId) {
+          @if (collapsed()) {
+            <!-- Narrow sidebar: one avatar per agent, opening its latest chat. -->
+            <a class="thread" [routerLink]="['/chat', g.threads[0].id]" [class.on]="g.agentId === activeAgentId()"
+               [title]="g.name + ' · ' + g.threads.length + ' chat' + (g.threads.length === 1 ? '' : 's')">
+              <hq-avatar [agent]="ws.agent(g.agentId)" [size]="28" [active]="ws.isActive(g.agentId)" />
+            </a>
+          } @else {
+            <div class="agent-group" [class.open]="isOpen(g.agentId)">
+              <div class="agent-head" [class.has-active]="!isOpen(g.agentId) && g.agentId === activeAgentId()">
+                <button class="agent-toggle" (click)="toggleGroup(g.agentId)"
+                        [attr.aria-expanded]="isOpen(g.agentId)"
+                        [title]="(isOpen(g.agentId) ? 'Collapse ' : 'Expand ') + g.name + ' chats'">
+                  <hq-icon name="chevron" [size]="14" class="caret" />
+                  <hq-avatar [agent]="ws.agent(g.agentId)" [size]="26" [active]="ws.isActive(g.agentId)" />
+                  <span class="row-text label">
+                    <span class="name">{{ g.name }}</span>
+                    <span class="sub">{{ g.threads.length }} chat{{ g.threads.length === 1 ? '' : 's' }} · {{ g.threads[0].created_at | date:'MMM d' }}</span>
+                  </span>
+                </button>
+                <button class="icon-btn agent-new" (click)="start(g.agentId)" [title]="'New chat with ' + g.name">
+                  <hq-icon name="plus" [size]="15" /></button>
+              </div>
+              @if (isOpen(g.agentId)) {
+                <div class="agent-threads">
+                  @for (t of g.threads; track t.id) {
+                    <a class="thread child" [routerLink]="['/chat', t.id]" routerLinkActive="on" [title]="t.title">
+                      <span class="row-text label">
+                        <span class="name">{{ subtitle(t) }}</span>
+                        <span class="sub">{{ t.created_at | date:'MMM d, h:mm a' }}</span>
+                      </span>
+                    </a>
+                  }
+                </div>
+              }
+            </div>
+          }
         } @empty {
           @if (!collapsed()) { <p class="hint">{{ query() ? 'No matches.' : 'No conversations yet.' }}</p> }
         }
@@ -89,6 +120,64 @@ export class App {
     return this.ws.threads().filter(t =>
       `${this.ws.agentName(t.agent_id)} ${t.title}`.toLowerCase().includes(q));
   });
+
+  /** Threads grouped by agent; groups ordered by their most recent chat. */
+  groups = computed(() => {
+    const by = new Map<string, Thread[]>();
+    for (const t of this.threads()) {
+      const list = by.get(t.agent_id) ?? [];
+      list.push(t);
+      by.set(t.agent_id, list);
+    }
+    const newest = (ts: Thread[]) => Math.max(...ts.map(t => Date.parse(t.created_at) || 0));
+    return [...by.entries()]
+      .map(([agentId, ts]) => ({
+        agentId,
+        name: this.ws.agentName(agentId),
+        threads: [...ts].sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)),
+      }))
+      .sort((a, b) => newest(b.threads) - newest(a.threads));
+  });
+
+  private router = inject(Router);
+  private url = toSignal(
+    this.router.events.pipe(filter(e => e instanceof NavigationEnd), map(e => (e as NavigationEnd).urlAfterRedirects)),
+    { initialValue: this.router.url });
+  /** The thread open in the main pane, if any. */
+  activeThreadId = computed(() => /^\/chat\/([^/?#]+)/.exec(this.url())?.[1] ?? null);
+  activeAgentId = computed(() => {
+    const id = this.activeThreadId();
+    return id ? this.ws.threads().find(t => t.id === id)?.agent_id ?? null : null;
+  });
+
+  /** Agents whose chat lists are expanded (remembered across reloads). */
+  expanded = signal<Set<string>>(this.loadExpanded());
+
+  constructor() {
+    // Opening a chat (from anywhere) expands its agent so it's visible in the list.
+    effect(() => {
+      const a = this.activeAgentId();
+      if (a && !this.expanded().has(a)) this.setExpanded(a, true);
+    });
+  }
+
+  /** Searching shows every matching chat, regardless of collapse state. */
+  isOpen(agentId: string) { return !!this.query().trim() || this.expanded().has(agentId); }
+
+  toggleGroup(agentId: string) { this.setExpanded(agentId, !this.expanded().has(agentId)); }
+
+  private setExpanded(agentId: string, open: boolean) {
+    this.expanded.update(s => {
+      const n = new Set(s);
+      if (open) n.add(agentId); else n.delete(agentId);
+      return n;
+    });
+    try { localStorage.setItem('ahq.expandedAgents', JSON.stringify([...this.expanded()])); } catch { /* ignore */ }
+  }
+
+  private loadExpanded() {
+    try { return new Set<string>(JSON.parse(localStorage.getItem('ahq.expandedAgents') ?? '[]')); } catch { return new Set<string>(); }
+  }
 
   /** The title, unless it's just the default "Chat with <agent>". */
   subtitle(t: { title: string; agent_id: string }) {

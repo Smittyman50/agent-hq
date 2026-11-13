@@ -157,8 +157,8 @@ button.danger-link { color: var(--bad); }
 .menu-label { color: var(--muted); font-size: 12px; padding: 4px 8px 6px; }
 .menu-item { display: flex; gap: 10px; align-items: center; width: 100%; padding: 7px 8px; background: transparent; color: var(--text); border-radius: 6px; text-align: left; }
 .menu-item:hover { background: var(--panel2); }
-.menu-item .row-text, .thread .row-text, .start-card .row-text { display: flex; flex-direction: column; min-width: 0; }
-.menu-item .sub, .thread .sub, .start-card .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-item .row-text, .thread .row-text, .agent-toggle .row-text, .start-card .row-text { display: flex; flex-direction: column; min-width: 0; }
+.menu-item .sub, .thread .sub, .agent-toggle .sub, .start-card .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .side-search { display: flex; align-items: center; gap: 8px; margin: 2px 10px 10px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: var(--bg); }
 .side-search input { border: 0; background: transparent; padding: 7px 0; margin: 0; }
@@ -171,6 +171,19 @@ button.danger-link { color: var(--bad); }
 .thread.on { background: var(--panel2); }
 .thread .name { font-size: 13.5px; }
 .sidebar.collapsed .thread { justify-content: center; padding: 6px 0; }
+.agent-group { display: flex; flex-direction: column; }
+.agent-head { display: flex; align-items: center; border-radius: 7px; }
+.agent-head:hover { background: var(--panel); }
+.agent-head.has-active { background: var(--panel2); }
+.agent-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 4px 7px 2px; background: transparent; border: 0; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.agent-toggle .name { font-size: 13.5px; }
+.agent-toggle .caret { color: var(--muted); transition: transform .12s ease; }
+.agent-group.open .caret { transform: rotate(90deg); }
+.agent-head .agent-new { opacity: 0; margin-right: 4px; }
+.agent-head:hover .agent-new, .agent-head .agent-new:focus-visible { opacity: 1; }
+.agent-threads { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 6px 22px; padding-left: 10px; border-left: 1px solid var(--line); }
+.thread.child { padding: 5px 8px; }
+.thread.child .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-threads .hint { padding: 8px; font-size: 13px; }
 .side-foot { padding: 10px; border-top: 1px solid var(--line); }
 
