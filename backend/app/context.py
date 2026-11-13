@@ -338,6 +338,34 @@ def make_trimmer(budget_tokens: int):
                     out[i] = dataclasses.replace(out[i], parts=parts)
             if history_tokens(out) <= budget_tokens:
                 break
+        # Still too big: the newest results themselves don't fit (a full page snapshot of a
+        # long web page can be 100k+ tokens). Sent whole, the model server would cut the
+        # start of the prompt (instructions and the user's request) to make room, and the
+        # model would answer the tool output instead of the user. Keep what fits.
+        for i, j in reversed(returns[-2:]):
+            over = history_tokens(out) - budget_tokens
+            if over <= 0:
+                break
+            p = out[i].parts[j]
+            if _has_binary(p.content):
+                continue
+            text = _part_text(p)
+            room = max(tokens(text) - over, 250)  # tokens this result may keep
+            keep = int(room * 3.5 * 0.9)
+            if keep >= len(text):
+                continue
+            parts = list(out[i].parts)
+            parts[j] = dataclasses.replace(p, content=text[:keep] + (
+                f"\n… [cut: this {p.tool_name} result was about {tokens(text):,} tokens, more than "
+                "your context window has room for; only the start is shown. Ask for less: a "
+                "narrower tool or query, or for a web page, a screenshot or a specific element "
+                "instead of the whole page]"))
+            out[i] = dataclasses.replace(out[i], parts=parts)
         return out
 
     return trim
+
+
+def _has_binary(content: Any) -> bool:
+    items = content if isinstance(content, (list, tuple)) else [content]
+    return any(getattr(c, "kind", None) == "binary" for c in items)

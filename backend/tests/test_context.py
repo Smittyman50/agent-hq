@@ -104,6 +104,19 @@ def test_trimming_within_a_turn():
     assert context.make_trimmer(0)(msgs)[2].parts[0].content == "p" * 3000  # no window, no change
 
 
+def test_a_result_bigger_than_the_window_is_cut_to_fit():
+    # A full snapshot of a long web page: sent whole, the model server would drop the start
+    # of the prompt (the user's request) instead.
+    msgs = [ModelRequest(parts=[UserPromptPart(content="describe the photo on this page")]),
+            ModelResponse(parts=[ToolCallPart("browser_snapshot", {}, tool_call_id="s")]),
+            ModelRequest(parts=[ToolReturnPart("browser_snapshot", "x" * 400_000, tool_call_id="s")])]
+    trimmed = context.make_trimmer(8000)(msgs)
+    assert context.history_tokens(trimmed) <= 8000
+    assert trimmed[0].parts[0].content == "describe the photo on this page"
+    cut = trimmed[2].parts[0].content
+    assert cut.startswith("xxx") and "browser_snapshot result was about" in cut
+
+
 @pytest.fixture
 def fake_ollama():
     class H(http.server.BaseHTTPRequestHandler):
