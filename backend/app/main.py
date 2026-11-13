@@ -66,6 +66,9 @@ async def lifespan(app: FastAPI):
 
         webhooks_mod.seal_existing()
         background.append(asyncio.create_task(webhooks_api.cleanup_loop()))
+        from . import titles
+
+        background.append(asyncio.create_task(titles.backfill(broker)))
         from .learning import loop as learning_loop
 
         background.append(asyncio.create_task(learning_loop(rt)))

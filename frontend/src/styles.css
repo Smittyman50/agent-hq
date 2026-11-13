@@ -185,6 +185,7 @@ button.danger-link { color: var(--bad); }
 .agent-threads { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 6px 22px; padding-left: 10px; border-left: 1px solid var(--line); }
 .thread.child { padding: 5px 4px 5px 8px; }
 .thread.child .row-text { flex: 1; }
+.thread.child .name.untitled { color: var(--muted); font-style: italic; }
 .thread-del { opacity: 0; padding: 4px; }
 .thread.child:hover .thread-del, .thread-del:focus-visible { opacity: 1; }
 .thread-del:hover { color: #e5534b; }

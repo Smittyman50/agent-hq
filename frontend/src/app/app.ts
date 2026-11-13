@@ -64,7 +64,7 @@ import { Thread } from './api.service';
                   <hq-avatar [agent]="ws.agent(g.agentId)" [size]="26" [active]="ws.isActive(g.agentId)" />
                   <span class="row-text label">
                     <span class="name">{{ g.name }}</span>
-                    <span class="sub">{{ g.threads.length }} chat{{ g.threads.length === 1 ? '' : 's' }} · {{ g.threads[0].created_at | date:'MMM d' }}</span>
+                    <span class="sub">{{ g.threads.length }} chat{{ g.threads.length === 1 ? '' : 's' }} · {{ ws.lastUpdated(g.threads[0]) | date:'MMM d' }}</span>
                   </span>
                 </button>
                 <button class="icon-btn agent-new" (click)="start(g.agentId)" [title]="'New chat with ' + g.name">
@@ -76,15 +76,15 @@ import { Thread } from './api.service';
                     @if (confirming() === t.id) {
                       <div class="thread child confirm">
                         <span class="row-text label"><span class="name">Delete this chat?</span>
-                          <span class="sub">{{ subtitle(t) }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span></span>
+                          <span class="sub">{{ title(t) }} · {{ ws.lastUpdated(t) | date:'MMM d, h:mm a' }}</span></span>
                         <button class="mini danger" (click)="remove(t.id)">Delete</button>
                         <button class="mini" (click)="confirming.set(null)">Cancel</button>
                       </div>
                     } @else {
-                      <a class="thread child" [routerLink]="['/chat', t.id]" routerLinkActive="on" [title]="t.title">
+                      <a class="thread child" [routerLink]="['/chat', t.id]" routerLinkActive="on" [title]="title(t)">
                         <span class="row-text label">
-                          <span class="name">{{ subtitle(t) }}</span>
-                          <span class="sub">{{ t.created_at | date:'MMM d, h:mm a' }}</span>
+                          <span class="name" [class.untitled]="isDefault(t)">{{ title(t) }}</span>
+                          <span class="sub">{{ ws.lastUpdated(t) | date:'MMM d, h:mm a' }}</span>
                         </span>
                         <button class="icon-btn thread-del" title="Delete chat"
                                 (click)="$event.preventDefault(); $event.stopPropagation(); confirming.set(t.id)">
@@ -145,12 +145,13 @@ export class App {
       list.push(t);
       by.set(t.agent_id, list);
     }
-    const newest = (ts: Thread[]) => Math.max(...ts.map(t => Date.parse(t.created_at) || 0));
+    const at = (t: Thread) => Date.parse(this.ws.lastUpdated(t)) || 0;
+    const newest = (ts: Thread[]) => Math.max(...ts.map(at));
     return [...by.entries()]
       .map(([agentId, ts]) => ({
         agentId,
         name: this.ws.agentName(agentId),
-        threads: [...ts].sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)),
+        threads: [...ts].sort((a, b) => at(b) - at(a)),
       }))
       .sort((a, b) => newest(b.threads) - newest(a.threads));
   });
@@ -235,10 +236,11 @@ export class App {
     try { return new Set<string>(JSON.parse(localStorage.getItem('ahq.expandedAgents') ?? '[]')); } catch { return new Set<string>(); }
   }
 
-  /** The title, unless it's just the default "Chat with <agent>". */
-  subtitle(t: { title: string; agent_id: string }) {
-    return t.title === `Chat with ${this.ws.agentName(t.agent_id)}` ? 'Chat' : t.title;
-  }
+  /** Still called "Chat with <agent>": named after its first reply. */
+  isDefault(t: Thread) { return t.title.startsWith('Chat with ') || t.title === 'New conversation'; }
+
+  /** What the sidebar calls a chat. */
+  title(t: Thread) { return this.isDefault(t) ? 'New chat' : t.title; }
 
   start(agentId: string) { this.menu.set(false); this.ws.newChat(agentId); }
 

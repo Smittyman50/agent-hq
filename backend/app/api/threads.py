@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from .. import attachments
@@ -33,7 +34,8 @@ class MessageIn(BaseModel):
 
 @router.get("/api/threads", response_model=list[Thread])
 def list_threads(agent_id: str | None = None, s: Session = Depends(get_session)):
-    q = select(Thread).where(Thread.deleted_at.is_(None)).order_by(Thread.created_at.desc())
+    q = (select(Thread).where(Thread.deleted_at.is_(None))
+         .order_by(func.coalesce(Thread.updated_at, Thread.created_at).desc()))
     if agent_id:
         q = q.where(Thread.agent_id == agent_id)
     return s.exec(q).all()

@@ -56,7 +56,7 @@ from sqlmodel import select
 
 from . import attachments as att
 from . import knowledge_proposals as kprop
-from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking
+from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -644,6 +644,11 @@ class Runtime:
         m = Message(thread_id=thread_id, role=role, content=content, agent_id=agent_id, meta=meta)
         with db.session() as s:
             s.add(m)
+            if role in (Role.user, Role.agent):  # the sidebar's "last updated"
+                t = s.get(Thread, thread_id)
+                if t is not None:
+                    t.updated_at = m.created_at
+                    s.add(t)
             s.commit()
             s.refresh(m)
         await self.broker.publish(thread_id, "message", message=json.loads(m.model_dump_json()))
@@ -873,6 +878,7 @@ class Runtime:
                                           job_id=job.id)
             await att.link_outputs(self, job.id, msg.id)  # files the agent made this turn
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
+            titles.title_soon(thread_id, self.broker)  # a chat still called "Chat with …" gets a name
             skills.finish_job(job.id, "done")
             learning.job_finished(job.id, "done")
             if (job.meta or {}).get("kind") in ("mqtt", "webhook"):

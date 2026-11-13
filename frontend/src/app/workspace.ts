@@ -39,7 +39,8 @@ export class Workspace {
       }
     });
     setInterval(() => this.now.set(Date.now()), 1500);
-    setInterval(() => { if (this.session.user()) this.refreshPending(); }, 20000);
+    // Threads too: chats you're not looking at (schedules, events) change and get titles.
+    setInterval(() => { if (this.session.user()) { this.refreshPending(); this.reloadThreads(); } }, 20000);
   }
 
   refreshPending() {
@@ -62,6 +63,19 @@ export class Workspace {
       this.router.navigate(['/chat', t.id]);
     });
   }
+
+  /** A chat changed on the server (e.g. it got its title). */
+  upsertThread(t: Thread) {
+    this.threads.update(ts => ts.some(x => x.id === t.id) ? ts.map(x => x.id === t.id ? { ...x, ...t } : x) : [t, ...ts]);
+  }
+
+  /** Someone said something in a chat: it moves to the top as "last updated". */
+  touchThread(id: string, at: string) {
+    this.threads.update(ts => ts.map(t => t.id === id ? { ...t, updated_at: at } : t));
+  }
+
+  /** When a chat last changed. */
+  lastUpdated(t: Thread) { return t.updated_at ?? t.created_at; }
 
   /** Delete a chat. If it's the one open, go to the agent's next newest chat (or the start page). */
   deleteThread(id: string, openNow: boolean) {

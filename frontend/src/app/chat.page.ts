@@ -484,8 +484,12 @@ export class ChatPage implements OnInit, OnDestroy {
         if (replay) break;
         if (!this.messages().some(m => m.id === ev['message'].id)) {
           this.messages.update(ms => [...ms, ev['message']]);
+          if (ev['message'].role !== 'event') this.ws.touchThread(ev['message'].thread_id, ev['message'].created_at);
           this.scroll();
         }
+        break;
+      case 'thread_updated':  // the chat got its title
+        if (!replay) this.ws.upsertThread(ev['thread']);
         break;
       case 'message_updated':  // e.g. a delegation thread going from working to done
         if (!replay) this.messages.update(ms => ms.map(m => m.id === ev['message'].id ? ev['message'] : m));

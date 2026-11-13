@@ -148,7 +148,11 @@ export interface ToolApproval {
   reason?: string;
 }
 
-export interface Thread { id: string; agent_id: string; title: string; created_at: string; }
+export interface Thread {
+  id: string; agent_id: string; title: string; created_at: string;
+  /** When you or the agent last said something (null: nothing since it was made). */
+  updated_at?: string | null;
+}
 
 export interface Message {
   id: string;
