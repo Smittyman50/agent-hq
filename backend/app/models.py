@@ -108,6 +108,10 @@ class AgentDef(SQLModel, table=True):
     # Optional fallback model, used when the main model fails or the agent escalates.
     fallback_provider_id: str | None = Field(default=None, foreign_key="modelprovider.id")
     fallback_model: str = ""
+    # How much the model reasons before it answers (see app/thinking.py): "" = the model's
+    # own default, "off", "on" (the provider's default effort), or an effort level:
+    # minimal, low, medium, high, xhigh, max. Applies to the fallback model too.
+    thinking: str | None = ""
     # Which worker pool runs this agent. Workers subscribe to one or more pools, so
     # this is how you pin an agent to a machine (e.g. the host next to its desktop).
     pool: str = "default"

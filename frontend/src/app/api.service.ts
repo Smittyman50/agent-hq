@@ -17,6 +17,7 @@ export interface AgentDef {
   sees_images?: boolean;   // image attachments go to its own (multimodal) model
   fallback_provider_id: string | null;
   fallback_model: string;
+  thinking?: ThinkingLevel; // how much the model reasons; '' = the model's default
   pool: string;
   tool_server_ids: string[];
   delegates: string[];
@@ -312,7 +313,7 @@ export interface HqEvent { type: string; [k: string]: any; }
 export function blankAgent(): AgentDef {
   return { name: '', description: '', pronouns: '', instructions: '', provider_id: null, model: '',
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true, sees_images: false,
-    fallback_provider_id: null, fallback_model: '', memory_enabled: true, pool: 'default',
+    fallback_provider_id: null, fallback_model: '', thinking: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
     subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true };
 }
@@ -388,6 +389,10 @@ export interface ConversationSettings {
   reserve_tokens: number; local_window: number; cloud_window: number;
   provider_id: string | null; model: string; warn_overflow: boolean;
 }
+export type ThinkingLevel = '' | 'off' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface ThinkingSupport { supported: boolean | null; note: string; }
+
 export interface AgentContextInfo {
   window: number; source: string; detected: number | null; set: number | null;
   instruction_tokens: number; reserve_tokens: number; room_for_conversation: number;
@@ -628,6 +633,11 @@ export class Api {
   conversationSettings() { return this.http.get<ConversationSettings>('/api/conversations/settings'); }
   saveConversationSettings(x: ConversationSettings) { return this.http.put<ConversationSettings>('/api/conversations/settings', x); }
   agentContext(id: string) { return this.http.get<AgentContextInfo>(`/api/agents/${id}/context`); }
+  thinkingSupport(providerId: string | null, model: string) {
+    const params: Record<string, string> = { model };
+    if (providerId) params['provider_id'] = providerId;
+    return this.http.get<ThinkingSupport>('/api/agents/thinking-support', { params });
+  }
 
   subscriptions() { return this.http.get<Subscription[]>('/api/subscriptions'); }
   saveSubscription(x: Subscription): Observable<Subscription> {

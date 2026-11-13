@@ -29,6 +29,8 @@ class AgentIn(BaseModel):
     sees_images: bool = False
     fallback_provider_id: str | None = None
     fallback_model: str = ""
+    # "" (model default) | off | on | minimal | low | medium | high | xhigh | max
+    thinking: str | None = ""
     memory_enabled: bool = True
     pool: str = "default"
     tool_server_ids: list[str] = []
@@ -90,6 +92,10 @@ def _check_provider(s: Session, body: AgentIn) -> None:
         # A provider with no model chosen fails at run time ("no model selected").
         if pid and not model.strip():
             raise HTTPException(422, f"choose a {what} from the provider's list (or set its provider to none)")
+    from ..thinking import LEVELS
+
+    if (body.thinking or "") not in LEVELS:
+        raise HTTPException(422, "thinking must be one of: " + ", ".join(l or "(model default)" for l in LEVELS))
     if body.vision_coords not in ("relative_1000", "pixels"):
         raise HTTPException(422, "vision_coords must be relative_1000 or pixels")
 
@@ -251,6 +257,14 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
     s.commit()
     return {"providers": len(body.get("providers", [])), "agents": len(pending),
             "tool_servers": len(body.get("tool_servers", [])), "subscriptions": subs}
+
+
+@router.get("/thinking-support")
+async def thinking_support(model: str = "", provider_id: str | None = None) -> dict[str, Any]:
+    """Whether a thinking level reaches this provider + model, with a short note for the UI."""
+    from .. import thinking
+
+    return await thinking.support(provider_id or None, model)
 
 
 @router.get("/{agent_id}", response_model=AgentDef)

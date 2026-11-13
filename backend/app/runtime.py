@@ -49,13 +49,14 @@ from pydantic_ai import (
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
 from sqlmodel import select
 
 from . import attachments as att
 from . import knowledge_proposals as kprop
-from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents
+from . import approvals, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -854,7 +855,8 @@ class Runtime:
     def build_agent(self, agent: AgentDef, *, as_worker: bool, on_fallback: bool = False,
                     memory_context: str = "", skills_context: str = "",
                     knowledge_context: str = "", window: int | None = None,
-                    thread_id: str | None = None) -> Agent:
+                    thread_id: str | None = None,
+                    model_settings: ModelSettings | None = None) -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
@@ -937,6 +939,8 @@ class Runtime:
             output_type=[WorkResult, str] if as_worker else str,
             retries=3,  # a malformed tool call or result gets a few tries, not one
             capabilities=[ProcessHistory(trimmer)],
+            # The agent's thinking level, translated for its model (app/thinking.py).
+            model_settings=model_settings,
             toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
                                       source="mcp" if i < mcp_count else "internal")
                       for i, (t, desk) in enumerate(toolsets)],
@@ -980,7 +984,9 @@ class Runtime:
                 pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=on_fallback,
                                             memory_context=recalled, skills_context=skills_block,
                                             knowledge_context=excerpts, window=window,
-                                            thread_id=deps.thread_id)
+                                            thread_id=deps.thread_id,
+                                            model_settings=await thinking.settings_for(
+                                                agent, on_fallback=on_fallback))
                 history = await self._fit_history(agent, pa_agent, history, window, text, deps)
                 coro = pa_agent.run(self._user_input(agent, text, deps), deps=deps,
                                     message_history=history,
@@ -2054,6 +2060,7 @@ class Runtime:
                     instructions=(instructions.strip() or f"You are {role}, a helper for {me.name}."),
                     provider_id=picked["provider_id"], model=picked["model"], pool=me.pool,
                     tool_server_ids=[t.id for t in chosen], delegates=[], memory_enabled=False,
+                    thinking=me.thinking or "",  # sub-agents think as hard as the agent that made them
                     is_subagent=True, parent_agent_id=me.id, spawned_by_job_id=ctx.deps.job_id,
                     subagent_limits={"max_minutes": minutes,
                                      "max_requests": int(limits.get("max_requests") or 25)},

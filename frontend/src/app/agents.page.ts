@@ -1,7 +1,7 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits, AgentContextInfo } from './api.service';
+import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits, AgentContextInfo, ThinkingSupport } from './api.service';
 import { ModelPicker } from './model-picker';
 import { Avatar } from './avatar';
 
@@ -63,7 +63,17 @@ import { Avatar } from './avatar';
           <textarea name="instructions" rows="18" [(ngModel)]="d.instructions"
             placeholder="Who this agent is, how it works, what it should report."></textarea></label>
         <hq-model-picker label="Model" [providers]="providers()"
-          [(providerId)]="d.provider_id" [(modelName)]="d.model" />
+          [(providerId)]="d.provider_id" [(modelName)]="d.model"
+          (providerIdChange)="checkThinking()" (modelNameChange)="checkThinking()" />
+        <label class="narrow">Thinking <small>how much the model reasons before it answers</small>
+          <select name="thinking" [(ngModel)]="d.thinking">
+            @for (t of thinkingLevels; track t.value) { <option [value]="t.value">{{ t.label }}</option> }
+          </select></label>
+        <p class="hint inline-hint" [class.needs-hint]="d.thinking && thinkingInfo()?.supported === false">
+          {{ thinkingHint(d.thinking ?? '') }}
+          @if (thinkingInfo()?.note) { {{ thinkingInfo()!.note }} }
+          Also used by its fallback model and the sub-agents it creates.
+        </p>
         <label class="narrow">Context window <small>tokens; blank = ask the provider</small>
           <input name="ctxwin" type="number" min="1024" step="1024" [(ngModel)]="d.context_window"
             [placeholder]="ctx()?.detected ? 'Auto: ' + ctx()!.detected!.toLocaleString() : 'Auto'"></label>
@@ -235,6 +245,20 @@ export class AgentsPage implements OnInit {
     this.ctx.set(null);
     if (id) this.api.agentContext(id).subscribe({ next: c => this.ctx.set(c), error: () => {} });
   }
+  thinkingInfo = signal<ThinkingSupport | null>(null);
+  private thinkingCheck = 0;
+  /** Ask the backend whether a thinking level reaches the chosen model (after the picker updates the draft). */
+  checkThinking() {
+    queueMicrotask(() => {
+      const d = this.draft();
+      const n = ++this.thinkingCheck;
+      this.thinkingInfo.set(null);
+      if (!d?.model) return;
+      this.api.thinkingSupport(d.provider_id, d.model).subscribe({
+        next: t => { if (n === this.thinkingCheck) this.thinkingInfo.set(t); }, error: () => {},
+      });
+    });
+  }
   error = signal('');
   providers = signal<ProviderInfo[]>([]);
   pools = computed(() => [...new Set(['default', ...this.agents().map(a => a.pool)])]);
@@ -244,6 +268,17 @@ export class AgentsPage implements OnInit {
     { value: 'off', label: 'Off' },
     { value: 'ask', label: 'Ask me first' },
     { value: 'allowed', label: 'Allowed within limits' },
+  ] as const;
+  thinkingLevels = [
+    { value: '', label: 'Model default' },
+    { value: 'off', label: 'Off' },
+    { value: 'on', label: 'On (provider\'s default effort)' },
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
   ] as const;
   learningModes = [
     { value: 'off', label: 'Off' },
@@ -259,6 +294,12 @@ export class AgentsPage implements OnInit {
     if (mode === 'auto') return 'New skills and improvements this agent writes are saved at once; you\'re told, and can roll back.';
     if (mode === 'off') return 'This agent can\'t propose skills.';
     return 'New skills and improvements this agent writes wait in your Requests inbox for you to approve, edit or reject.';
+  }
+
+  thinkingHint(level: string) {
+    if (!level) return 'Nothing is sent, so the model does what it does by default.';
+    if (level === 'off') return 'Asks the model not to reason first: fastest and cheapest.';
+    return 'Higher levels give better answers on hard tasks but are slower and, on local models, use more GPU time. Levels a model doesn\'t offer use the closest one it does.';
   }
 
   modeHint(mode: string) {
@@ -301,11 +342,13 @@ export class AgentsPage implements OnInit {
     d.subagent_mode ??= 'off';
     d.learning_mode ??= 'propose';
     d.use_profile ??= true;
+    d.thinking ??= '';
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
     d.subagent_limits.models ??= [];
     if (!a) d.provider_id = this.providers().find(p => p.enabled)?.id ?? null;
     this.draft.set(d);
     this.loadCtx(a?.id);
+    this.checkThinking();
   }
 
   uploadAvatar(d: AgentDef, ev: Event) {

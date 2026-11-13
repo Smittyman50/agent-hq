@@ -304,6 +304,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - local-first models: a real Chromium driven through Playwright MCP over CDP; vision tools on rendered screenshots (with and without zoom, both coordinate formats, and a not-found case); falling back on errors, runaway loops and escalation
 - desktop handoff: tools pausing while you have control, an agent asking you to take over and resuming with your note, and the wait timing out
 - model providers: listing models for each kind, write-only keys, and two agents on two Ollama models answering through a worker
+- thinking levels: the unified setting for OpenAI/Anthropic, `reasoning_effort` for Ollama only when the model can think, the fallback using its own provider, the support hint, an agent run receiving its level, API validation, and export
 - MQTT publisher: status and allow-listed publishes reaching a real broker; refusing wildcards, system, reserved and off-list topics, oversized payloads and bursts; and an agent publishing only after you approve
 - web reader: feeds (and finding a site's feed), readable pages without clutter, paging of long pages, redirects, robots.txt, SearXNG search, refusing LAN addresses unless allowed, and an agent reading a feed through Agent HQ
 - scheduler: every cadence and its description, bad cadences explained, time zones across a DST change, firing into the schedule's own conversation exactly once (two checkers at once), catching up once after downtime, skipping while a run is still going, run now, and disabled agents
@@ -604,6 +605,18 @@ You can register several providers of the same kind, for example two Ollama serv
 - **Advanced:** with the provider set to *Custom model spec*, the Model field takes a raw PydanticAI spec such as `openai:gpt-4.1`, or `test` for a no-LLM test model.
 
 Agents that use desktop tools need a vision-capable model.
+
+### Thinking levels
+
+Each agent has a **Thinking** setting next to its model (Settings → Agents): *Model default*, *Off*, *On*, or an effort level (*Minimal*, *Low*, *Medium*, *High*, *Extra high*, *Max*). It controls how much the model reasons before it answers. It's sent to the model as a request setting, not written into the instructions: telling a model to "think hard" in its prompt doesn't change how much it actually reasons. Use the instructions to say *what* the agent should be careful about, and this setting for *how much* it thinks.
+
+- **OpenAI, the ChatGPT plan and Anthropic** get PydanticAI's unified `thinking` setting, which it turns into each provider's own (reasoning effort, thinking budgets, adaptive thinking). Levels a model doesn't offer use the closest one it does.
+- **Ollama** gets `reasoning_effort` on its OpenAI-compatible endpoint (`none` for Off), because PydanticAI doesn't translate the setting for Ollama. It's only sent to models whose `/api/show` lists the `thinking` capability, so a model that can't think isn't sent a setting it would reject. gpt-oss always thinks a little (Off gives it its lowest effort); Qwen3-style models only do on and off, so every level just turns thinking on.
+- **OpenAI-compatible servers** get the unified setting too, but PydanticAI only acts on it for model names it recognises; for others the setting is ignored and the model keeps its default.
+- The editor checks the chosen model and says under the setting whether the level will reach it.
+- The **fallback model** uses the same level, translated for its own provider, and **sub-agents** inherit the level of the agent that created them. *Model default* sends nothing at all.
+
+Higher levels help on hard, multi-step tasks but are slower, and on local models they cost GPU time; a supervisor that mostly routes work is usually fine on Low or Off.
 
 ### Your ChatGPT plan instead of an API key
 
@@ -992,6 +1005,7 @@ backend/app/
   knowledge_proposals.py  documents agents suggest: where they may, near-duplicates, approving into a collection
   evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
   context.py         long conversations: context windows, compaction, trimming, overflow warnings
+  thinking.py        thinking levels: per-agent setting -> model settings per provider, support check
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
