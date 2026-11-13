@@ -155,7 +155,7 @@ def ensure_thread(s: Schedule) -> str:
     with db.session() as ses:
         row = ses.get(Schedule, s.id)
         thread = ses.get(Thread, row.thread_id) if row.thread_id else None
-        if thread is not None and thread.agent_id == row.agent_id:
+        if thread is not None and thread.agent_id == row.agent_id and thread.deleted_at is None:
             return thread.id
         thread = Thread(agent_id=row.agent_id, title=f"Scheduled: {row.name}")
         ses.add(thread)

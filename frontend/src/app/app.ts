@@ -72,13 +72,29 @@ import { Thread } from './api.service';
               </div>
               @if (isOpen(g.agentId)) {
                 <div class="agent-threads">
-                  @for (t of g.threads; track t.id) {
-                    <a class="thread child" [routerLink]="['/chat', t.id]" routerLinkActive="on" [title]="t.title">
-                      <span class="row-text label">
-                        <span class="name">{{ subtitle(t) }}</span>
-                        <span class="sub">{{ t.created_at | date:'MMM d, h:mm a' }}</span>
-                      </span>
-                    </a>
+                  @for (t of visible(g); track t.id) {
+                    @if (confirming() === t.id) {
+                      <div class="thread child confirm">
+                        <span class="row-text label"><span class="name">Delete this chat?</span>
+                          <span class="sub">{{ subtitle(t) }} · {{ t.created_at | date:'MMM d, h:mm a' }}</span></span>
+                        <button class="mini danger" (click)="remove(t.id)">Delete</button>
+                        <button class="mini" (click)="confirming.set(null)">Cancel</button>
+                      </div>
+                    } @else {
+                      <a class="thread child" [routerLink]="['/chat', t.id]" routerLinkActive="on" [title]="t.title">
+                        <span class="row-text label">
+                          <span class="name">{{ subtitle(t) }}</span>
+                          <span class="sub">{{ t.created_at | date:'MMM d, h:mm a' }}</span>
+                        </span>
+                        <button class="icon-btn thread-del" title="Delete chat"
+                                (click)="$event.preventDefault(); $event.stopPropagation(); confirming.set(t.id)">
+                          <hq-icon name="trash" [size]="14" /></button>
+                      </a>
+                    }
+                  }
+                  @if (g.threads.length > PAGE) {
+                    <button class="more-toggle" (click)="toggleMore(g.agentId)">
+                      {{ showingAll(g) ? 'Show less' : (g.threads.length - PAGE) + ' more' }}</button>
                   }
                 </div>
               }
@@ -167,6 +183,38 @@ export class App {
         if (!this.expanded().has(a)) this.setExpanded(a, true);
       });
     });
+  }
+
+  /** How many of an agent's chats show before "more". */
+  readonly PAGE = 5;
+  /** Agents whose full chat list is showing. */
+  showAll = signal<Set<string>>(new Set());
+  /** The chat waiting for a delete confirmation. */
+  confirming = signal<string | null>(null);
+
+  /** All of a group when searching, showing all, or when the open chat is past the first page. */
+  showingAll(g: { agentId: string; threads: Thread[] }) {
+    if (this.query().trim() || this.showAll().has(g.agentId)) return true;
+    const i = g.threads.findIndex(t => t.id === this.activeThreadId());
+    return i >= this.PAGE;
+  }
+
+  visible(g: { agentId: string; threads: Thread[] }) {
+    return this.showingAll(g) ? g.threads : g.threads.slice(0, this.PAGE);
+  }
+
+  toggleMore(agentId: string) {
+    const open = this.showingAll(this.groups().find(g => g.agentId === agentId)!);
+    this.showAll.update(s => {
+      const n = new Set(s);
+      if (open) n.delete(agentId); else n.add(agentId);
+      return n;
+    });
+  }
+
+  remove(id: string) {
+    this.confirming.set(null);
+    this.ws.deleteThread(id, id === this.activeThreadId());
   }
 
   /** Searching shows every matching chat, regardless of collapse state. */

@@ -142,7 +142,8 @@ def ensure_thread(sub: Subscription) -> str:
     """The subscription's conversation, created on first use."""
     with db.session() as s:
         row = s.get(Subscription, sub.id)
-        if row.thread_id and s.get(Thread, row.thread_id):
+        existing = s.get(Thread, row.thread_id) if row.thread_id else None
+        if existing is not None and existing.deleted_at is None:
             return row.thread_id
         agent = s.get(AgentDef, row.agent_id)
         t = Thread(agent_id=row.agent_id, title=f"Events: {row.name} ({agent.name if agent else '?'})")

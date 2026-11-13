@@ -63,6 +63,20 @@ export class Workspace {
     });
   }
 
+  /** Delete a chat. If it's the one open, go to the agent's next newest chat (or the start page). */
+  deleteThread(id: string, openNow: boolean) {
+    const gone = this.threads().find(t => t.id === id);
+    this.api.deleteThread(id).subscribe({
+      next: () => {
+        this.threads.update(ts => ts.filter(t => t.id !== id));
+        if (!openNow) return;
+        const next = this.threads().find(t => t.agent_id === gone?.agent_id);
+        this.router.navigate(next ? ['/chat', next.id] : ['/chat']);
+      },
+      error: () => this.reloadThreads(),
+    });
+  }
+
   /** Something happened involving these agents: animate them for a few seconds. */
   touch(ids: string[]) {
     if (!ids.length) return;

@@ -19,7 +19,8 @@ router = APIRouter(tags=["attachments"])
 async def upload(thread_id: str, files: list[UploadFile] = File(...)):
     """Store files for the next message. Send them with the message's attachment_ids."""
     with session() as s:
-        if s.get(Thread, thread_id) is None:
+        t = s.get(Thread, thread_id)
+        if t is None or t.deleted_at is not None:
             raise HTTPException(404, "conversation not found")
     if len(files) > settings.attachment_max_files:
         raise HTTPException(422, f"at most {settings.attachment_max_files} files at a time")

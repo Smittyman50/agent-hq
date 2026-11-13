@@ -694,6 +694,7 @@ export class Api {
 
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }
+  deleteThread(id: string) { return this.http.delete<void>(`/api/threads/${id}`); }
   messages(threadId: string) { return this.http.get<Message[]>(`/api/threads/${threadId}/messages`); }
   send(threadId: string, content: string, attachmentIds: string[] = []) {
     return this.http.post(`/api/threads/${threadId}/messages`, { content, attachment_ids: attachmentIds });

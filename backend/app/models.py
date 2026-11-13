@@ -553,6 +553,9 @@ class Thread(SQLModel, table=True):
     agent_id: str = Field(foreign_key="agentdef.id", index=True)
     title: str = "New conversation"
     created_at: datetime = Field(default_factory=_now)
+    # Set when you delete the chat: it leaves the sidebar and takes no new messages, but its
+    # jobs, usage, traces and anything learned from it are kept (they reference it).
+    deleted_at: datetime | None = Field(default=None, index=True)
 
 
 class Schedule(SQLModel, table=True):

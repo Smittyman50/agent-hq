@@ -183,7 +183,19 @@ button.danger-link { color: var(--bad); }
 .agent-head .agent-new { opacity: 0; margin-right: 4px; }
 .agent-head:hover .agent-new, .agent-head .agent-new:focus-visible { opacity: 1; }
 .agent-threads { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 6px 22px; padding-left: 10px; border-left: 1px solid var(--line); }
-.thread.child { padding: 5px 8px; }
+.thread.child { padding: 5px 4px 5px 8px; }
+.thread.child .row-text { flex: 1; }
+.thread-del { opacity: 0; padding: 4px; }
+.thread.child:hover .thread-del, .thread-del:focus-visible { opacity: 1; }
+.thread-del:hover { color: #e5534b; }
+.thread.child.confirm { background: var(--panel2); gap: 6px; }
+.thread.child.confirm .name { color: #e5534b; }
+.mini { flex: none; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.mini:hover { background: var(--panel); }
+.mini.danger { border-color: #e5534b; color: #e5534b; }
+.mini.danger:hover { background: #e5534b; color: #fff; }
+.more-toggle { align-self: flex-start; margin: 2px 0 2px 4px; padding: 3px 4px; background: transparent; border: 0; color: var(--muted); font-size: 12px; cursor: pointer; }
+.more-toggle:hover { color: var(--text); text-decoration: underline; }
 .thread.child .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-threads .hint { padding: 8px; font-size: 13px; }
 .side-foot { padding: 10px; border-top: 1px solid var(--line); }

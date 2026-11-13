@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import re
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -31,7 +33,7 @@ class MessageIn(BaseModel):
 
 @router.get("/api/threads", response_model=list[Thread])
 def list_threads(agent_id: str | None = None, s: Session = Depends(get_session)):
-    q = select(Thread).order_by(Thread.created_at.desc())
+    q = select(Thread).where(Thread.deleted_at.is_(None)).order_by(Thread.created_at.desc())
     if agent_id:
         q = q.where(Thread.agent_id == agent_id)
     return s.exec(q).all()
@@ -49,6 +51,18 @@ def create_thread(body: ThreadIn, s: Session = Depends(get_session)):
     return t
 
 
+@router.delete("/api/threads/{thread_id}", status_code=204)
+async def delete_thread(thread_id: str, request: Request, s: Session = Depends(get_session)):
+    """Delete a chat from the sidebar. Anything still running in it is stopped first."""
+    t = s.get(Thread, thread_id)
+    if not t or t.deleted_at is not None:
+        raise HTTPException(404)
+    await request.app.state.runtime.stop_thread(thread_id)
+    t.deleted_at = datetime.now(timezone.utc)
+    s.add(t)
+    s.commit()
+
+
 @router.get("/api/threads/{thread_id}/messages", response_model=list[Message])
 def list_messages(thread_id: str, s: Session = Depends(get_session)):
     return s.exec(select(Message).where(Message.thread_id == thread_id)
@@ -59,7 +73,8 @@ def list_messages(thread_id: str, s: Session = Depends(get_session)):
 async def post_message(thread_id: str, body: MessageIn, request: Request,
                        s: Session = Depends(get_session)):
     """Queues a turn for the thread's agent; the reply arrives over the WebSocket."""
-    if not s.get(Thread, thread_id):
+    t = s.get(Thread, thread_id)
+    if not t or t.deleted_at is not None:
         raise HTTPException(404)
     if not body.content.strip() and not body.attachment_ids:
         raise HTTPException(422, "say something or attach a file")
