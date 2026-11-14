@@ -89,3 +89,25 @@ def test_upgrade_adds_new_columns_on_postgres(postgres_url, tmp_path, monkeypatc
         assert a.use_profile is True  # and get your profile
         assert a.sees_images is False  # images keep going through the vision model
         assert all(p.max_concurrent == 0 for p in s.exec(sa.select(ModelProvider)).scalars())
+
+
+async def test_new_enum_values_are_added_to_an_older_database(pg_hq):
+    """A database made before a provider kind existed gets the new value on startup."""
+    from sqlalchemy import text
+
+    from app.models import ModelProvider, ProviderKind
+
+    eng = db.engine()
+    with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        # What an older version left behind: the enum type without the grok value.
+        conn.execute(text('ALTER TABLE modelprovider ALTER COLUMN kind TYPE text'))
+        conn.execute(text('DROP TYPE providerkind'))
+        conn.execute(text("CREATE TYPE providerkind AS ENUM "
+                          "('ollama', 'openai', 'openai_compatible', 'anthropic', 'chatgpt')"))
+        conn.execute(text('ALTER TABLE modelprovider ALTER COLUMN kind TYPE providerkind '
+                          'USING kind::providerkind'))
+    db.init_db()
+    db.init_db()  # and again: nothing left to add
+    with db.session() as s:
+        s.add(ModelProvider(name="SuperGrok", kind=ProviderKind.grok))
+        s.commit()

@@ -130,6 +130,7 @@ button.danger-link { color: var(--bad); }
 .signin .actions { margin-top: 0; }
 .signin .steps { margin: 0 0 12px; padding-left: 20px; color: var(--muted); line-height: 1.5; }
 .signin .steps li { margin-bottom: 4px; }
+.signin .code { font-family: ui-monospace, monospace; font-size: 1.1em; letter-spacing: .08em; color: var(--text); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
 .dot.ok { background: var(--ok); }
 

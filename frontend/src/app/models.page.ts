@@ -1,6 +1,6 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, ModelInfo, ProviderIn, ProviderInfo, ProviderKind } from './api.service';
+import { Api, GrokSignIn, ModelInfo, ProviderIn, ProviderInfo, ProviderKind } from './api.service';
 
 const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; keyHint: string }[] = [
   { kind: 'ollama', label: 'Ollama', url: 'http://ollama-host:11434',
@@ -12,7 +12,10 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
   { kind: 'anthropic', label: 'Anthropic', url: '',
     urlHint: 'optional; leave empty for api.anthropic.com', keyHint: 'or set ANTHROPIC_API_KEY on the workers' },
   { kind: 'chatgpt', label: 'ChatGPT plan (Plus/Pro, Sign in with ChatGPT)', url: '', urlHint: '', keyHint: '' },
+  { kind: 'grok', label: 'Grok plan (SuperGrok / X Premium+, Sign in with xAI)', url: '', urlHint: '', keyHint: '' },
 ];
+
+const SIGN_IN_KINDS: ProviderKind[] = ['chatgpt', 'grok'];
 
 @Component({
   selector: 'hq-models',
@@ -24,8 +27,8 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
       @for (p of providers(); track p.id) {
         <button class="row" [class.active]="draft()?.id === p.id" [class.muted]="!p.enabled" (click)="edit(p)">
           <span class="name">{{ p.name }} <span class="pill">{{ kindLabel(p.kind) }}</span></span>
-          <span class="sub">@if (p.max_concurrent) { {{ p.max_concurrent }} slot{{ p.max_concurrent === 1 ? '' : 's' }} · }{{ p.kind === 'chatgpt'
-            ? (p.chatgpt?.connected ? p.chatgpt?.account || 'signed in' : 'not signed in')
+          <span class="sub">@if (p.max_concurrent) { {{ p.max_concurrent }} slot{{ p.max_concurrent === 1 ? '' : 's' }} · }{{ signedInKind(p.kind)
+            ? (signIn(p)?.connected ? signIn(p)?.account || 'signed in' : 'not signed in')
             : (p.base_url || 'default endpoint') }}</span>
         </button>
       } @empty { <p class="hint">Add a provider (e.g. your Ollama server), then pick its models on each agent.</p> }
@@ -43,6 +46,11 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
           <p class="hint inline-hint">Runs agents on your ChatGPT Plus or Pro plan instead of an API key.
             Usage counts against your plan's limits (on Plus, a five-hour window shared with every app you've
             connected). Give agents on this provider a local fallback model for when the plan runs out.
+            @if (!d.id) { Save, then sign in. }</p>
+        } @else if (d.kind === 'grok') {
+          <p class="hint inline-hint">Runs agents on your SuperGrok subscription (or X Premium+ on a linked X account)
+            instead of an xAI API key. Usage counts against your subscription's limits, shared with Grok Build and
+            the other apps you've signed in to. Give agents on this provider a local fallback model for when it runs out.
             @if (!d.id) { Save, then sign in. }</p>
         } @else {
           <label>Base URL <small>{{ kindInfo(d.kind).urlHint }}</small>
@@ -88,6 +96,31 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
             }
           </div>
         }
+        @if (d.id && current()?.kind === 'grok') {
+          <div class="signin">
+            @if (current()?.grok?.connected) {
+              <p><span class="dot ok"></span> Signed in as <b>{{ current()?.grok?.account || 'your xAI account' }}</b></p>
+              <div class="actions">
+                <button type="button" class="ghost" (click)="startGrokSignIn()">Sign in again</button>
+                <button type="button" class="ghost" (click)="disconnectGrok()">Disconnect</button>
+              </div>
+            } @else if (!grokSignIn()) {
+              <p><span class="dot"></span> Not signed in.</p>
+              <div class="actions"><button type="button" (click)="startGrokSignIn()">Sign in with xAI</button></div>
+            }
+            @if (grokSignIn(); as g) {
+              <ol class="steps">
+                <li>In the xAI tab that just opened (<a [href]="g.verification_uri_complete" target="_blank"
+                  rel="noopener">open it again</a>), sign in with the account that has your subscription.</li>
+                <li>Check the code matches <b class="code">{{ g.user_code }}</b>, then approve.
+                  (The approval page may call the app Grok CLI: that's the sign-in Agent HQ uses.)</li>
+                <li>That's it: this page finishes by itself once you've approved.</li>
+              </ol>
+              <p class="hint">Waiting for approval…</p>
+              <div class="actions"><button type="button" class="ghost" (click)="cancelGrokSignIn()">Cancel</button></div>
+            }
+          </div>
+        }
         <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>
         @if (error()) { <p class="error">{{ error() }}</p> }
         <div class="actions">
@@ -109,7 +142,7 @@ const KINDS: { kind: ProviderKind; label: string; url: string; urlHint: string; 
     } @else { <div class="empty">Select a provider or add one.</div> }
   </div>`,
 })
-export class ModelsPage implements OnInit {
+export class ModelsPage implements OnInit, OnDestroy {
   private api = inject(Api);
   kinds = KINDS;
   providers = signal<ProviderInfo[]>([]);
@@ -120,8 +153,13 @@ export class ModelsPage implements OnInit {
   error = signal('');
   signinUrl = signal('');
   callback = '';
+  grokSignIn = signal<GrokSignIn | null>(null);
+  private grokTimer: ReturnType<typeof setTimeout> | null = null;
 
   ngOnInit() { this.load(); }
+  ngOnDestroy() { this.stopGrokPolling(); }
+  signedInKind(k: ProviderKind) { return SIGN_IN_KINDS.includes(k); }
+  signIn(p: ProviderInfo) { return p.kind === 'grok' ? p.grok : p.chatgpt; }
   load() { this.api.providers().subscribe(p => this.providers.set(p)); }
   kindInfo(k: ProviderKind) { return KINDS.find(x => x.kind === k)!; }
   kindLabel(k: ProviderKind) { return this.kindInfo(k).label.split(' (')[0]; }
@@ -129,6 +167,7 @@ export class ModelsPage implements OnInit {
   edit(p: ProviderInfo | null) {
     this.error.set(''); this.testing.set(''); this.models.set([]);
     this.signinUrl.set(''); this.callback = '';
+    this.stopGrokPolling(); this.grokSignIn.set(null);
     this.current.set(p);
     this.draft.set(p ? { id: p.id, name: p.name, kind: p.kind, base_url: p.base_url, enabled: p.enabled, api_key: '',
                          max_concurrent: p.max_concurrent ?? 0 }
@@ -137,7 +176,7 @@ export class ModelsPage implements OnInit {
 
   save() {
     this.api.saveProvider(this.draft()!).subscribe({
-      next: p => { this.load(); this.edit(p); if (p.kind !== 'chatgpt' || p.chatgpt?.connected) this.test(); },
+      next: p => { this.load(); this.edit(p); if (!this.signedInKind(p.kind) || this.signIn(p)?.connected) this.test(); },
       error: e => this.error.set(e.error?.detail ?? 'Save failed'),
     });
   }
@@ -182,6 +221,50 @@ export class ModelsPage implements OnInit {
     if (!p || !confirm(`Disconnect ${p.name} from your ChatGPT account? Agents using it will stop working ` +
                        `until you sign in again. (To revoke access entirely, also remove Agent HQ in your ChatGPT settings.)`)) return;
     this.api.chatgptDisconnect(p.id).subscribe(x => { this.load(); this.edit(x); });
+  }
+
+  startGrokSignIn() {
+    const id = this.current()?.id;
+    if (!id) return;
+    this.error.set(''); this.stopGrokPolling();
+    const tab = window.open('', '_blank');  // opened inside the click, so popup blockers allow it
+    this.api.grokStart(id).subscribe({
+      next: g => {
+        this.grokSignIn.set(g);
+        if (tab) { tab.opener = null; tab.location.href = g.verification_uri_complete; }
+        this.pollGrok(id, g.interval);
+      },
+      error: e => { tab?.close(); this.error.set(e.error?.detail ?? 'Could not start the sign-in'); },
+    });
+  }
+
+  private pollGrok(id: string, interval: number) {
+    this.grokTimer = setTimeout(() => {
+      this.api.grokPoll(id).subscribe({
+        next: r => {
+          if (r.state === 'done' && r.provider) { this.load(); this.edit(r.provider); this.test(); }
+          else if (this.grokSignIn()) this.pollGrok(id, r.interval ?? interval);
+        },
+        error: e => { this.grokSignIn.set(null); this.error.set(e.error?.detail ?? 'Sign-in failed'); },
+      });
+    }, Math.max(interval, 2) * 1000);
+  }
+
+  private stopGrokPolling() {
+    if (this.grokTimer) { clearTimeout(this.grokTimer); this.grokTimer = null; }
+  }
+
+  cancelGrokSignIn() {
+    const id = this.current()?.id;
+    this.stopGrokPolling(); this.grokSignIn.set(null);
+    if (id) this.api.grokCancel(id).subscribe();
+  }
+
+  disconnectGrok() {
+    const p = this.current();
+    if (!p || !confirm(`Disconnect ${p.name} from your xAI account? Agents using it will stop working ` +
+                       `until you sign in again.`)) return;
+    this.api.grokDisconnect(p.id).subscribe(x => { this.load(); this.edit(x); });
   }
 
   clearKey() {

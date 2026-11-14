@@ -107,6 +107,10 @@ def build_provider_model(p: ModelProvider, model_name: str) -> Model:
         from . import chatgpt
 
         return chatgpt.build_model(p, model_name)
+    if p.kind == ProviderKind.grok:
+        from . import grok
+
+        return grok.build_model(p, model_name)
     raise ValueError(f"unknown provider kind {p.kind}")
 
 
@@ -116,6 +120,10 @@ async def list_models(p: ModelProvider, timeout: float = 10) -> list[dict]:
         from . import chatgpt
 
         return await chatgpt.list_models(p)  # kept in OpenAI's order
+    if p.kind == ProviderKind.grok:
+        from . import grok
+
+        return await grok.list_models(p)
     async with httpx.AsyncClient(timeout=timeout) as client:
         if p.kind == ProviderKind.ollama:
             r = await client.get(f"{ollama_root(p)}/api/tags")

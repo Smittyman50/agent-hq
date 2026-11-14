@@ -364,6 +364,8 @@ def where_it_runs(p: ModelProvider | None) -> str:
         return f"your hardware ({host}: GPU/CPU)"
     if p.kind == ProviderKind.chatgpt:
         return "your ChatGPT plan (counts against its usage limits)"
+    if p.kind == ProviderKind.grok:
+        return "your Grok plan (counts against its usage limits)"
     return f"cloud API ({p.kind.value}, billed per token)"
 
 

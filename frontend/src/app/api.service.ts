@@ -175,7 +175,7 @@ export function attachmentUrl(id: string, download = false) {
   return `/api/attachments/${id}` + (download ? '?download=1' : '');
 }
 
-export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'chatgpt';
+export type ProviderKind = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'chatgpt' | 'grok';
 
 export type Frequency = 'hourly' | 'daily' | 'weekly' | 'monthly' | 'cron';
 
@@ -199,10 +199,18 @@ export interface ChatGPTStatus {
   connected: boolean; account: string | null; plan_usage: boolean; connected_at: string | null;
 }
 
+export interface GrokStatus { connected: boolean; account: string | null; connected_at: string | null; }
+
+export interface GrokSignIn {
+  user_code: string; verification_uri: string; verification_uri_complete: string;
+  expires_in: number; interval: number;
+}
+
 export interface ProviderInfo {
   id: string; name: string; kind: ProviderKind; base_url: string | null;
   has_api_key: boolean; max_concurrent: number; enabled: boolean; created_at: string;
   chatgpt: ChatGPTStatus | null;   // ChatGPT plan providers only
+  grok: GrokStatus | null;         // Grok plan providers only
 }
 
 /** What the editor sends. api_key: undefined = keep, '' = clear, value = replace. */
@@ -497,6 +505,13 @@ export class Api {
     return this.http.post<ProviderInfo>(`/api/providers/${id}/chatgpt/finish`, { callback_url });
   }
   chatgptDisconnect(id: string) { return this.http.post<ProviderInfo>(`/api/providers/${id}/chatgpt/disconnect`, {}); }
+  grokStart(id: string) { return this.http.post<GrokSignIn>(`/api/providers/${id}/grok/start`, {}); }
+  grokPoll(id: string) {
+    return this.http.post<{ state: 'pending' | 'done'; interval?: number; provider?: ProviderInfo }>(
+      `/api/providers/${id}/grok/poll`, {});
+  }
+  grokCancel(id: string) { return this.http.post(`/api/providers/${id}/grok/cancel`, {}); }
+  grokDisconnect(id: string) { return this.http.post<ProviderInfo>(`/api/providers/${id}/grok/disconnect`, {}); }
 
   desktopState(agentId: string) { return this.http.get<DesktopState>(`/api/agents/${agentId}/desktop`); }
   takeDesktop(agentId: string, threadId: string | null) {

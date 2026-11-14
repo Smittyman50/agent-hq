@@ -30,6 +30,7 @@ class ProviderKind(str, Enum):
     openai_compatible = "openai_compatible"  # vLLM, LM Studio, LiteLLM, llama.cpp server, ...
     anthropic = "anthropic"                  # Anthropic
     chatgpt = "chatgpt"                      # your ChatGPT Plus/Pro plan, via Sign in with ChatGPT
+    grok = "grok"                            # your SuperGrok / X Premium+ plan, via Sign in with xAI
 
 
 class ModelProvider(SQLModel, table=True):
@@ -43,8 +44,8 @@ class ModelProvider(SQLModel, table=True):
     # Optional. Empty = workers use the provider's usual environment variable
     # (OPENAI_API_KEY, ANTHROPIC_API_KEY). Never returned by the API.
     api_key: str | None = None
-    # ChatGPT plan providers: the Sign in with ChatGPT registration and tokens
-    # (client_id, access/refresh/id tokens, granted scopes). Never returned by the API.
+    # ChatGPT and Grok plan providers: the sign-in's tokens (and for ChatGPT, its client
+    # registration and granted scopes). Never returned by the API.
     oauth: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     # Slots: at most this many model requests to this provider at once, across every
     # worker (0 = no limit). Extra requests wait their turn. Use it to keep a GPU box from
