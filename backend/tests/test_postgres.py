@@ -19,6 +19,9 @@ async def pg_hq(hq, postgres_url, monkeypatch):
     db.reset_engine()
     from sqlmodel import SQLModel
     SQLModel.metadata.drop_all(db.engine())
+    from sqlalchemy import text
+    with db.engine().begin() as c:
+        c.execute(text("DROP TABLE IF EXISTS alembic_version"))  # so init_db starts from empty
     db.init_db()
     hq.sign_in()
     async with contextlib.AsyncExitStack() as stack:
@@ -73,6 +76,7 @@ def test_upgrade_adds_new_columns_on_postgres(postgres_url, tmp_path, monkeypatc
             c.execute(sa.text(f'ALTER TABLE agentdef DROP COLUMN IF EXISTS "{col}"'))
         c.execute(sa.text('ALTER TABLE modelprovider DROP COLUMN IF EXISTS "max_concurrent"'))
         c.execute(sa.text("DROP TYPE IF EXISTS subagentmode"))
+        c.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))  # from before migrations
         c.execute(sa.text("DROP TYPE IF EXISTS learningmode"))
         c.execute(sa.text("INSERT INTO agentdef (id, name, description, pronouns, instructions, model, "
                           "vision_model, vision_coords, vision_zoom, fallback_model, pool, tool_server_ids, "

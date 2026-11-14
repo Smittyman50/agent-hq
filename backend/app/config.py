@@ -121,6 +121,13 @@ class Settings:
     worker_concurrency: int = field(default_factory=lambda: int(_env("WORKER_CONCURRENCY", "4")))
     # Run a worker inside the API process too (handy on a single machine).
     embed_worker: bool = field(default_factory=lambda: _env("EMBED_WORKER", "0") in ("1", "true", "yes"))
+    # Schema migrations (app/migrate.py). With MIGRATE_ON_START=0 this process never changes
+    # the schema: it waits up to MIGRATE_WAIT_SECONDS for another process (hq) to bring the
+    # database to this version. ALLOW_SCHEMA_AHEAD=1 lets an older process start against a
+    # database a newer version has already migrated (only for changes you know are compatible).
+    migrate_on_start: bool = field(default_factory=lambda: _env("MIGRATE_ON_START", "1") in ("1", "true", "yes"))
+    migrate_wait_seconds: float = field(default_factory=lambda: float(_env("MIGRATE_WAIT_SECONDS", "120")))
+    allow_schema_ahead: bool = field(default_factory=lambda: _env("ALLOW_SCHEMA_AHEAD", "0") in ("1", "true", "yes"))
     # Allowed browser origins for the Angular dev server.
     cors_origins: list[str] = field(
         default_factory=lambda: _env("CORS_ORIGINS", "http://localhost:4200").split(","))

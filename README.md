@@ -318,6 +318,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - ChatGPT plan providers: the full sign-in by pasted callback (PKCE, state, single use, declined consent), tokens never returned or exported, model listing, an agent turn on the plan through the Responses API (`store: false`, `stream: true`, no unsupported fields), and two workers refreshing at once without ever reusing a refresh token
 - Grok plan providers: the device sign-in (pending, slow down, declined, a subscription xAI refuses), tokens never returned or exported, switching kind dropping the sign-in, model listing without image and video models, an agent turn on the plan with its thinking sent as `reasoning_effort`, and two workers refreshing at once without ever reusing a refresh token
 - Postgres upgrades: enum values a newer version adds (such as a new provider kind) are added to an older database's enum type on startup
+- schema migrations: the revisions building exactly the models' schema (on SQLite and Postgres), adopting a database from before migrations, refusing a database a newer version migrated, waiting instead of migrating, four processes starting at once, ignoring pgvector columns and LangGraph's tables, and a later rename-with-data revision running on startup with a SQLite backup first
 - import and export
 - sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
 - sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
@@ -340,6 +341,8 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
    - `workbench-1` and `egress`: an example agent workbench and its allowlisting proxy (see Workbenches)
 3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 4. **More workers on one host:** `docker compose up -d --scale worker=3`.
+
+**Upgrading.** Pull, `docker compose up -d --build`. Each process brings the database schema up to date on startup (Alembic revisions, one process at a time). Before upgrading a Postgres install, `docker compose exec hq python -m app.migrate status` shows the pending revisions; take a `pg_dump` if there are any. Workers on other machines need the new image too: an older one refuses to start against a database a newer version has migrated. See [docs/schema-migrations.md](docs/schema-migrations.md).
 
 **Worker names.** In Docker, each worker is named `<service>-<host>-<last 4 of its container ID>`, for example `worker-shockwave-7090` and `worker-shockwave-1c2e`. You can tell which machine and which replica it is, and scaled replicas never share a name. The host name comes from the host's `/etc/hostname`, which the compose file mounts read-only. Where that file doesn't exist (Docker Desktop), set `AHQ_HOST_NAME` in `.env`. Set `AHQ_WORKER_NAME` for a fixed name, as `worker-desktop` does, but only on a service you won't scale. A recreated container (after `up --build`) gets a new ID and so a new suffix. Its old entry drops off the System page once its heartbeat stops, and any job it left unfinished is picked up as usual.
 
@@ -1031,6 +1034,8 @@ backend/app/
   vision.py          look / locate / click_on via a per-agent vision model; questions about attached images
   attachments.py     chat attachments: storage, text, manifests, images to models, workbench transfer
   memory.py          long-term memory: storage, embeddings, hybrid search, capture, tidy-up
+  migrate.py         schema migrations on startup (lock, adopt, upgrade, backups) and the
+                     `python -m app.migrate` CLI; revisions in migrations/versions/
   auth.py            sign-in: accounts, sessions, API tokens, TOTP, lockout, audit log, CLI
   approvals.py       tool approvals: allow / ask / block per tool, decisions, timeouts
   skills.py          skills: matching, loading, outcomes, versions, proposals
@@ -1060,7 +1065,7 @@ frontend/src/app/    app shell (sidebar of conversations), chat, and the Setting
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 labtools/            lab tools image: integrations composed per instance (:8820; docs/labtools.md)
-docs/                labtools.md, lab-alerts.md (senders -> webhooks), examples/homelab-crew.md
+docs/                labtools.md, lab-alerts.md (senders -> webhooks), schema-migrations.md, examples/homelab-crew.md
 deploy/lab/          compose overlay example, inventory and per-instance credentials templates,
                      Zabbix media type script, SSH key folder
 mqttpublisher/       outbound MQTT as an MCP server (:8810): agent status and allow-listed publishes
@@ -1074,7 +1079,6 @@ examples/            example crew (providers, agents, pools, tools, subscription
 
 ## Next steps worth building
 
-- **Schema migrations:** new columns on existing tables are added automatically at startup; add Alembic once you need renames or data changes.
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.

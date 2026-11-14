@@ -347,6 +347,7 @@ async def pg_mem(hq, pglite_url, monkeypatch):
     from sqlmodel import SQLModel
     with db.engine().begin() as c:
         c.execute(text("DROP TABLE IF EXISTS memory CASCADE"))
+        c.execute(text("DROP TABLE IF EXISTS alembic_version"))  # so init_db starts from empty
     SQLModel.metadata.drop_all(db.engine())
     db.init_db()
     assert memory.pgvector_enabled()

@@ -7,6 +7,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "sqlmodel>=0.0.22",
+  "alembic>=1.13",              # schema migrations (app/migrations, app/migrate.py)
   "pydantic-ai-slim[openai,anthropic,mcp]>=2.66",
   "fastmcp>=2.0",
   "langgraph>=0.6",
@@ -49,3 +50,6 @@ agent-hq-worker = "app.worker:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.migrations" = ["script.py.mako"]

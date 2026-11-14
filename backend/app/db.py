@@ -31,9 +31,9 @@ def engine():
 def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
-    SQLModel.metadata.create_all(engine())
-    add_missing_columns()
-    add_missing_enum_values()
+    from . import migrate
+
+    migrate.ensure_schema()  # create, adopt or upgrade the schema (app/migrate.py)
     from . import memory
 
     memory.init_storage()
@@ -64,9 +64,10 @@ def _default_value(col):
 def add_missing_columns() -> None:
     """Add columns that newer versions introduced to tables that already exist.
 
-    create_all() makes new tables but never changes existing ones, so an upgrade would
-    otherwise need manual ALTER TABLEs. Columns are added as nullable and existing rows
-    get the column's default.
+    Only used to catch up a database made before schema migrations (migrate._adopt_legacy).
+    Since then every schema change is an Alembic revision: this compares with the current
+    models, so after a rename it would add the new name as an empty column.
+    Columns are added as nullable and existing rows get the column's default.
     """
     eng = engine()
     insp = inspect(eng)
