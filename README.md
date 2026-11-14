@@ -923,13 +923,14 @@ Only one API process should look at a goal at a time; a Valkey lock per goal mak
 | Tool | What it does |
 |---|---|
 | `board_view` | The card: objective, done criteria, actions with IDs, recent log |
-| `add_action(title, details)` | Adds a next action (to do) |
-| `start_action(id)` | Starts one; refused while another is in progress |
+| `add_action(title, details, after)` | Adds a next action (to do). `after` lists the actions that must be done before it can start |
+| `start_action(id)` | Starts one; refused while another of its own is in progress, or while anything in its `after` list isn't done |
 | `complete_action(id, result)` | Finishes one, keeping what it found or did on the board |
 | `block_action` / `drop_action(id, reason)` | It can't go on as it is / it isn't needed |
 | `log_note(text)` | A note on the log; doesn't count as progress |
 | `wait_for(kind, reason, minutes)` | `user`: asks you something and waits for your answer. `time`: checks back later (5 minutes to a week) |
-| `claim_done(evidence)` | Moves the goal to Review with the evidence |
+| `claim_done(evidence)` | Moves the goal to Review with the evidence; refused while its team is still working |
+| `assign_action(id, role, instructions, model, tools)` | Agents with a team only: hands a startable action to a new sub-agent (see below) |
 
 The agent can't change the objective or the done criteria; only you can (Edit on the card). If it thinks they're wrong, it's told to say so and wait for you.
 
@@ -942,6 +943,32 @@ The agent can't change the objective or the done criteria; only you can (Edit on
 **On the card:** the objective and done criteria, the next actions (you can add, start, finish or drop them too), the full log, a box for notes to the agent, and how much of each limit it has used.
 
 **MQTT notices** on `AHQ_MQTT_NOTIFY_TOPIC`: `goal_review`, `goal_proposal`, `goal_question` and `goal_blocked`, each with the goal's ID, title, agent and a link (`AHQ_PUBLIC_URL`).
+
+### Teams: sub-agents working a goal's actions in parallel
+
+An agent allowed to create sub-agents can form a team for a goal: while it works one next action itself, sub-agents work other actions of the same goal in parallel. It's swarming, in Kanban terms: the agent's goal WIP stays where it is (one outcome at a time, by default), and the *action* WIP inside that goal grows by its team.
+
+```mermaid
+flowchart LR
+    L["Lead: works its own<br/>action, one at a time"] -- "assign_action(a2)" --> S1["Sub-agent 1<br/>works a2"]
+    L -- "assign_action(a3)" --> S2["Sub-agent 2<br/>works a3"]
+    S1 -- "result on a2:<br/>done or blocked" --> B[("Board")]
+    S2 -- "result on a3" --> B
+    B -- "a4 (after a2, a3)<br/>becomes startable" --> L
+```
+
+**Turning it on:** Settings → Agents → Standing goals → **Team size** (parallel actions per goal: the agent plus its sub-agents; default 1 = no team). It only takes effect with sub-agents set to *Ask me first* or *Allowed within limits*, and with *Allowed within limits* it's capped by the sub-agent limit **At once** (the editor says so when it is).
+
+**How it works:**
+- **Serial stays serial.** When the agent adds an action that needs others' results, or would clash with them, it lists them in `after`. An action is startable, by the agent or its team, only when everything in its `after` list is done (dropped actions don't hold it up). The card shows what each action waits for.
+- **Handing over.** `assign_action` creates a sub-agent through the normal sub-agent path, so everything already set for sub-agents applies: the mode (in *Ask me first*, the agent asks with `request_subagents` first, and your approval covers the goal's conversation), the models and tool servers it may give them (including a cloud model, which matters when the local GPU is busy), minutes and model requests each, how many at once and per day, the team-wide limits, and the check against duplicating an agent you've defined. Team members never get a desktop and can't create sub-agents of their own.
+- **What a team member is told:** the goal and its objective, its one action and the lead's instructions for it, and what the team has found so far (the results of the actions it depends on, and the latest others). It's told not to change anything outside its action.
+- **Results land on the board.** A team member's result goes onto its action: *done* completes it with what it found; *partial* or *failed* blocks it with the reason, for the lead to re-plan. There's no report turn per result: the next goal turn's card shows every result, with who did it.
+- **The runner keeps the lead busy.** While its team works, the lead keeps getting goal turns as long as it has something of its own: its action in progress, a blocked action to re-plan, or a startable one to take or assign. When everything left is either with the team or waiting on it, the goal shows as **Waiting on its team**, and resumes as results come in.
+- **Same guards, same review.** The goal's model-request limit counts its team too, a team result counts as progress, `claim_done` is refused while any team member is still working, and you still confirm done. Stop (or dropping the goal) stops the whole team, and their actions go back to to-do.
+- **You can step in:** drop an action a sub-agent is working on, and its late result is noted in the log but not applied.
+
+On the board, a card with a team shows **team ×N** while N sub-agents are working, and its action list shows who's working or did each action, and what each waits for.
 
 **Built for incidents next.** The board's rows aren't specific to goals: each work item has a kind, a source and a correlation key, and the same columns, runner, next actions and WIP rules will carry incidents (alerts grouped into one problem to solve) later.
 
@@ -1113,7 +1140,8 @@ backend/app/
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   workitems.py       standing goals: the board, WIP limits, pulling from Ready, the goal runner and its
-                     guards, the card prompt, goal tools, proposals
+                     guards, the card prompt, goal tools, proposals, teams (dependencies, team slots,
+                     sub-agent results on actions)
   api/workitems.py   the board API (/api/board, /api/work-items)
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
@@ -1151,6 +1179,7 @@ examples/            example crew (providers, agents, pools, tools, subscription
 
 - **Incidents on the board:** alerts and webhook events grouped by a correlation key into one work item (kind `incident`) that the lab crew works with the same columns, next actions and WIP limits as goals.
 - **A weekly review for goals:** an optional schedule per agent to prune its backlog and flag stuck goals, GTD style.
+- **Team members on other agents:** let a goal's lead pull in existing agents (by delegation) as well as sub-agents for parallel actions.
 
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.

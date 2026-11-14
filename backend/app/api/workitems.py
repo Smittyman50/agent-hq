@@ -22,7 +22,7 @@ def _iso(dt: datetime | None) -> str | None:
 def _goal_out(g: WorkItem, agents: dict[str, AgentDef], acts: list[WorkItem] | None = None) -> dict:
     acts = wi.actions(g.id) if acts is None else acts
     agent = agents.get(g.owner_agent_id or "")
-    current = next((a for a in acts if a.status == WorkStatus.in_progress), None)
+    current = next((a for a in acts if a.status == WorkStatus.in_progress and not a.job_id), None)
     return {
         "id": g.id, "kind": g.kind, "title": g.title, "objective": g.objective,
         "done_criteria": g.done_criteria, "status": g.status.value, "column": wi.COLUMNS[g.status],
@@ -36,15 +36,28 @@ def _goal_out(g: WorkItem, agents: dict[str, AgentDef], acts: list[WorkItem] | N
         "actions_total": len([a for a in acts if a.status != WorkStatus.dropped]),
         "actions_done": len([a for a in acts if a.status == WorkStatus.done]),
         "current_action": current.title if current else None,
+        "team_size": wi.team_size(agent), "team_working": sum(1 for a in acts if wi.on_team(a)),
         "created_at": _iso(g.created_at), "updated_at": _iso(g.updated_at),
         "started_at": _iso(g.started_at), "finished_at": _iso(g.finished_at),
     }
 
 
-def _action_out(a: WorkItem) -> dict:
+def _action_out(a: WorkItem, acts: list[WorkItem], names: dict[str, str]) -> dict:
+    waiting = wi.unmet(a, acts) if a.status == WorkStatus.backlog else []
     return {"id": a.id, "title": a.title, "details": a.objective, "status": a.status.value,
             "label": wi.LABELS[a.status], "result": a.result, "position": a.position,
+            "after": list(a.depends_on or []), "waiting_for": [d.id for d in waiting],
+            "startable": wi.startable(a, acts), "on_team": wi.on_team(a),
+            "assignee": (names.get(a.assignee_agent_id) or "a sub-agent") if a.assignee_agent_id else None,
             "started_at": _iso(a.started_at), "finished_at": _iso(a.finished_at)}
+
+
+def _names(acts: list[WorkItem]) -> dict[str, str]:
+    ids = [a.assignee_agent_id for a in acts if a.assignee_agent_id]
+    if not ids:
+        return {}
+    with db.session() as s:
+        return {x.id: x.name for x in s.exec(select(AgentDef).where(col(AgentDef.id).in_(ids))).all()}
 
 
 def _agents() -> dict[str, AgentDef]:
@@ -61,7 +74,8 @@ def _goal(goal_id: str) -> WorkItem:
 
 def _detail(g: WorkItem) -> dict:
     acts = wi.actions(g.id)
-    return {**_goal_out(g, _agents(), acts), "actions": [_action_out(a) for a in acts],
+    names = _names(acts)
+    return {**_goal_out(g, _agents(), acts), "actions": [_action_out(a, acts, names) for a in acts],
             "events": [{"id": e.id, "at": _iso(e.at), "actor": e.actor, "kind": e.kind,
                         "text": e.text, "action_id": e.action_id} for e in wi.events(g.id)],
             "requests_used": wi._requests_used(g), "default_limits": wi.DEFAULT_LIMITS}
@@ -237,13 +251,14 @@ async def proposal(goal_id: str, body: DecisionIn, request: Request):
 class ActionIn(BaseModel):
     title: str
     details: str = ""
+    after: list[str] = []
 
 
 @router.post("/api/work-items/{goal_id}/actions", status_code=201)
 def add_action(goal_id: str, body: ActionIn):
     _goal(goal_id)
     try:
-        wi.new_action(goal_id, body.title, body.details, actor="you")
+        wi.new_action(goal_id, body.title, body.details, actor="you", after=body.after)
     except wi.WorkError as e:
         raise _bad(e) from None
     return _detail(wi.get(goal_id))

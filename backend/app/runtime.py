@@ -828,6 +828,8 @@ class Runtime:
                 finished_at=_now().isoformat())
         if assignee.is_subagent:
             subagents.retire(assignee.id)
+        if (job.meta or {}).get("goal_action"):
+            workitems.team_stopped(job)  # its action goes back to do
         # Wake a delegator still waiting on it (normally stopped too). No report turn:
         # you stopped the work, so nobody should start talking about it.
         await self.broker.push_result(job.id, result.model_dump())
@@ -976,12 +978,16 @@ class Runtime:
                 background=job.background, depth=job.depth,
                 started_at=job.created_at.isoformat() if job.created_at else None)
         await self._capture_delegation(job, assignee, result)
+        team = bool((job.meta or {}).get("goal_action"))
+        if team:  # a goal team member: its result goes on its action (app/workitems.py)
+            workitems.team_result(job, result.status, result.summary, result.details)
         if assignee.is_subagent:
             subagents.retire(assignee.id)  # one task each; frees the slot for the next
         # Wake a waiting delegator, if there is one.
         await self.broker.push_result(job.id, result.model_dump())
         # Background jobs (including waits that timed out) report into the origin thread.
-        if load_job(job.id).background:
+        # Goal team results don't: the board is where the goal's agent reads them.
+        if load_job(job.id).background and not team:
             await self.enqueue_turn(job.origin_thread_id, self._report_prompt(job, assignee, result),
                                     from_user=False, report_for=job.id,
                                     **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
@@ -1070,7 +1076,7 @@ class Runtime:
             goal = workitems.goal_for_thread(thread_id)
             if goal is not None and goal.owner_agent_id == agent.id:
                 instructions.append(workitems.GOAL_RULES)
-                toolsets.append((workitems.goal_toolset(self), None))
+                toolsets.append((workitems.goal_toolset(self, team=workitems.team_size(agent) > 1), None))
         if not agent.is_subagent:
             instructions.append(workitems.PROPOSE_RULES)
             toolsets.append((workitems.propose_toolset(self), None))
@@ -2159,6 +2165,106 @@ class Runtime:
 
     # ------------------------------------------------------------ sub-agent tools
 
+    async def spawn(self, deps: RunDeps, me: AgentDef, *, role: str, task: str,
+                    why_not_existing_agents: str, instructions: str = "", model: str | None = None,
+                    tools: list[str] | None = None, background: bool = False,
+                    extra_meta: dict[str, Any] | None = None) -> dict:
+        """Create a sub-agent and queue its task, after every check (mode, grant, duplicates,
+        models, tools, limits). Returns {"status": "refused", "summary"} or
+        {"status": "queued", "job", "sub", "minutes"}. Used by spawn_subagent and by goal
+        teams (app/workitems.py assign_action)."""
+        _sa = subagents
+        if _sa.mode_of(me) == SubagentMode.off:
+            return {"status": "refused", "summary": "You can't create sub-agents."}
+        role, task = role.strip()[:60], task.strip()
+        if not role or not task:
+            return {"status": "refused", "summary": "Give the sub-agent a role and a task."}
+        if len(why_not_existing_agents.strip()) < 10:
+            return {"status": "refused", "summary": "Explain in why_not_existing_agents why "
+                    "none of the existing agents can do this."}
+        grant = None
+        if _sa.mode_of(me) == SubagentMode.ask:
+            grant = _sa.active_grant(me.id, deps.thread_id)
+            if grant is None:
+                return {"status": "refused", "summary": "You need the user's approval first: "
+                        "call request_subagents and wait for the decision."}
+            limits = _sa.grant_limits(grant)
+        else:
+            limits = _sa.limits_of(me)
+        dup, score = await _sa.duplicate_of(role, task, me)
+        # An approved request already showed the user any likely overlap, so only an
+        # outright name clash is refused under a grant.
+        if dup and (grant is None or score >= 1.0):
+            return self._duplicate_refusal(me, role, dup)
+        options = _sa.model_options(me, limits)
+        picked = _sa.pick_model(options, model)
+        if picked is None:
+            return {"status": "refused", "summary": f"Model '{model}' isn't allowed for sub-agents. "
+                    f"Choose from: {', '.join(o['label'] for o in options) or 'none (ask the user)'}."}
+        allowed_tools = _sa.tool_options(me, limits)
+        chosen, bad = _sa.pick_tools(allowed_tools, tools)
+        if bad:
+            return {"status": "refused", "summary": f"Not allowed for sub-agents: {', '.join(bad)}. "
+                    f"You may give: {', '.join(t.name for t in allowed_tools) or 'no tool servers'}."}
+
+        team = _sa.get_settings()
+        async with self.broker.r.lock("ahq:lock:subagents", timeout=30, blocking_timeout=30):
+            _sa.sweep()
+            grant_left = None
+            if grant is not None:
+                with db.session() as s:
+                    g = s.get(SubagentRequest, grant.id)
+                grant_left = int((g.grant or {}).get("count", 0)) - g.used
+            why = _sa.check_limits(_sa.counts(me.id, deps.job_id), limits, team, grant_left)
+            if why:
+                return {"status": "refused", "summary": f"Sub-agent not created: {why}. "
+                        "Do the work yourself, delegate it, or wait for running sub-agents to finish."}
+            minutes = int(limits.get("max_minutes") or 10)
+            sub = AgentDef(
+                name="", description=f"{role}: {task[:300]}", pronouns="they/them",
+                instructions=(instructions.strip() or f"You are {role}, a helper for {me.name}."),
+                provider_id=picked["provider_id"], model=picked["model"], pool=me.pool,
+                tool_server_ids=[t.id for t in chosen], delegates=[], memory_enabled=False,
+                thinking=me.thinking or "",  # sub-agents think as hard as the agent that made them
+                is_subagent=True, parent_agent_id=me.id, spawned_by_job_id=deps.job_id,
+                subagent_limits={"max_minutes": minutes,
+                                 "max_requests": int(limits.get("max_requests") or 25)},
+                expires_at=_now() + timedelta(minutes=minutes + _sa.GRACE_MINUTES))
+            sub.name = f"{role} ({me.name} #{sub.id[:4]})"
+            used = None
+            with db.session() as s:
+                s.add(sub)
+                if grant is not None:
+                    g = s.get(SubagentRequest, grant.id)
+                    g.used += 1
+                    used = g.used
+                    s.add(g)
+                s.commit()
+                s.refresh(sub)
+        if grant is not None and grant.message_id:
+            await self.update_message(grant.message_id, used=used)  # the approval card shows it
+
+        job = Job(kind=JobKind.task, origin_thread_id=deps.thread_id, requester_agent_id=me.id,
+                  assignee_agent_id=sub.id, parent_job_id=deps.job_id, task=task,
+                  background=background, depth=deps.depth + 1,
+                  chain=[*deps.chain, sub.id], pool=sub.pool,
+                  meta={"cautious": True} if deps.cautious else {})
+        msg = await self.save_message(
+            deps.thread_id, Role.event, f"{me.name} → {sub.name}: {task}",
+            agent_id=me.id, kind="delegation_result", job_id=job.id, status="queued",
+            task=task, requester_id=me.id, requester=me.name, assignee=sub.name,
+            background=background, depth=job.depth, started_at=_now().isoformat(),
+            subagent=True, subagent_role=role, model=picked["label"],
+            tools=[t.name for t in chosen], max_minutes=minutes,
+            why_not_existing_agents=why_not_existing_agents.strip(),
+            request_id=grant.id if grant else None)
+        job.meta = {**(job.meta or {}), "message_id": msg.id, "subagent": True, **(extra_meta or {})}
+        job = await self._submit(job)
+        await self.broker.publish(deps.thread_id, "subagent_spawned", agent=me.name,
+                                  subagent=sub.name, role=role, model=picked["label"],
+                                  job_id=job.id, depth=deps.depth)
+        return {"status": "queued", "job": job, "sub": sub, "minutes": minutes}
+
     def _subagent_toolset(self, mode: SubagentMode) -> FunctionToolset:
         rt = self
         _sa = subagents
@@ -2180,95 +2286,13 @@ class Runtime:
                     woken in this conversation when it finishes.
             """
             me = load_agent(ctx.deps.agent_id)
-            if _sa.mode_of(me) == SubagentMode.off:
-                return {"status": "refused", "summary": "You can't create sub-agents."}
-            role, task = role.strip()[:60], task.strip()
-            if not role or not task:
-                return {"status": "refused", "summary": "Give the sub-agent a role and a task."}
-            if len(why_not_existing_agents.strip()) < 10:
-                return {"status": "refused", "summary": "Explain in why_not_existing_agents why "
-                        "none of the existing agents can do this."}
-            grant = None
-            if _sa.mode_of(me) == SubagentMode.ask:
-                grant = _sa.active_grant(me.id, ctx.deps.thread_id)
-                if grant is None:
-                    return {"status": "refused", "summary": "You need the user's approval first: "
-                            "call request_subagents and wait for the decision."}
-                limits = _sa.grant_limits(grant)
-            else:
-                limits = _sa.limits_of(me)
-            dup, score = await _sa.duplicate_of(role, task, me)
-            # An approved request already showed the user any likely overlap, so only an
-            # outright name clash is refused under a grant.
-            if dup and (grant is None or score >= 1.0):
-                return rt._duplicate_refusal(me, role, dup)
-            options = _sa.model_options(me, limits)
-            picked = _sa.pick_model(options, model)
-            if picked is None:
-                return {"status": "refused", "summary": f"Model '{model}' isn't allowed for sub-agents. "
-                        f"Choose from: {', '.join(o['label'] for o in options) or 'none (ask the user)'}."}
-            allowed_tools = _sa.tool_options(me, limits)
-            chosen, bad = _sa.pick_tools(allowed_tools, tools)
-            if bad:
-                return {"status": "refused", "summary": f"Not allowed for sub-agents: {', '.join(bad)}. "
-                        f"You may give: {', '.join(t.name for t in allowed_tools) or 'no tool servers'}."}
-
-            team = _sa.get_settings()
-            async with rt.broker.r.lock("ahq:lock:subagents", timeout=30, blocking_timeout=30):
-                _sa.sweep()
-                grant_left = None
-                if grant is not None:
-                    with db.session() as s:
-                        g = s.get(SubagentRequest, grant.id)
-                    grant_left = int((g.grant or {}).get("count", 0)) - g.used
-                why = _sa.check_limits(_sa.counts(me.id, ctx.deps.job_id), limits, team, grant_left)
-                if why:
-                    return {"status": "refused", "summary": f"Sub-agent not created: {why}. "
-                            "Do the work yourself, delegate it, or wait for running sub-agents to finish."}
-                minutes = int(limits.get("max_minutes") or 10)
-                sub = AgentDef(
-                    name="", description=f"{role}: {task[:300]}", pronouns="they/them",
-                    instructions=(instructions.strip() or f"You are {role}, a helper for {me.name}."),
-                    provider_id=picked["provider_id"], model=picked["model"], pool=me.pool,
-                    tool_server_ids=[t.id for t in chosen], delegates=[], memory_enabled=False,
-                    thinking=me.thinking or "",  # sub-agents think as hard as the agent that made them
-                    is_subagent=True, parent_agent_id=me.id, spawned_by_job_id=ctx.deps.job_id,
-                    subagent_limits={"max_minutes": minutes,
-                                     "max_requests": int(limits.get("max_requests") or 25)},
-                    expires_at=_now() + timedelta(minutes=minutes + _sa.GRACE_MINUTES))
-                sub.name = f"{role} ({me.name} #{sub.id[:4]})"
-                used = None
-                with db.session() as s:
-                    s.add(sub)
-                    if grant is not None:
-                        g = s.get(SubagentRequest, grant.id)
-                        g.used += 1
-                        used = g.used
-                        s.add(g)
-                    s.commit()
-                    s.refresh(sub)
-            if grant is not None and grant.message_id:
-                await rt.update_message(grant.message_id, used=used)  # the approval card shows it
-
-            job = Job(kind=JobKind.task, origin_thread_id=ctx.deps.thread_id, requester_agent_id=me.id,
-                      assignee_agent_id=sub.id, parent_job_id=ctx.deps.job_id, task=task,
-                      background=background, depth=ctx.deps.depth + 1,
-                      chain=[*ctx.deps.chain, sub.id], pool=sub.pool,
-                      meta={"cautious": True} if ctx.deps.cautious else {})
-            msg = await rt.save_message(
-                ctx.deps.thread_id, Role.event, f"{me.name} → {sub.name}: {task}",
-                agent_id=me.id, kind="delegation_result", job_id=job.id, status="queued",
-                task=task, requester_id=me.id, requester=me.name, assignee=sub.name,
-                background=background, depth=job.depth, started_at=_now().isoformat(),
-                subagent=True, subagent_role=role, model=picked["label"],
-                tools=[t.name for t in chosen], max_minutes=minutes,
-                why_not_existing_agents=why_not_existing_agents.strip(),
-                request_id=grant.id if grant else None)
-            job.meta = {"message_id": msg.id, "subagent": True}
-            job = await rt._submit(job)
-            await rt.broker.publish(ctx.deps.thread_id, "subagent_spawned", agent=me.name,
-                                    subagent=sub.name, role=role, model=picked["label"],
-                                    job_id=job.id, depth=ctx.deps.depth)
+            got = await rt.spawn(ctx.deps, me, role=role, task=task,
+                                 why_not_existing_agents=why_not_existing_agents,
+                                 instructions=instructions, model=model, tools=tools,
+                                 background=background)
+            if got["status"] != "queued":
+                return got
+            job, sub, minutes = got["job"], got["sub"], got["minutes"]
             if background:
                 return {"status": "queued", "job_id": job.id, "subagent": sub.name,
                         "summary": f"Sub-agent {sub.name} is working on it. You'll be woken in "

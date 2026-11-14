@@ -47,6 +47,8 @@ class AgentIn(BaseModel):
     context_window: int | None = None
     # Standing goals it works on at once (its WIP limit); 0 = it takes no goals.
     goal_wip: int = Field(default=1, ge=0, le=10)
+    # Parallel next actions per goal: itself plus sub-agents (needs sub-agents on); 1 = no team.
+    goal_team_size: int = Field(default=1, ge=1, le=10)
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),

@@ -141,6 +141,9 @@ class AgentDef(SQLModel, table=True):
     # Standing goals (app/workitems.py): how many goals it works on at once (its WIP limit).
     # 0 = it takes no goals.
     goal_wip: int = 1
+    # How many of a goal's next actions may be in progress at once: its own one, plus
+    # sub-agents working the others (a self-forming team). Needs sub-agents on; 1 = no team.
+    goal_team_size: int = 1
     # Set on sub-agents themselves: temporary agents created by another agent for one task.
     # They are hidden from agent lists, can't delegate or spawn, and retire when done.
     is_subagent: bool = Field(default=False, index=True)
@@ -962,6 +965,11 @@ class WorkItem(SQLModel, table=True):
     stalled_turns: int = 0       # goal turns in a row that changed nothing on the board
     revision: int = 0            # bumped on every change that counts as progress
     last_job_id: str | None = None   # the goal turn the runner queued most recently
+    # Actions: who's working it (None = the goal's own agent; else a sub-agent on its team),
+    # that sub-agent's job, and the actions that must be done before this one can start.
+    assignee_agent_id: str | None = Field(default=None, index=True)
+    job_id: str | None = None
+    depends_on: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     turn_revision: int = 0           # `revision` when that turn was queued (for stall checks)
     # The agent's claim that it's done, with evidence (goals), or an action's result.
     result: str = Field(default="", sa_column=Column(Text, default=""))

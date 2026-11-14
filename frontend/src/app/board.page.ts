@@ -19,7 +19,7 @@ const DROP_TARGETS: WorkStatus[] = ['backlog', 'ready', 'in_progress', 'done'];
 
 const WAITING: Record<string, string> = {
   delegation: 'a delegated task', approval: 'a tool approval', handoff: 'you on its desktop',
-  user: 'your answer', time: 'a time', stalled: 'no progress', limit: 'a limit', stopped: 'stopped by you',
+  user: 'your answer', time: 'a time', team: 'its team', stalled: 'no progress', limit: 'a limit', stopped: 'stopped by you',
 };
 
 function blankGoal(agentId = ''): GoalIn {
@@ -82,6 +82,7 @@ function blankGoal(agentId = ''): GoalIn {
                         @if (g.status === 'waiting' && g.waiting_on) { <span class="muted">on {{ waitLabel(g) }}</span> }
                         @if (g.priority > 0) { <span class="pill">P{{ g.priority }}</span> }
                         @if (g.actions_total) { <span class="muted">{{ g.actions_done }}/{{ g.actions_total }} actions</span> }
+                        @if (g.team_working) { <span class="pill team" [title]="g.team_working + ' sub-agent(s) on its team working'">team ×{{ g.team_working }}</span> }
                       </span>
                       @if (g.current_action) { <span class="tile-now">▸ {{ g.current_action }}</span> }
                     </button>
@@ -173,19 +174,27 @@ function blankGoal(agentId = ''): GoalIn {
             @if (g.result && g.status !== 'review') { <h3>Done claim</h3><div class="body rich"><hq-md [text]="g.result" /></div> }
           }
 
-          <h3>Next actions <small>{{ g.actions_done }}/{{ g.actions_total }} done · one at a time</small></h3>
+          <h3>Next actions <small>{{ g.actions_done }}/{{ g.actions_total }} done ·
+            @if (g.team_size > 1) { team of {{ g.team_size }}: {{ g.agent_name }} + {{ g.team_size - 1 }} sub-agent(s), {{ g.team_working }} working }
+            @else { one at a time }</small></h3>
           <ul class="goal-actions">
             @for (a of g.actions; track a.id) {
-              <li [class]="'act-' + a.status">
-                <span class="act-mark">{{ mark(a.status) }}</span>
+              <li [class]="'act-' + a.status + (a.on_team ? ' act-team' : '')">
+                <span class="act-mark">{{ a.on_team ? '⇉' : mark(a.status) }}</span>
                 <span class="act-body"><span class="act-title">{{ a.title }}</span>
+                  @if (a.assignee) { <span class="sub act-who">{{ a.on_team ? 'working: ' : 'by ' }}{{ a.assignee }} <span class="pill sub">sub-agent</span></span> }
+                  @if (a.waiting_for.length) { <span class="sub act-after">waits for {{ titlesOf(g, a.waiting_for) }}</span> }
+                  @else if (a.after.length && a.status === 'backlog') { <span class="sub act-after">after {{ titlesOf(g, a.after) }} (done)</span> }
                   @if (a.details) { <span class="sub">{{ a.details }}</span> }
                   @if (a.result) { <span class="sub act-result">{{ a.result }}</span> }</span>
                 <span class="act-ctl">
-                  @if (a.status === 'backlog') { <button class="mini ghost" (click)="setAction(g, a.id, 'in_progress')" title="Start">▸</button> }
-                  @if (a.status !== 'done' && a.status !== 'dropped') {
+                  @if (a.status === 'backlog' && a.startable) { <button class="mini ghost" (click)="setAction(g, a.id, 'in_progress')" title="Start">▸</button> }
+                  @if (a.status !== 'done' && a.status !== 'dropped' && !a.on_team) {
                     <button class="mini ghost" (click)="setAction(g, a.id, 'done')" title="Mark done">✓</button>
-                    <button class="mini ghost" (click)="setAction(g, a.id, 'dropped')" title="Drop">✕</button>
+                  }
+                  @if (a.status !== 'done' && a.status !== 'dropped') {
+                    <button class="mini ghost" (click)="setAction(g, a.id, 'dropped')"
+                            [title]="a.on_team ? 'Drop it (a late result from its sub-agent is ignored)' : 'Drop'">✕</button>
                   }
                 </span>
               </li>
@@ -302,6 +311,9 @@ export class BoardPage implements OnInit, OnDestroy {
         : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
     }
     return WAITING[w?.kind ?? ''] ?? w?.kind;
+  }
+  titlesOf(g: GoalDetail, ids: string[]) {
+    return ids.map(id => g.actions.find(a => a.id === id)?.title ?? id).join(', ');
   }
   mark(s: WorkStatus) { return ({ done: '✓', in_progress: '▸', blocked: '!', dropped: '–' } as Record<string, string>)[s] ?? '○'; }
 

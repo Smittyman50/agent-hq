@@ -137,6 +137,17 @@ import { Avatar } from './avatar';
             <input name="goalwip" type="number" min="0" max="10" [(ngModel)]="d.goal_wip"></label>
           <p class="hint inline-hint">It pulls the next goal from Ready when it has a free slot, and works one next
             action at a time. Goals that are in progress, waiting or blocked count. 0 = it takes no goals.</p>
+          <label class="inline-num">Team size (parallel actions per goal)
+            <input name="goalteam" type="number" min="1" max="10" [(ngModel)]="d.goal_team_size"
+                   [disabled]="d.subagent_mode === 'off'"></label>
+          <p class="hint inline-hint">
+            @if (d.subagent_mode === 'off') { Turn on sub-agents below to let it form a team. }
+            @else { Itself plus up to {{ (d.goal_team_size ?? 1) - 1 }} sub-agent(s) working other next actions of
+              the same goal in parallel, within its sub-agent limits{{ d.subagent_mode === 'ask' ? ' and after you approve its request' : '' }}.
+              1 = no team. You still confirm when a goal is done.
+              @if (d.subagent_mode === 'allowed' && (d.goal_team_size ?? 1) - 1 > (d.subagent_limits.concurrent ?? 1)) {
+                <span class="warn-line">Its sub-agent limit allows {{ d.subagent_limits.concurrent }} at once, so the team
+                  is {{ 1 + (d.subagent_limits.concurrent ?? 1) }} until you raise “At once” below.</span> } }</p>
         </fieldset>
 
         <fieldset>
@@ -388,6 +399,7 @@ export class AgentsPage implements OnInit {
     d.learning_mode ??= 'propose';
     d.use_profile ??= true;
     d.goal_wip ??= 1;
+    d.goal_team_size ??= 1;
     d.thinking ??= '';
     this.lastLevel = this.reasoningLevel(d);
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };
