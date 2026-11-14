@@ -14,13 +14,14 @@ import { ApprovalCard } from './approval-card';
 import { SkillProposalCard } from './skill-proposal-card';
 import { ProfileProposalCard } from './profile-proposal-card';
 import { KnowledgeProposalCard } from './knowledge-proposal-card';
+import { GoalCard } from './goal-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, RouterLink],
+  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, GoalCard, RouterLink],
   template: `
   <div class="chat-layout" [class.with-desktop]="desktopAgent()">
     <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
@@ -67,6 +68,13 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
               <div class="note-line">■ {{ m.content }}</div>
             } @else if (m.meta['kind'] === 'context_warning') {
               <div class="note-line warn">⚠ {{ m.content }} <a routerLink="/settings/agents">Agent settings</a></div>
+            } @else if (m.meta['kind'] === 'goal_proposal' && m.meta['goal_id']) {
+              <hq-goal-card [goalId]="$any(m.meta['goal_id'])" [version]="m.meta['status']" [showThread]="false" />
+            } @else if (m.meta['kind'] === 'goal' && m.meta['goal_id'] && isGoalAsk(m)) {
+              <hq-goal-card [goalId]="$any(m.meta['goal_id'])" [version]="m.meta['status']" [showThread]="false" />
+            } @else if (m.meta['kind'] === 'goal') {
+              <div class="note-line goal-line"><hq-icon name="goal" [size]="14" /> <span>{{ m.content }}</span>
+                @if (m.meta['goal_id']) { <a routerLink="/board" [queryParams]="{ item: m.meta['goal_id'] }">On the board</a> }</div>
             } @else if (exchange(m); as x) {
               <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
                 <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">
@@ -133,6 +141,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                       (click)="rate(m, 'down')"><hq-icon name="thumbs-down" [size]="14" /></button>
                     <button type="button" class="rate-btn" title="Make this a test (Settings → Evals)" (click)="makeTest(m)">
                       <hq-icon name="evals" [size]="14" /></button>
+                    <button type="button" class="rate-btn" title="Make this a goal (the Board)" (click)="makeGoal(m)">
+                      <hq-icon name="goal" [size]="14" /></button>
                     @if (fb(m)?.comment && noteFor() !== m.id) {
                       <button type="button" class="rate-note" title="Edit your note" (click)="openNote(m)">“{{ fb(m)!.comment }}”</button>
                     }
@@ -288,6 +298,15 @@ export class ChatPage implements OnInit, OnDestroy {
       error: e => alert(e.error?.detail ?? 'Could not make a test from this reply'),
     });
   }
+  /** Start a standing goal from a reply: the Board opens a new goal with its text. */
+  makeGoal(m: Message) {
+    this.router.navigate(['/board'], {
+      queryParams: { new: 1, agent: m.agent_id, from_thread: this.threadId(), from_message: m.id },
+      state: { text: m.content },
+    });
+  }
+  /** Goal notices that ask something of you (a done claim, a block, a question) show as a card. */
+  isGoalAsk(m: Message) { return ['review', 'blocked', 'question'].includes(m.meta?.['status'] as string); }
   openNote(m: Message) { this.noteDraft = this.fb(m)?.comment ?? ''; this.noteFor.set(m.id); }
   saveNote(m: Message) {
     const rating = this.fb(m)?.rating ?? 'down';

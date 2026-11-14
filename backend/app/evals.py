@@ -70,7 +70,7 @@ DEFAULTS: dict[str, Any] = {
 CHECK_TYPES = ("rubric", "contains", "not_contains", "tool_called", "tool_not_called", "skill_loaded")
 
 # Agent HQ's own tools that only read: they run normally in tests.
-SAFE_INTERNAL = {"load_skill", "list_skills", "search_knowledge", "read_document", "recall"}
+SAFE_INTERNAL = {"load_skill", "list_skills", "search_knowledge", "read_document", "recall", "board_view"}
 
 NOT_AVAILABLE = ("Not available in a test run: there's no recorded result for this call, and the "
                  "tool can't run for real in tests. Carry on without it.")

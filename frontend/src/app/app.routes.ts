@@ -12,7 +12,8 @@ import { EvalsPage } from './evals.page';
 import { KnowledgePage } from './knowledge.page';
 import { ProfilePage } from './profile.page';
 import { SchedulesPage } from './schedules.page';
-import { ApprovalsInbox, SkillsInbox, SubagentInbox, ProfileInbox, KnowledgeInbox } from './requests.page';
+import { ApprovalsInbox, GoalsInbox, SkillsInbox, SubagentInbox, ProfileInbox, KnowledgeInbox } from './requests.page';
+import { BoardPage } from './board.page';
 import { RequestsHome, RequestsLayout } from './requests';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
@@ -26,11 +27,13 @@ export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'chat' },
   { path: 'chat', component: ChatPage, canActivate: [authGuard] },
   { path: 'chat/:id', component: ChatPage, canActivate: [authGuard] },
+  { path: 'board', component: BoardPage, canActivate: [authGuard] },
   { path: 'schedules', component: SchedulesPage, canActivate: [authGuard] },
   {
     path: 'requests', component: RequestsLayout, canActivate: [authGuard], children: [
       { path: '', pathMatch: 'full', component: RequestsHome },
       { path: 'approvals', component: ApprovalsInbox },
+      { path: 'goals', component: GoalsInbox },
       { path: 'skills', component: SkillsInbox },
       { path: 'profile', component: ProfileInbox },
       { path: 'knowledge', component: KnowledgeInbox },

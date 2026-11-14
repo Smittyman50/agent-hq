@@ -111,6 +111,8 @@ import { Thread } from './api.service';
           <span class="icon-badge"><hq-icon name="inbox" />
             @if (ws.pendingRequests()) { <span class="badge">{{ ws.pendingRequests() }}</span> }</span>
           <span class="label">Requests</span></a>
+        <a class="nav-item" routerLink="/board" routerLinkActive="on" title="Board: standing goals">
+          <hq-icon name="board" /><span class="label">Board</span></a>
         <a class="nav-item" routerLink="/schedules" routerLinkActive="on" title="Scheduler">
           <hq-icon name="schedule" /><span class="label">Scheduler</span></a>
         <a class="nav-item" routerLink="/settings" routerLinkActive="on" title="Settings">

@@ -1,0 +1,16 @@
+# The settings that matter for the Agent HQ deploy runner. Start from the full example
+# (gitea-runner config generate > config.yaml) and set these in it, or use this file as is.
+log:
+  level: info
+
+runner:
+  # Where the registration is stored (created by `gitea-runner register`).
+  file: .runner
+  # One job at a time: deploys must not overlap (deploy.sh also takes a lock).
+  capacity: 1
+  # Longest a job may run. Builds of the UI and Python images take a few minutes.
+  timeout: 1h
+  # host: jobs run directly on this machine as the runner's user, which is what a deploy
+  # to this machine needs. The name is what the workflow's runs-on asks for.
+  labels:
+    - "agent-hq-deploy:host"

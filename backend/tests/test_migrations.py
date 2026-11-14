@@ -101,7 +101,8 @@ def test_database_from_before_migrations_is_adopted(fresh_db):
         c.execute(text('ALTER TABLE skill DROP COLUMN "script"'))  # what an older version lacked
     assert migrate.current() is None
     db.init_db()
-    assert migrate.current() == migrate.BASELINE
+    # Every revision after the baseline only adds things, so it's caught up all the way.
+    assert migrate.current() == migrate.head()
     assert "script" in {c["name"] for c in inspect(db.engine()).get_columns("skill")}
     with db.engine().connect() as c:
         assert c.execute(text("SELECT body FROM skill WHERE id = 's1'")).scalar() == "steps"
@@ -110,9 +111,15 @@ def test_database_from_before_migrations_is_adopted(fresh_db):
         assert list((Path(settings.data_dir) / "backups").glob("agent_hq-legacy-*.db"))
 
 
-def test_old_database_needs_the_baseline_release_once():
+def test_old_database_needs_the_baseline_release_once(monkeypatch):
+    # Once a later revision renames or rewrites something, the old catch-up can't stand in.
+    monkeypatch.setattr(migrate, "additive_since_baseline", lambda: False)
     with pytest.raises(migrate.SchemaError, match="introduced them"):
         migrate._adopt_legacy("0002")
+
+
+def test_revisions_after_the_baseline_say_whether_they_only_add():
+    assert migrate.additive_since_baseline() is True
 
 
 def test_database_ahead_of_this_code_refuses(fresh_db, monkeypatch):
@@ -211,6 +218,7 @@ def test_a_rename_with_data_runs_on_startup(fresh_db, tmp_path, monkeypatch):
     (scripts / "versions" / "0099_rename.py").write_text(
         textwrap.dedent(RENAME).format(down=migrate.head()))
     db.init_db()  # at today's head
+    before = migrate.head()
     with db.engine().begin() as c:
         c.execute(text("INSERT INTO skill (id, name, title, when_to_use, body, tools, scope, status, "
                        "version, created_by, created_at, updated_at) VALUES ('s1', 'probe', 'Probe', "
@@ -232,7 +240,8 @@ def test_a_rename_with_data_runs_on_startup(fresh_db, tmp_path, monkeypatch):
         row = c.execute(text("SELECT title, use_when FROM skill WHERE id = 's1'")).one()
     assert row == ("PROBE", "when the NAS is slow")
     if fresh_db == "sqlite":
-        assert list((Path(settings.data_dir) / "backups").glob(f"agent_hq-{migrate.BASELINE}-*.db"))
+        assert list((Path(settings.data_dir) / "backups").glob(f"agent_hq-{before}-*.db"))
+    assert migrate.additive_since_baseline() is False  # 0099 renames: no more old catch-up
 
 
 def test_new_not_null_columns_get_a_database_default():

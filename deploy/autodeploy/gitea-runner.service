@@ -1,0 +1,20 @@
+# systemd unit for the Gitea runner that deploys Agent HQ on this host (docs/auto-deploy.md).
+# Replace RUNNER_USER with the user that owns the Agent HQ checkout and is in the docker
+# group, and the paths if you put the runner elsewhere. Then:
+#   sudo cp gitea-runner.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gitea-runner
+[Unit]
+Description=Gitea runner (Agent HQ deploys)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=RUNNER_USER
+WorkingDirectory=/home/RUNNER_USER/gitea-runner
+ExecStart=/usr/local/bin/gitea-runner -c /home/RUNNER_USER/gitea-runner/config.yaml daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

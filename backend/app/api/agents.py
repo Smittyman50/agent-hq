@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from ..db import get_session
@@ -45,6 +45,8 @@ class AgentIn(BaseModel):
     learning_mode: LearningMode = LearningMode.propose
     use_profile: bool = True
     context_window: int | None = None
+    # Standing goals it works on at once (its WIP limit); 0 = it takes no goals.
+    goal_wip: int = Field(default=1, ge=0, le=10)
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),

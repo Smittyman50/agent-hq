@@ -22,9 +22,12 @@ After that, new values of Postgres enum types are still added automatically (Ale
 them), and the pgvector columns and full-text indexes are still set up by `memory.py` and
 `knowledge.py`.
 
-A database from before migrations can only be adopted by the release whose newest revision is
-`0001`. If one turns up later, start that release once first, or, if you know its schema matches,
-run `python -m app.migrate stamp 0001`.
+A database from before migrations is adopted by the old add-missing-columns step and stamped at
+**head**, as long as every revision after `0001` only adds things (tables, columns, indexes) and
+says so with `additive = True` at module level (`0002`, standing goals, does). Once a revision
+renames, drops or rewrites data, leave `additive` out: from then on such a database needs the last
+release whose revisions were all additive to start once first, or, if you know its schema matches,
+`python -m app.migrate stamp 0001`.
 
 ## Commands
 
@@ -60,6 +63,9 @@ from `backend/` (`alembic.ini`), but it doesn't take the lock.
    models and the revisions disagree, so a forgotten revision shows up there.
 
 Rules for revisions:
+
+- Mark a revision `additive = True` only if it just creates tables, adds columns or adds indexes
+  (see above). A rename, a drop or a data change is never additive.
 
 - Never import `app.models` in a revision; the models will have moved on by the time an old
   revision runs. For data changes use stubs: `sa.table("skill", sa.column("title", sa.String))`.

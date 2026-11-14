@@ -1,6 +1,6 @@
 # Agent HQ
 
-A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own.
+A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Standing goals on a Kanban board keep agents working an outcome, one next action at a time, until it's done. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own.
 
 - **Backend:** FastAPI, LangGraph (conversation graph + checkpointing), PydanticAI (agents, typed results, MCP tools)
 - **Frontend:** Angular 22 (signals, standalone components)
@@ -342,6 +342,8 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 4. **More workers on one host:** `docker compose up -d --scale worker=3`.
 
+**Deploying on every push.** A Gitea Actions workflow can do the upgrade for you whenever `main` changes: pull, build, a `pg_dump` if schema migrations are pending, restart, health check. It runs on a Gitea runner on the server itself and does nothing until you set it up. See [docs/auto-deploy.md](docs/auto-deploy.md).
+
 **Upgrading.** Pull, `docker compose up -d --build`. Each process brings the database schema up to date on startup (Alembic revisions, one process at a time). Before upgrading a Postgres install, `docker compose exec hq python -m app.migrate status` shows the pending revisions; take a `pg_dump` if there are any. Workers on other machines need the new image too: an older one refuses to start against a database a newer version has migrated. See [docs/schema-migrations.md](docs/schema-migrations.md).
 
 **Worker names.** In Docker, each worker is named `<service>-<host>-<last 4 of its container ID>`, for example `worker-shockwave-7090` and `worker-shockwave-1c2e`. You can tell which machine and which replica it is, and scaled replicas never share a name. The host name comes from the host's `/etc/hostname`, which the compose file mounts read-only. Where that file doesn't exist (Docker Desktop), set `AHQ_HOST_NAME` in `.env`. Set `AHQ_WORKER_NAME` for a fixed name, as `worker-desktop` does, but only on a service you won't scale. A recreated container (after `up --build`) gets a new ID and so a new suffix. Its old entry drops off the System page once its heartbeat stops, and any job it left unfinished is picked up as usual.
@@ -463,7 +465,7 @@ It then may do three things:
 - **Model:** each agent's own, unless you pick a reflection model; a stronger one writes better skills for small local agents.
 - **Who never reflects:** agents whose learning is Off, and sub-agents.
 
-**Requests** has a sub-menu like Settings: **Tool approvals**, **Skill proposals**, **Profile updates**, **Knowledge** (documents agents suggest) and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
+**Requests** has a sub-menu like Settings: **Tool approvals**, **Goals** (see [Standing goals](#standing-goals-the-board)), **Skill proposals**, **Profile updates**, **Knowledge** (documents agents suggest) and **Sub-agent requests**. Each has its own count, and the sidebar badge shows the total.
 
 ### The current date and time
 
@@ -881,6 +883,68 @@ The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a
 
 Monthly schedules can be set for days 1 to 28 only, so they happen every month. For "the last day of the month" or anything else unusual, use a custom cron expression.
 
+## Standing goals (the Board)
+
+A **standing goal** is an outcome with a definition of done, given to one agent: "Every VLAN has a note in the vault", "pve2's backups finish inside the window three nights running". The agent breaks it into **next actions** and keeps working it, one action at a time, across as many turns as it takes, until it can show the done criteria are met. It's Getting Things Done on a Kanban board: the goal is the project, the actions are its next actions, and the **Board** (in the sidebar, above the Scheduler) is the external memory, so the agent never has to hold the original problem in its context window.
+
+```mermaid
+flowchart LR
+    B["Backlog<br/>(yours)"] -- "you move it" --> R["Ready"]
+    R -- "free WIP slot:<br/>the agent pulls it" --> P["In progress"]
+    P <-- "delegate, approval,<br/>your answer, a time" --> W["Waiting"]
+    P -- "claim_done<br/>+ evidence" --> V["Review"]
+    V -- "you confirm" --> D["Done"]
+    V -- "you send it back<br/>(with a note)" --> P
+    P -- "no progress, a limit,<br/>or Stop" --> X["Blocked"]
+    X -- "you resume it" --> P
+```
+
+**Columns, and who moves cards:**
+- **Backlog:** captured, not agreed to. Agents never pull from it.
+- **Ready:** you've said "yes, do this". The agent pulls the highest-priority Ready goal (then board order) when it has a free WIP slot.
+- **In progress, Waiting, Review:** the agent's and the runner's. Waiting shows what it's waiting on: a background delegation, a tool approval, you on its desktop, your answer, or a check-back time.
+- **Blocked** (shown in In progress, flagged red): a guard stopped it, or you pressed Stop in its conversation. **Resume** puts it back.
+- **Done** and **Dropped** (shown in Done): finished, or abandoned. **Reopen** sends either back to Ready.
+
+You can drag cards between Backlog, Ready, In progress and Done in the agent's own lane. Errors (a full WIP limit, a proposal not yet approved) show above the board.
+
+**WIP limits.** Each agent has a **goal WIP limit** (Settings → Agents → Standing goals; default 1, 0 = it takes no goals). Goals that are in progress, waiting or blocked all hold a slot, so a blocked goal stops that agent pulling new work until you deal with it, which is the Kanban signal to fix it or move it. Inside a goal, only **one next action** can be in progress at a time; the agent has to finish, block or drop it before starting another. That's the guard against losing track of the original problem.
+
+**The goal runner** runs in the API process and checks the board every `AHQ_GOALS_TICK` seconds (5):
+1. **Pull.** For each agent with free slots, move its next Ready goal to In progress. Each goal gets its own conversation, "Goal: <title>", in the sidebar.
+2. **Advance.** For each goal in progress with nothing running in its conversation, queue a **goal turn**. Its prompt is the card itself: the objective, the done criteria, the next actions with their status and results, the last 12 log entries, and your note if you sent a done claim back. The agent doesn't rely on the conversation's history to know where it is, so compaction can't make it lose the thread.
+3. **Wait and resume.** A background delegation shows as Waiting and resumes once the delegate's result has been reported in the conversation. Approvals and desktop hand-offs show as Waiting while they're pending. "Wait for the user" resumes when you post in the goal's conversation; "check back in N minutes" resumes when the time comes.
+4. **Guard.** A goal is **blocked** when it goes `stall_turns` goal turns in a row without changing anything on the board (default 3), reaches its **turn** limit (40), its **hours** limit (72, wall clock since it started), or its **model requests** limit (400, counted from the usage ledger for everything that ran in its conversation, delegates included). You get a card in Requests → Goals and a `goal_blocked` MQTT notice. Raise a limit on the card (Edit → Limits) before resuming a goal that hit one.
+
+Only one API process should look at a goal at a time; a Valkey lock per goal makes that so, however many API processes run the runner. Set `AHQ_GOALS=0` to stop an API process from running it.
+
+**Agent tools,** given only to the goal's owner, in the goal's own conversation (delegates working there don't get them):
+
+| Tool | What it does |
+|---|---|
+| `board_view` | The card: objective, done criteria, actions with IDs, recent log |
+| `add_action(title, details)` | Adds a next action (to do) |
+| `start_action(id)` | Starts one; refused while another is in progress |
+| `complete_action(id, result)` | Finishes one, keeping what it found or did on the board |
+| `block_action` / `drop_action(id, reason)` | It can't go on as it is / it isn't needed |
+| `log_note(text)` | A note on the log; doesn't count as progress |
+| `wait_for(kind, reason, minutes)` | `user`: asks you something and waits for your answer. `time`: checks back later (5 minutes to a week) |
+| `claim_done(evidence)` | Moves the goal to Review with the evidence |
+
+The agent can't change the objective or the done criteria; only you can (Edit on the card). If it thinks they're wrong, it's told to say so and wait for you.
+
+**Done is your call.** A done claim shows up in the goal's conversation, in **Requests → Goals** (with the sidebar badge) and on MQTT as `goal_review`. **Confirm done** finishes it and frees the slot; **Send back** returns it to In progress with your note, which the agent sees at the top of its next goal turn.
+
+**Agents propose goals.** Every agent (not sub-agents) has `propose_goal(title, objective, done_criteria, reason, agent_name)` for multi-step work it notices but wasn't asked to do. A proposal lands in Backlog, flagged *proposed*, for itself or another agent, with a card in the conversation, in Requests → Goals and on MQTT (`goal_proposal`). It can't leave Backlog until you **Approve to Ready**, **Approve to Backlog** or **Reject** it. At most 5 proposals per agent wait at once.
+
+**Creating goals:** **+ New goal** on the Board, or the flag button under any agent reply ("Make this a goal"), which opens the form with that reply as the objective. Write the done criteria so anyone could check them: they're what the agent works toward and what you'll review against.
+
+**On the card:** the objective and done criteria, the next actions (you can add, start, finish or drop them too), the full log, a box for notes to the agent, and how much of each limit it has used.
+
+**MQTT notices** on `AHQ_MQTT_NOTIFY_TOPIC`: `goal_review`, `goal_proposal`, `goal_question` and `goal_blocked`, each with the goal's ID, title, agent and a link (`AHQ_PUBLIC_URL`).
+
+**Built for incidents next.** The board's rows aren't specific to goals: each work item has a kind, a source and a correlation key, and the same columns, runner, next actions and WIP rules will carry incidents (alerts grouped into one problem to solve) later.
+
 ## Sub-agents
 
 Agents can create temporary **sub-agents** for parts of their own task (say, reading twelve feeds in parallel). It's off for every agent until you turn it on, per agent, under **Settings → Agents → Sub-agents**:
@@ -1048,6 +1112,9 @@ backend/app/
   thinking.py        thinking levels: per-agent setting -> model settings per provider, support check
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
+  workitems.py       standing goals: the board, WIP limits, pulling from Ready, the goal runner and its
+                     guards, the card prompt, goal tools, proposals
+  api/workitems.py   the board API (/api/board, /api/work-items)
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
@@ -1060,12 +1127,13 @@ backend/app/
 frontend/src/app/    app shell (sidebar of conversations), chat, and the Settings pages
                      (agents, model providers, sub-agents, usage, memory, skills, knowledge, learning,
                      evals, profile, tools, events, system, security), the Requests inbox (tool
-                     approvals, skill proposals, profile updates, sub-agent requests) and the
-                     Scheduler; icons from Lucide (ISC)
+                     approvals, goals, skill proposals, profile updates, sub-agent requests), the
+                     Board and the Scheduler; icons from Lucide (ISC)
 desktop/             webtop image: Chromium + Playwright MCP (:8931) + desktop MCP (:8765)
 webreader/           text-only web tools as an MCP server (:8800): feeds, readable pages, SearXNG search
 labtools/            lab tools image: integrations composed per instance (:8820; docs/labtools.md)
-docs/                labtools.md, lab-alerts.md (senders -> webhooks), schema-migrations.md, examples/homelab-crew.md
+docs/                labtools.md, lab-alerts.md (senders -> webhooks), schema-migrations.md, auto-deploy.md,
+                     examples/homelab-crew.md
 deploy/lab/          compose overlay example, inventory and per-instance credentials templates,
                      Zabbix media type script, SSH key folder
 mqttpublisher/       outbound MQTT as an MCP server (:8810): agent status and allow-listed publishes
@@ -1074,10 +1142,15 @@ deploy/caddy/        HTTPS (step-ca ACME) and sign-in-protected desktop viewers
 deploy/egress/       the workbenches' allowlisting egress proxy (PyPI by default)
 workbench/           an agent's workbench: Python venv, files, shell, saved scripts (MCP)
 deploy/searxng/      a private SearXNG for the web reader's search (JSON on, limiter off)
+deploy/autodeploy/   deploy.sh (pull, build, back up, restart, health check), the runner's config and
+                     systemd unit; .gitea/workflows/deploy.yaml runs it on push (docs/auto-deploy.md)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON; homelab-crew.json (a worked example)
 ```
 
 ## Next steps worth building
+
+- **Incidents on the board:** alerts and webhook events grouped by a correlation key into one work item (kind `incident`) that the lab crew works with the same columns, next actions and WIP limits as goals.
+- **A weekly review for goals:** an optional schedule per agent to prune its backlog and flag stuck goals, GTD style.
 
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.

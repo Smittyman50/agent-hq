@@ -1,0 +1,36 @@
+# Deploys Agent HQ on your own server whenever main changes: pull, build, back up the
+# database if migrations are pending, restart, health check. See docs/auto-deploy.md.
+#
+# It runs on a Gitea runner on the server itself, registered with the label
+# agent-hq-deploy (host mode), and does nothing until you set the repository variable
+# AHQ_DEPLOY_DIR (Settings → Actions → Variables) to the checkout on that server. So clones
+# and forks without a runner don't queue jobs nobody will pick up.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:   # Actions → Deploy → Run workflow: rebuilds even if already deployed
+
+jobs:
+  deploy:
+    if: ${{ vars.AHQ_DEPLOY_DIR != '' }}
+    runs-on: agent-hq-deploy
+    timeout-minutes: 60
+    steps:
+      - name: Pull, build and restart
+        env:
+          AHQ_DEPLOY_DIR: ${{ vars.AHQ_DEPLOY_DIR }}
+          AHQ_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        # Runs deploy.sh as it is in the commit being deployed (not the older copy in the
+        # checkout), so changes to the script itself take effect on the same push.
+        run: |
+          set -euo pipefail
+          git -C "$AHQ_DEPLOY_DIR" fetch --quiet origin main
+          script="$(mktemp)"
+          trap 'rm -f "$script"' EXIT
+          git -C "$AHQ_DEPLOY_DIR" show "$GITHUB_SHA:deploy/autodeploy/deploy.sh" > "$script"
+          bash "$script" "$GITHUB_SHA"

@@ -6,7 +6,8 @@ ensure_schema(). Under a lock, so that processes starting together don't race, i
 
 - empty database: runs every revision (the baseline creates all the tables);
 - database from before Alembic (tables, no alembic_version): adds the columns that
-  version lacked, the old way, then stamps it at the baseline revision;
+  version lacked, the old way, then stamps it at the baseline revision (or at head, when
+  every later revision is marked `additive = True`);
 - versioned database behind head: backs it up (SQLite) and upgrades it;
 - database at a revision this code doesn't know (a newer version migrated it): refuses
   to start, unless AHQ_ALLOW_SCHEMA_AHEAD=1.
@@ -218,11 +219,25 @@ def ensure_schema() -> None:
         db.add_missing_enum_values()
 
 
+def additive_since_baseline() -> bool:
+    """True if every revision after the baseline only adds things (tables, columns,
+    indexes) and says so with `additive = True`. Then the old catch-up, which adds what's
+    missing from today's models, ends up where those revisions would."""
+    sd = script()
+    for rev in sd.walk_revisions(base=BASELINE, head="heads"):
+        if rev.revision == BASELINE:
+            continue
+        if not getattr(rev.module, "additive", False):
+            return False
+    return True
+
+
 def _adopt_legacy(target: str) -> None:
     """A database made before migrations existed: catch it up the old way, then stamp it."""
-    if target != BASELINE:
+    if target != BASELINE and not additive_since_baseline():
         # The old catch-up compares with today's models, which no longer match the baseline
-        # once later revisions exist (a rename would be added as a new empty column).
+        # once a later revision renames or rewrites something (a rename would be added as
+        # a new empty column).
         raise SchemaError(
             "this database was created before schema migrations and needs the release that "
             f"introduced them (schema revision {BASELINE}) to start once first. Or, if you are "
@@ -230,8 +245,8 @@ def _adopt_legacy(target: str) -> None:
     backup_sqlite(None)
     SQLModel.metadata.create_all(db.engine())  # tables that version didn't have yet
     db.add_missing_columns()
-    _run(command.stamp, BASELINE)
-    log.info("database from before migrations stamped at schema revision %s", BASELINE)
+    _run(command.stamp, target)
+    log.info("database from before migrations stamped at schema revision %s", target)
 
 
 def _wait_for(target: str) -> None:

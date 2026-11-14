@@ -32,6 +32,7 @@ export interface AgentDef {
   learning_mode: LearningMode;
   use_profile?: boolean;
   context_window?: number | null;
+  goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
   is_subagent?: boolean;
 }
 
@@ -327,7 +328,7 @@ export function blankAgent(): AgentDef {
     vision_provider_id: null, vision_model: '', vision_coords: 'relative_1000', vision_zoom: true, sees_images: false,
     fallback_provider_id: null, fallback_model: '', thinking: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
-    subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true };
+    subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true, goal_wip: 1 };
 }
 
 export function blankSubscription(agent_id = ''): Subscription {
@@ -411,7 +412,32 @@ export interface AgentContextInfo {
   instruction_tokens: number; reserve_tokens: number; room_for_conversation: number;
 }
 
-export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; knowledge: number; total: number; }
+export interface InboxCount { requests: number; approvals: number; skills: number; profile: number; knowledge: number; goals: number; total: number; }
+
+/** Standing goals: the board (app/workitems.py). */
+export type WorkStatus = 'backlog' | 'ready' | 'in_progress' | 'waiting' | 'review' | 'blocked' | 'done' | 'dropped';
+export interface GoalLimits { max_turns: number; max_hours: number; max_requests: number; stall_turns: number; }
+export interface Goal {
+  id: string; kind: string; title: string; objective: string; done_criteria: string;
+  status: WorkStatus; column: string; owner_agent_id: string | null; agent_name: string | null;
+  priority: number; position: number; thread_id: string | null;
+  waiting_on: { kind: string; detail?: string; until?: string; since?: string; job_ids?: string[] } | null;
+  source: Record<string, any>; proposed: boolean; proposal_reason: string;
+  needs_you: 'review' | 'proposal' | 'blocked' | 'question' | null;
+  limits: GoalLimits; custom_limits: Partial<GoalLimits>; turns: number; stalled_turns: number;
+  result: string; review_note: string; actions_total: number; actions_done: number; current_action: string | null;
+  created_at: string; updated_at: string; started_at: string | null; finished_at: string | null;
+}
+export interface GoalAction { id: string; title: string; details: string; status: WorkStatus; label: string;
+  result: string; position: number; started_at: string | null; finished_at: string | null; }
+export interface GoalEvent { id: string; at: string; actor: string; kind: string; text: string; action_id: string | null; }
+export interface GoalDetail extends Goal { actions: GoalAction[]; events: GoalEvent[]; requests_used: number; default_limits: GoalLimits; }
+export interface BoardLane { id: string; name: string; goal_wip: number; wip_used: number; enabled: boolean; }
+export interface Board { columns: { status: WorkStatus; label: string }[]; agents: BoardLane[]; goals: Goal[]; }
+export interface GoalIn {
+  title: string; agent_id: string; objective: string; done_criteria: string; status: 'backlog' | 'ready';
+  priority: number; limits?: Partial<GoalLimits>; from_thread_id?: string | null; from_message_id?: string | null;
+}
 
 export interface Profile { text: string; enabled: boolean; max_words: number; suggestions: boolean; updated_at: string | null; words: number; }
 
@@ -561,6 +587,30 @@ export class Api {
     return this.http.post<ToolApproval>(`/api/tool-approvals/${id}/decide`, { approve, note, remember_minutes });
   }
   inboxCount() { return this.http.get<InboxCount>('/api/inbox/count'); }
+
+  board(doneDays = 14) { return this.http.get<Board>('/api/board', { params: { done_days: doneDays } }); }
+  goal(id: string) { return this.http.get<GoalDetail>(`/api/work-items/${id}`); }
+  goalsNeedingYou() { return this.http.get<Goal[]>('/api/work-items/attention'); }
+  createGoal(g: GoalIn) { return this.http.post<GoalDetail>('/api/work-items', g); }
+  updateGoal(id: string, patch: Partial<Pick<Goal, 'title' | 'objective' | 'done_criteria' | 'priority' | 'owner_agent_id'>> & { limits?: Partial<GoalLimits> }) {
+    return this.http.patch<GoalDetail>(`/api/work-items/${id}`, patch);
+  }
+  moveGoal(id: string, status: WorkStatus, position?: number) {
+    return this.http.post<GoalDetail>(`/api/work-items/${id}/move`, { status, position });
+  }
+  reviewGoal(id: string, approve: boolean, note = '') {
+    return this.http.post<GoalDetail>(`/api/work-items/${id}/review`, { approve, note });
+  }
+  decideGoalProposal(id: string, approve: boolean, ready = false, note = '') {
+    return this.http.post<GoalDetail>(`/api/work-items/${id}/proposal`, { approve, ready, note });
+  }
+  addGoalAction(id: string, title: string, details = '') {
+    return this.http.post<GoalDetail>(`/api/work-items/${id}/actions`, { title, details });
+  }
+  setGoalAction(id: string, actionId: string, status: WorkStatus, result = '') {
+    return this.http.patch<GoalDetail>(`/api/work-items/${id}/actions/${actionId}`, { status, result });
+  }
+  addGoalNote(id: string, text: string) { return this.http.post<GoalDetail>(`/api/work-items/${id}/notes`, { text }); }
   profile() { return this.http.get<Profile>('/api/profile'); }
   saveProfile(x: Partial<Profile>) { return this.http.put<Profile>('/api/profile', x); }
   profileProposals(status?: string) { return this.http.get<ProfileProposal[]>('/api/profile-proposals', { params: status ? { status } : {} }); }

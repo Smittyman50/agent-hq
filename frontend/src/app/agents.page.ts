@@ -132,6 +132,14 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <fieldset>
+          <legend>Standing goals <small>outcomes it keeps working until they're done (the Board)</small></legend>
+          <label class="inline-num">Goals at once (WIP limit)
+            <input name="goalwip" type="number" min="0" max="10" [(ngModel)]="d.goal_wip"></label>
+          <p class="hint inline-hint">It pulls the next goal from Ready when it has a free slot, and works one next
+            action at a time. Goals that are in progress, waiting or blocked count. 0 = it takes no goals.</p>
+        </fieldset>
+
+        <fieldset>
           <legend>Sub-agents <small>temporary helpers this agent creates for parts of a task</small></legend>
           <div class="seg">
             @for (m of modes; track m.value) {
@@ -379,6 +387,7 @@ export class AgentsPage implements OnInit {
     d.subagent_mode ??= 'off';
     d.learning_mode ??= 'propose';
     d.use_profile ??= true;
+    d.goal_wip ??= 1;
     d.thinking ??= '';
     this.lastLevel = this.reasoningLevel(d);
     d.subagent_limits = { ...defaultSubagentLimits(), ...(d.subagent_limits ?? {}) };

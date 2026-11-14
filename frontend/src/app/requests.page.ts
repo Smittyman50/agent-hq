@@ -1,7 +1,8 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Api, KnowledgeProposal, ProfileProposal, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
+import { Api, Goal, KnowledgeProposal, ProfileProposal, SkillProposal, SubagentRequest, ToolApproval } from './api.service';
+import { GoalCard } from './goal-card';
 import { ApprovalCard } from './approval-card';
 import { Avatar } from './avatar';
 import { RequestCard } from './request-card';
@@ -42,6 +43,34 @@ export class ApprovalsInbox implements OnInit {
     this.reload();
   }
   reload() { this.api.toolApprovals().subscribe(a => this.all.set(a)); this.ws.refreshPending(); }
+}
+
+/** Requests → Goals: standing goals that need you (done claims, proposals, blocked goals, questions). */
+@Component({
+  selector: 'hq-goals-inbox',
+  imports: [GoalCard],
+  template: `
+  <div class="inbox">
+    <p class="hint inline-hint">Standing goals that need you: done claims to confirm, goals agents propose, goals a
+      guard stopped, and questions. Everything else is on the Board.</p>
+    @if (linked(); as id) { <hq-goal-card [goalId]="id" (decided)="reload()" class="linked" /> }
+    @for (g of goals(); track g.id) {
+      @if (g.id !== linked()) { <hq-goal-card [goalId]="g.id" [version]="g.updated_at" (decided)="reload()" /> }
+    } @empty { @if (!linked()) { <div class="empty-box">No goals need you.</div> } }
+  </div>`,
+})
+export class GoalsInbox implements OnInit {
+  private api = inject(Api);
+  private route = inject(ActivatedRoute);
+  private ws = inject(Workspace);
+  goals = signal<Goal[]>([]);
+  linked = signal<string | null>(null);
+
+  ngOnInit() {
+    this.linked.set(this.route.snapshot.queryParamMap.get('goal'));
+    this.reload();
+  }
+  reload() { this.api.goalsNeedingYou().subscribe(g => this.goals.set(g)); this.ws.refreshPending(); }
 }
 
 /** Requests → Skill proposals: new skills and improvements agents propose. */

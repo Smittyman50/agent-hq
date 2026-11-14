@@ -91,6 +91,10 @@ class Settings:
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))
+    # Run the goal runner (standing goals, app/workitems.py) from this API process, and how
+    # often it checks the board. Safe with several API processes (a lock per goal).
+    goals_enabled: bool = field(default_factory=lambda: _env("GOALS", "1").lower() not in ("0", "false", "no"))
+    goals_tick: float = field(default_factory=lambda: float(_env("GOALS_TICK", "5")))
     # Your time zone (IANA name, e.g. America/New_York). Every agent is told the current
     # date and time in it, so "today", "tomorrow" and "this weekend" mean the right days.
     # Falls back to TZ, then UTC.

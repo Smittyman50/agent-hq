@@ -138,6 +138,9 @@ class AgentDef(SQLModel, table=True):
     subagent_mode: SubagentMode = SubagentMode.off
     subagent_limits: dict[str, Any] = Field(default_factory=default_subagent_limits,
                                             sa_column=Column(JSON))
+    # Standing goals (app/workitems.py): how many goals it works on at once (its WIP limit).
+    # 0 = it takes no goals.
+    goal_wip: int = 1
     # Set on sub-agents themselves: temporary agents created by another agent for one task.
     # They are hidden from agent lists, can't delegate or spawn, and retire when done.
     is_subagent: bool = Field(default=False, index=True)
@@ -906,3 +909,78 @@ class WebhookDelivery(SQLModel, table=True):
     test: bool = False  # sent from the Events page
     replay_of: str | None = None
     detail: str = ""
+
+
+class WorkStatus(str, Enum):
+    """Where a work item is on the board."""
+
+    backlog = "backlog"          # captured, not yet agreed to (you move it to Ready)
+    ready = "ready"              # agreed; the agent pulls it when it has a free WIP slot
+    in_progress = "in_progress"  # being worked (goals: the runner keeps it moving)
+    waiting = "waiting"          # waiting on something: a delegate, an approval, you, a time
+    review = "review"            # the agent says it's done; waiting for you to confirm
+    blocked = "blocked"          # stopped by a guard (limits, no progress) or by you
+    done = "done"
+    dropped = "dropped"
+
+
+class WorkItem(SQLModel, table=True):
+    """Something an agent is working toward, kept outside its context window.
+
+    A *goal* is an outcome with a definition of done (a GTD project); its *actions* are
+    the next actions that get there (child rows). Later kinds, such as incidents, use
+    the same row: the fields below are not specific to goals.
+    """
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    kind: str = Field(default="goal", index=True)   # goal | action (incident later)
+    parent_id: str | None = Field(default=None, index=True)
+    owner_agent_id: str | None = Field(default=None, foreign_key="agentdef.id", index=True)
+    title: str
+    # What it's for and how to tell it's finished. Locked for the agent once work starts;
+    # only you change them.
+    objective: str = Field(default="", sa_column=Column(Text, default=""))
+    done_criteria: str = Field(default="", sa_column=Column(Text, default=""))
+    status: WorkStatus = Field(default=WorkStatus.backlog, index=True)
+    # Why it's waiting or blocked: {"kind": "delegation"|"approval"|"handoff"|"user"|"time"|
+    # "limit"|"stalled"|"stopped", "detail": ..., "until": iso time, "job_ids": [...]}
+    waiting_on: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    priority: int = 0        # higher first
+    position: float = 0      # order within a column (lower first)
+    # Goals: the conversation their turns run in.
+    thread_id: str | None = Field(default=None, foreign_key="thread.id", index=True)
+    # Where it came from: {"kind": "user"|"agent"|"schedule"|"event", ...}
+    source: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Agent-proposed goals wait for your OK (Requests) before they can leave the backlog.
+    proposed: bool = Field(default=False, index=True)
+    proposal_reason: str = Field(default="", sa_column=Column(Text, default=""))
+    # Groups related events into one item (incidents); unused by goals.
+    correlation_key: str | None = Field(default=None, index=True)
+    # Goals: {"max_turns", "max_hours", "max_requests", "stall_turns"}; empty = defaults.
+    limits: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    turns: int = 0               # goal turns run so far
+    stalled_turns: int = 0       # goal turns in a row that changed nothing on the board
+    revision: int = 0            # bumped on every change that counts as progress
+    last_job_id: str | None = None   # the goal turn the runner queued most recently
+    turn_revision: int = 0           # `revision` when that turn was queued (for stall checks)
+    # The agent's claim that it's done, with evidence (goals), or an action's result.
+    result: str = Field(default="", sa_column=Column(Text, default=""))
+    review_note: str = Field(default="", sa_column=Column(Text, default=""))  # your note on a review
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class WorkItemEvent(SQLModel, table=True):
+    """The log of a work item: every state change, note, action result and claim. This is
+    the agent's external memory of what it has tried."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    item_id: str = Field(index=True)            # the goal (actions log under their goal)
+    action_id: str | None = None                # the action it is about, if any
+    at: datetime = Field(default_factory=_now, index=True)
+    actor: str = ""                             # "you", "runner", or the agent's name
+    kind: str = ""                              # created, status, action_added, note, ...
+    text: str = Field(default="", sa_column=Column(Text, default=""))
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

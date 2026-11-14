@@ -57,6 +57,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
+from . import workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -795,6 +796,7 @@ class Runtime:
         if jobs:
             await self.save_message(thread_id, Role.event, self.STOPPED, kind="stopped",
                                     job_ids=[j.id for j in jobs])
+        workitems.stopped(thread_id)  # a goal's conversation: don't let the runner restart it
         await self.broker.publish(thread_id, "status", state="idle")
         return {"stopped": len(jobs), "job_ids": [j.id for j in jobs]}
 
@@ -981,7 +983,7 @@ class Runtime:
         # Background jobs (including waits that timed out) report into the origin thread.
         if load_job(job.id).background:
             await self.enqueue_turn(job.origin_thread_id, self._report_prompt(job, assignee, result),
-                                    from_user=False,
+                                    from_user=False, report_for=job.id,
                                     **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
 
     @staticmethod
@@ -1064,6 +1066,14 @@ class Runtime:
         if mode != SubagentMode.off:
             instructions.append(subagent_rules(agent, mode))
             toolsets.append((self._subagent_toolset(mode), None))
+        if not as_worker and thread_id:
+            goal = workitems.goal_for_thread(thread_id)
+            if goal is not None and goal.owner_agent_id == agent.id:
+                instructions.append(workitems.GOAL_RULES)
+                toolsets.append((workitems.goal_toolset(self), None))
+        if not agent.is_subagent:
+            instructions.append(workitems.PROPOSE_RULES)
+            toolsets.append((workitems.propose_toolset(self), None))
         if agent.is_subagent:
             instructions.append(SUBAGENT_SELF_RULES)
         instructions.append(clock.instructions())  # last: it changes every minute (caching)
@@ -1665,8 +1675,12 @@ class Runtime:
             await rt.save_message(ctx.deps.thread_id, Role.event,
                                   f"{me.name} needs you on its desktop: {reason}",
                                   agent_id=me.id, kind="desktop_request", tool_server_id=srv.id)
-            async with released_slot():
-                got = await rt.broker.wait_handback(srv.id, timeout)
+            workitems.mark_waiting(ctx.deps.thread_id, "handoff", f"{me.name} needs you on its desktop: {reason}")
+            try:
+                async with released_slot():
+                    got = await rt.broker.wait_handback(srv.id, timeout)
+            finally:
+                workitems.clear_waiting(ctx.deps.thread_id, "handoff")
             if got is None:
                 await rt.broker.clear_request(srv.id)
                 await rt.save_message(ctx.deps.thread_id, Role.event,
@@ -2090,8 +2104,12 @@ class Runtime:
                                 "args": {k: (str(v)[:500]) for k, v in (args or {}).items()},
                                 "link": subagents.link(f"/requests/approvals?approval={row.id}")})
         wait = approvals.timeout_seconds()
-        async with released_slot():  # don't hold a worker slot while you decide
-            got = await self.broker.r.blpop([approvals.key(row.id)], timeout=wait)
+        workitems.mark_waiting(deps.thread_id, "approval", f"{agent.name} wants to run {tool}")
+        try:
+            async with released_slot():  # don't hold a worker slot while you decide
+                got = await self.broker.r.blpop([approvals.key(row.id)], timeout=wait)
+        finally:
+            workitems.clear_waiting(deps.thread_id, "approval")
         with db.session() as s:
             row = s.get(ToolApproval, row.id)
             if row.status == "pending":  # nobody decided in time

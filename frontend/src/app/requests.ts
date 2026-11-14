@@ -6,10 +6,11 @@ import { Api } from './api.service';
 import { Icon } from './icon';
 import { Workspace } from './workspace';
 
-type Kind = 'approvals' | 'skills' | 'profile' | 'knowledge' | 'requests';
+type Kind = 'approvals' | 'skills' | 'profile' | 'knowledge' | 'requests' | 'goals';
 
 export const REQUEST_SECTIONS: { path: string; label: string; icon: string; count: Kind; param: string }[] = [
   { path: 'approvals', label: 'Tool approvals', icon: 'tools', count: 'approvals', param: 'approval' },
+  { path: 'goals', label: 'Goals', icon: 'goal', count: 'goals', param: 'goal' },
   { path: 'skills', label: 'Skill proposals', icon: 'skills', count: 'skills', param: 'skill' },
   { path: 'profile', label: 'Profile updates', icon: 'profile', count: 'profile', param: 'suggestion' },
   { path: 'knowledge', label: 'Knowledge', icon: 'knowledge', count: 'knowledge', param: 'document' },
