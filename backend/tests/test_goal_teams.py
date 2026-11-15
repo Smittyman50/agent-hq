@@ -17,7 +17,7 @@ from app.models import Job, JobKind, WorkItem, WorkStatus
 
 from .conftest import SCRIPTS, _last_prompt, _tool_returns
 
-TEAM: dict = {"fail": set(), "tasks": [], "delay": 1.0, "tools": []}
+TEAM: dict = {"fail": set(), "tasks": [], "delay": 1.0, "tools": [], "roles": {}, "assigned": []}
 
 
 def _returns(messages) -> dict:
@@ -62,12 +62,18 @@ async def team_lead(messages, info):
         if name == "add_action" and len(adds) == 2:
             return ModelResponse(parts=[ToolCallPart("add_action", {
                 "title": "Write the VLAN notes", "after": [adds[0]["action_id"], adds[1]["action_id"]]})])
+        why = "No agent of mine audits switches; this is a one-off for this goal."
         if name == "add_action" and len(adds) == 3:
             return ModelResponse(parts=[ToolCallPart("assign_action", {
-                "action_id": adds[0]["action_id"], "role": "Core auditor", "instructions": "Use SNMP."})])
+                "action_id": adds[0]["action_id"], "role": TEAM["roles"].get("core", "Core auditor"),
+                "why_not_existing_agents": why, "instructions": "Use SNMP."})])
         if name == "assign_action" and len(got["assign_action"]) == 1:
+            TEAM["assigned"].append(content)
             return ModelResponse(parts=[ToolCallPart("assign_action", {
-                "action_id": adds[1]["action_id"], "role": "Edge auditor"})])
+                "action_id": adds[1]["action_id"], "role": TEAM["roles"].get("edge", "Edge auditor"),
+                "why_not_existing_agents": why})])
+        if name == "assign_action":
+            TEAM["assigned"].append(content)
         return ModelResponse(parts=[TextPart(f"Team at work: {content}")])
     # Later turns: drop a blocked action, else start the next to-do, finish it, claim done.
     blocked = re.search(r"^- \[blocked[^\]]*\] (\w+):", prompt, re.M)
@@ -138,7 +144,7 @@ def _all_goals():
 
 
 def _reset():
-    TEAM.update(fail=set(), tasks=[], delay=1.0, tools=[])
+    TEAM.update(fail=set(), tasks=[], delay=1.0, tools=[], roles={}, assigned=[])
 
 
 # --------------------------------------------------------------------------- the loop
@@ -318,3 +324,54 @@ async def test_stop_puts_team_actions_back_to_do(hq):
         from sqlmodel import select
         team_jobs = s.exec(select(Job).where(Job.origin_thread_id == _g(g["id"]).thread_id)).all()
     assert all(j.status.value in ("done", "failed") for j in team_jobs)
+
+
+# --------------------------------------------------------------------------- duplicates
+
+async def test_a_team_member_that_duplicates_an_agent_is_refused(hq, monkeypatch):
+    """The sub-agent duplicate check applies to team assignments: by name, and by
+    description. The comparison sees the work itself (role, action, instructions), not the
+    goal and team context in the briefing, which would water it down."""
+    from app import subagents
+
+    _reset()
+    TEAM["roles"] = {"core": "Breaker helper"}  # names an existing agent
+    seen: list[str] = []
+
+    async def fake_embed(texts, is_query):
+        # "Switch work" matches Breaker's description, unless it's buried in a long text.
+        if is_query:
+            seen.extend(texts)
+        return [[1.0, 0.0] if "switch" in x.lower() and len(x) < 300 else [0.0, 1.0] for x in texts]
+
+    monkeypatch.setattr(subagents, "_embed", fake_embed)
+    await hq.start_worker(concurrency=4)
+    await hq.agent(name="Breaker", description="Monitors the network switches", model="fake:worker")
+    lead = await _lead(hq)
+    g = await _goal(hq, lead["id"])
+    await run_until(hq, lambda: _g(g["id"]).status == WorkStatus.review)
+    core_refusal, edge_refusal = TEAM["assigned"][:2]
+    assert core_refusal["status"] == "refused" and "would duplicate Breaker" in core_refusal["summary"]
+    assert edge_refusal["status"] == "refused" and "would duplicate Breaker" in edge_refusal["summary"]
+    # It compared the work, not the briefing.
+    edge_query = next(t for t in seen if t.startswith("Edge auditor:"))
+    assert edge_query == "Edge auditor: Audit edge switch" and "Know every VLAN" not in edge_query
+    # Nothing was handed to a sub-agent, nothing was left reserved; the lead did the work.
+    assert not [j for j in hq.jobs() if (j.meta or {}).get("goal_action")]
+    acts = _acts(g["id"])
+    assert all(a.assignee_agent_id is None for a in acts.values())
+    assert acts["Audit core switch"].status == WorkStatus.done
+
+
+async def test_the_lead_says_why_no_existing_agent_will_do(hq):
+    from types import SimpleNamespace
+
+    lead = await _lead(hq)
+    g = await _goal(hq, lead["id"])
+    wi.pull(lead["id"])
+    a = wi.new_action(g["id"], "First", actor="x")
+    assign = wi.goal_toolset(hq.runtime, team=True).tools["assign_action"].function
+    ctx = SimpleNamespace(deps=SimpleNamespace(agent_id=lead["id"], thread_id=_g(g["id"]).thread_id, depth=0))
+    out = await assign(ctx, a.id, "Helper", "dunno")
+    assert out["status"] == "refused" and "why none of the existing agents" in out["summary"]
+    assert _acts(g["id"])["First"].status == WorkStatus.backlog and not _acts(g["id"])["First"].job_id

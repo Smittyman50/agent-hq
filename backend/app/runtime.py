@@ -2168,11 +2168,15 @@ class Runtime:
     async def spawn(self, deps: RunDeps, me: AgentDef, *, role: str, task: str,
                     why_not_existing_agents: str, instructions: str = "", model: str | None = None,
                     tools: list[str] | None = None, background: bool = False,
-                    extra_meta: dict[str, Any] | None = None) -> dict:
+                    extra_meta: dict[str, Any] | None = None, check_text: str | None = None) -> dict:
         """Create a sub-agent and queue its task, after every check (mode, grant, duplicates,
         models, tools, limits). Returns {"status": "refused", "summary"} or
         {"status": "queued", "job", "sub", "minutes"}. Used by spawn_subagent and by goal
-        teams (app/workitems.py assign_action)."""
+        teams (app/workitems.py assign_action).
+
+        `check_text` is what the duplicate check compares with your agents' descriptions
+        when `task` carries more than the work itself (a goal team member's briefing also
+        has the goal and what the team found, which would water the comparison down)."""
         _sa = subagents
         if _sa.mode_of(me) == SubagentMode.off:
             return {"status": "refused", "summary": "You can't create sub-agents."}
@@ -2191,7 +2195,7 @@ class Runtime:
             limits = _sa.grant_limits(grant)
         else:
             limits = _sa.limits_of(me)
-        dup, score = await _sa.duplicate_of(role, task, me)
+        dup, score = await _sa.duplicate_of(role, (check_text or task).strip(), me)
         # An approved request already showed the user any likely overlap, so only an
         # outright name clash is refused under a grant.
         if dup and (grant is None or score >= 1.0):

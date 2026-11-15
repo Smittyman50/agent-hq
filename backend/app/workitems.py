@@ -763,8 +763,9 @@ def team_text(team: dict) -> str:
     return (
         f"2b. Your team: up to {team['size'] - 1} sub-agent(s) can work other startable actions "
         f"in parallel while you work yours ({team['working']} working, {free} free). Hand one "
-        "over with assign_action: only actions with nothing unfinished in their after list, and "
-        "never two at once that change the same system. Pick a cloud model for them if the "
+        "over with assign_action: only actions with nothing unfinished in their after list, "
+        "never two at once that change the same system, and never work an existing agent "
+        "should do (delegate that to it instead). Pick a cloud model for them if the "
         "local GPU is busy. Their results land on the board by themselves; a blocked one needs "
         "you to re-plan it. Sub-agents have no desktop: keep visual browsing for yourself.\n")
 
@@ -1265,7 +1266,8 @@ def goal_toolset(rt, team: bool = False) -> FunctionToolset:
         return {"ok": True, "summary": "Sent to the user to confirm. Summarise the outcome in "
                 "your reply and end the turn."}
 
-    async def assign_action(ctx: RunContext, action_id: str, role: str, instructions: str = "",
+    async def assign_action(ctx: RunContext, action_id: str, role: str,
+                            why_not_existing_agents: str, instructions: str = "",
                             model: str | None = None, tools: list[str] | None = None) -> dict:
         """Hand a startable next action to a new sub-agent on your team. It works the action
         in parallel while you carry on with yours, and its result lands on the action by
@@ -1274,6 +1276,9 @@ def goal_toolset(rt, team: bool = False) -> FunctionToolset:
         Args:
             action_id: A to-do action with nothing unfinished in its after list.
             role: Short role name for the sub-agent, e.g. "VLAN auditor".
+            why_not_existing_agents: Why none of the existing agents should do this action
+                (required; a sub-agent that duplicates one of them is refused: delegate to
+                that agent instead).
             instructions: How to do it, what to check, what to bring back.
             model: One of the sub-agent models in your instructions (a cloud one if the local
                 GPU is busy). Default: the first.
@@ -1289,10 +1294,12 @@ def goal_toolset(rt, team: bool = False) -> FunctionToolset:
         try:
             got = await rt.spawn(
                 ctx.deps, me, role=role, task=team_task(g, a, me, instructions),
-                why_not_existing_agents=(f"One next action of {me.name}'s standing goal "
-                                         f"'{g.title}', worked in parallel by {me.name}'s team."),
+                why_not_existing_agents=why_not_existing_agents,
                 model=model, tools=tools, background=True,
-                extra_meta={"goal_action": a.id, "goal_id": g.id})
+                extra_meta={"goal_action": a.id, "goal_id": g.id},
+                # The duplicate check looks at the work itself, as for any sub-agent: not at
+                # the goal and team context the briefing adds.
+                check_text=" ".join(x for x in (a.title, a.objective, instructions) if x).strip())
         except Exception:
             release_team(g.id, a.id)
             raise
