@@ -471,16 +471,20 @@ export class AgentsPage implements OnInit {
       next: p => {
         if (!p.can_delete) { this.error.set(p.reason ?? 'This agent can\'t be deleted right now'); return; }
         const n = (k: number, one: string, many = one + 's') => `${k} ${k === 1 ? one : many}`;
-        const lines = [
-          n(p.conversations, 'conversation') + ` (${n(p.messages, 'message')})`,
-          n(p.schedules, 'schedule'), n(p.subscriptions, 'event subscription'),
-          n(p.memories, 'memory', 'memories') + ' of its own', n(p.skills, 'skill') + ' of its own',
-          n(p.test_cases, 'test case'),
-        ];
-        if (p.subagents) lines.push(n(p.subagents, 'sub-agent'));
-        const goals = p.goals_unassigned ? `\n\n${n(p.goals_unassigned, 'goal')} it owns will go back to your backlog with no owner.` : '';
-        const typed = prompt(`Permanently delete ${d.name}? This can't be undone.\n\nThis also deletes:\n• ${lines.join('\n• ')}`
-          + `${goals}\n\nUsage history, team memories, team skills and knowledge are kept.\n\nType the agent's name to confirm:`);
+        // Only what's there, on one line: Chrome's prompt box is short and cuts long text off.
+        const parts = [
+          p.conversations ? n(p.conversations, 'conversation') + ` (${n(p.messages, 'message')})` : '',
+          p.schedules ? n(p.schedules, 'schedule') : '',
+          p.subscriptions ? n(p.subscriptions, 'event subscription') : '',
+          p.memories ? n(p.memories, 'memory', 'memories') : '',
+          p.skills ? n(p.skills, 'skill') : '',
+          p.test_cases ? n(p.test_cases, 'test case') : '',
+          p.subagents ? n(p.subagents, 'sub-agent') : '',
+        ].filter(Boolean);
+        const also = parts.length ? `\n\nAlso deletes: ${parts.join(', ')}.` : '';
+        const goals = p.goals_unassigned ? `\n${n(p.goals_unassigned, 'goal')} it owns will go back to your backlog.` : '';
+        const typed = prompt(`To permanently delete ${d.name}, type its name below: ${d.name}\n`
+          + `This can't be undone.${also}${goals}\n\nUsage history and team memories, skills and knowledge are kept.`);
         if (typed === null) return;
         if (typed.trim() !== d.name) { this.error.set('The name didn\'t match, so nothing was deleted'); return; }
         this.api.purgeAgent(d.id!).subscribe({
