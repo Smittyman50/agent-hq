@@ -489,10 +489,10 @@ export class AgentsPage implements OnInit {
         if (typed.trim() !== d.name) { this.error.set('The name didn\'t match, so nothing was deleted'); return; }
         this.api.purgeAgent(d.id!).subscribe({
           next: () => { this.draft.set(null); this.error.set(''); this.load(); },
-          error: e => this.error.set(e.error?.detail ?? 'Delete failed'),
+          error: e => this.error.set(e.error?.detail ?? `Delete failed (${e.status} ${e.statusText || 'no response'})`),
         });
       },
-      error: e => this.error.set(e.error?.detail ?? 'Delete failed'),
+      error: e => this.error.set(e.error?.detail ?? `Delete failed (${e.status} ${e.statusText || 'no response'})`),
     });
   }
 

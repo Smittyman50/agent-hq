@@ -145,14 +145,16 @@ def purge(s: Session, agent: AgentDef) -> list[str]:
 
     # Nobody points at it any more.
     for c in s.exec(select(KnowledgeCollection)).all():
-        keep = [i for i in c.agent_ids if i not in ids]
-        keep_p = [i for i in c.proposer_agent_ids if i not in ids]
-        if keep != c.agent_ids or keep_p != c.proposer_agent_ids:
+        # Older rows can hold NULL here (the columns were added later).
+        have, have_p = c.agent_ids or [], c.proposer_agent_ids or []
+        keep = [i for i in have if i not in ids]
+        keep_p = [i for i in have_p if i not in ids]
+        if keep != have or keep_p != have_p:
             c.agent_ids, c.proposer_agent_ids = keep, keep_p
             s.add(c)
     for other in s.exec(select(AgentDef).where(AgentDef.id.not_in(ids))).all():
-        if any(d in ids for d in other.delegates):
-            other.delegates = [d for d in other.delegates if d not in ids]
+        if any(d in ids for d in other.delegates or []):
+            other.delegates = [d for d in other.delegates or [] if d not in ids]
             s.add(other)
     _rm(s, AgentAvatar, AgentAvatar.agent_id.in_(ids))
     s.flush()
