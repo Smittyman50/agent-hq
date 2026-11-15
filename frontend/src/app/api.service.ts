@@ -2,6 +2,12 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
+export interface AgentDeletePlan {
+  can_delete: boolean; reason: string | null;
+  conversations: number; messages: number; schedules: number; subscriptions: number;
+  memories: number; skills: number; test_cases: number; goals_unassigned: number; subagents: number;
+}
+
 export interface AgentDef {
   id?: string;
   name: string;
@@ -505,6 +511,8 @@ export class Api {
                 : this.http.post<AgentDef>('/api/agents', a);
   }
   deleteAgent(id: string) { return this.http.delete(`/api/agents/${id}`); }
+  agentDeletePlan(id: string) { return this.http.get<AgentDeletePlan>(`/api/agents/${id}/delete-plan`); }
+  purgeAgent(id: string) { return this.http.delete(`/api/agents/${id}/permanent`); }
   uploadAvatar(id: string, file: File) {
     const form = new FormData();
     form.append('file', file);

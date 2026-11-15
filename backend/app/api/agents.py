@@ -304,7 +304,8 @@ def delete_agent(agent_id: str, s: Session = Depends(get_session)):
     a = s.get(AgentDef, agent_id)
     if not a:
         raise HTTPException(404)
-    # Disable instead of deleting so old conversations and jobs stay readable.
+    # Disable only, so old conversations and jobs stay readable. Deleting for good is
+    # DELETE /{agent_id}/permanent, once the agent is disabled.
     a.enabled = False
     for other in s.exec(select(AgentDef)).all():
         if agent_id in other.delegates:
@@ -312,6 +313,33 @@ def delete_agent(agent_id: str, s: Session = Depends(get_session)):
             s.add(other)
     s.add(a)
     s.commit()
+
+
+@router.get("/{agent_id}/delete-plan")
+def delete_plan(agent_id: str, s: Session = Depends(get_session)) -> dict[str, Any]:
+    """What permanently deleting the agent would remove, and whether it can be deleted now."""
+    from .. import agent_purge
+
+    a = s.get(AgentDef, agent_id)
+    if not a:
+        raise HTTPException(404)
+    return agent_purge.plan(s, a)
+
+
+@router.delete("/{agent_id}/permanent", status_code=204)
+async def purge_agent(agent_id: str, request: Request, s: Session = Depends(get_session)):
+    """Permanently delete a disabled agent and everything that belongs only to it
+    (see app/agent_purge.py). An enabled agent must be disabled first."""
+    from .. import agent_purge
+
+    a = s.get(AgentDef, agent_id)
+    if not a:
+        raise HTTPException(404)
+    try:
+        tids = agent_purge.purge(s, a)
+    except agent_purge.PurgeRefused as e:
+        raise HTTPException(409, str(e)) from None
+    await agent_purge.forget_checkpoints(getattr(request.app.state, "runtime", None), tids)
 
 
 @router.get("/{agent_id}/context")

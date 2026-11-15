@@ -320,6 +320,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - Postgres upgrades: enum values a newer version adds (such as a new provider kind) are added to an older database's enum type on startup
 - schema migrations: the revisions building exactly the models' schema (on SQLite and Postgres), adopting a database from before migrations, refusing a database a newer version migrated, waiting instead of migrating, four processes starting at once, ignoring pgvector columns and LangGraph's tables, and a later rename-with-data revision running on startup with a SQLite backup first
 - import and export
+- deleting agents: only once disabled, never with work in flight, removing what it owns while keeping usage, team memories and skills, and returning its goals to the backlog
 - sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
 - sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
 - workbenches and tool approvals: allow/ask/block per tool, waiting for a decision, "don't ask again", timeouts, and a real workbench over MCP
@@ -1022,6 +1023,30 @@ An approval is a grant for that agent in that conversation, and it expires. Your
 - **Slots:** each model provider has **Max concurrent requests** (Settings → Model providers; 0 = no limit). It caps how many model calls run against that provider at once, across every worker, so a burst of agents and sub-agents queues instead of swamping a GPU box. Slots are leases in Valkey that are renewed while a call runs, so a crashed worker can't hold one for more than 90 seconds.
 - **The ledger:** every agent run (chat turn, delegated task or sub-agent task) is recorded with its model, model requests, tokens and wall-clock time. **Settings → Usage** totals these by agent (sub-agent runs count under the agent that created them), by model and by day. Request estimates use the same numbers.
 - **Daily budgets** aren't built yet, on purpose: watch the real numbers here first.
+
+## Disabling and deleting agents
+
+Removing an agent takes two deliberate steps on the **Settings → Agents** page:
+
+1. **Disable** stops the agent: it takes no new work, other agents stop delegating to it, and its conversations stay readable. Tick **Enabled** and save to bring it back.
+2. **Delete permanently** appears once the agent is disabled. It shows what will go and asks you to type the agent's name to confirm. It can't be undone.
+
+Deleting an agent removes:
+
+- its conversations: messages, files, jobs, traces and model history
+- its schedules and event subscriptions
+- its own memories and skills, test cases, proposals, ratings, reflections, tool approvals and sub-agent requests
+- its avatar and any sub-agents it made
+
+Some things are kept:
+
+- **Usage ledger:** cost history stays intact.
+- **Shared learning:** team memories, team skills and knowledge-library documents stay.
+- **Goals it owned:** these go back to your backlog with no owner, and actions it was working go back to Ready.
+
+An agent with work queued or running can't be deleted until that work finishes or you stop it.
+
+**API:** `DELETE /api/agents/{id}` disables. `GET /api/agents/{id}/delete-plan` returns what a delete would remove and whether it's allowed now. `DELETE /api/agents/{id}/permanent` deletes a disabled agent (`409` with the reason otherwise).
 
 ## Avatars
 

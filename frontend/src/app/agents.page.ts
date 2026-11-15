@@ -251,7 +251,12 @@ import { Avatar } from './avatar';
           <button type="submit">Save</button>
           @if (d.id) {
             <button type="button" class="ghost" (click)="chat(d)">Chat</button>
-            <button type="button" class="danger" (click)="remove(d)">Disable</button>
+            @if (savedEnabled(d)) {
+              <button type="button" class="danger" (click)="remove(d)">Disable</button>
+            } @else {
+              <button type="button" class="danger" (click)="purge(d)"
+                      title="Deletes the agent and its conversations, schedules, memories and skills for good">Delete permanently</button>
+            }
           }
         </div>
       </form>
@@ -452,8 +457,39 @@ export class AgentsPage implements OnInit {
   }
 
   remove(d: AgentDef) {
-    if (!confirm(`Disable ${d.name}? Old conversations stay readable.`)) return;
+    if (!confirm(`Disable ${d.name}? Old conversations stay readable. Once disabled, you can delete it permanently.`)) return;
     this.api.deleteAgent(d.id!).subscribe(() => { this.draft.set(null); this.load(); });
+  }
+
+  /** Enabled as saved, not as the checkbox currently shows. */
+  savedEnabled(d: AgentDef) {
+    return this.agents().find(a => a.id === d.id)?.enabled ?? true;
+  }
+
+  purge(d: AgentDef) {
+    this.api.agentDeletePlan(d.id!).subscribe({
+      next: p => {
+        if (!p.can_delete) { this.error.set(p.reason ?? 'This agent can\'t be deleted right now'); return; }
+        const n = (k: number, one: string, many = one + 's') => `${k} ${k === 1 ? one : many}`;
+        const lines = [
+          n(p.conversations, 'conversation') + ` (${n(p.messages, 'message')})`,
+          n(p.schedules, 'schedule'), n(p.subscriptions, 'event subscription'),
+          n(p.memories, 'memory', 'memories') + ' of its own', n(p.skills, 'skill') + ' of its own',
+          n(p.test_cases, 'test case'),
+        ];
+        if (p.subagents) lines.push(n(p.subagents, 'sub-agent'));
+        const goals = p.goals_unassigned ? `\n\n${n(p.goals_unassigned, 'goal')} it owns will go back to your backlog with no owner.` : '';
+        const typed = prompt(`Permanently delete ${d.name}? This can't be undone.\n\nThis also deletes:\n• ${lines.join('\n• ')}`
+          + `${goals}\n\nUsage history, team memories, team skills and knowledge are kept.\n\nType the agent's name to confirm:`);
+        if (typed === null) return;
+        if (typed.trim() !== d.name) { this.error.set('The name didn\'t match, so nothing was deleted'); return; }
+        this.api.purgeAgent(d.id!).subscribe({
+          next: () => { this.draft.set(null); this.error.set(''); this.load(); },
+          error: e => this.error.set(e.error?.detail ?? 'Delete failed'),
+        });
+      },
+      error: e => this.error.set(e.error?.detail ?? 'Delete failed'),
+    });
   }
 
   chat(d: AgentDef) {
