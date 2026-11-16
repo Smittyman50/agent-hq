@@ -8,6 +8,9 @@ Collections hold documents from sources:
   are re-indexed. With "Obsidian vault" on, notes are read the Obsidian way: frontmatter
   and #tags become tags, [[wikilinks]] are kept as links, %%comments%% are dropped, and
   citations open the note in Obsidian (obsidian://).
+* **share**: a network share on your NAS (TrueNAS, Windows, Samba), read in place over
+  SMB or from a folder mounted into the container (an NFS export); only files whose size
+  or modified time changed are re-read (see knowledge_shares). Obsidian vault works here too.
 
 Documents are turned into Markdown, cut into sections at their headings and embedded with
 the embedding model from Settings → Memory. Search is hybrid (meaning + keywords), as for
@@ -24,6 +27,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -532,6 +536,89 @@ async def _collect_git(src: KnowledgeSource, full: bool) -> list[str]:
     return changed
 
 
+def _manifest_file(src_id: str) -> Path:
+    return root() / "share" / f"{src_id}.json"
+
+
+def _read_manifest(src_id: str) -> dict[str, list[float]]:
+    try:
+        return json.loads(_manifest_file(src_id).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_manifest(src_id: str, data: dict[str, list[float]]) -> None:
+    f = _manifest_file(src_id)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(f)
+
+
+def forget_share(src_id: str) -> None:
+    """Read the whole share again next time (after its address changes)."""
+    _manifest_file(src_id).unlink(missing_ok=True)
+
+
+async def _collect_share(src: KnowledgeSource, full: bool) -> list[str]:
+    """List the share; read new and changed files (by size and modified time) into documents.
+    Returns the doc ids that changed."""
+    from . import knowledge_shares as ks
+
+    loop = asyncio.get_running_loop()
+    loc = ks.parse(src.url or "")
+    exclude = src.exclude or ks.SHARE_EXCLUDE
+    include = src.include or ks.SHARE_INCLUDE
+    max_bytes = int(get_settings()["max_file_mb"]) * 1024 * 1024
+    share = await loop.run_in_executor(None, lambda: ks.open_share(src.url or "", src.username, src.token))
+    try:
+        def listing() -> dict[str, ks.Entry]:
+            out: dict[str, ks.Entry] = {}
+            for e in share.walk(exclude):
+                if matches(e.path, include, exclude):
+                    out[e.path] = e
+                    if len(out) > ks.MAX_FILES:
+                        raise RuntimeError(f"more than {ks.MAX_FILES} matching files; point the source at "
+                                           "a narrower folder or tighten the include patterns")
+            return out
+
+        wanted = await loop.run_in_executor(None, listing)
+        with db.session() as s:
+            known = {d.path: d.id for d in s.exec(select(KnowledgeDoc).where(KnowledgeDoc.source_id == src.id)).all()}
+        remove_docs([i for p, i in known.items() if p not in wanted])
+        seen = {} if full else _read_manifest(src.id)
+        todo = [p for p, e in sorted(wanted.items())
+                if p not in known or seen.get(p) != [e.size, e.mtime]]
+        manifest = {p: v for p, v in seen.items() if p in wanted and p not in todo}
+        vault = src.vault_name or loc.label or "vault"
+        changed = []
+        for path in todo:
+            e = wanted[path]
+            if e.size > max_bytes:
+                continue
+            try:
+                data = await loop.run_in_executor(None, lambda: share.read(path))
+                raw = await loop.run_in_executor(None, lambda: to_markdown(path, data))
+            except Exception as ex:
+                log.info("knowledge: skipped %s (%s)", path, ex)
+                continue
+            manifest[path] = [e.size, e.mtime]
+            if path.lower().endswith((".md", ".markdown")):
+                note = parse_note(path, raw, obsidian=src.obsidian)
+            else:
+                note = Note(title=_title_of(path, data, raw), text=raw, tags=[], links=[])
+            doc, did = upsert_doc(src, path, title=note.title, text=note.text,
+                                  link=_obsidian_link(vault, path) if src.obsidian else "",
+                                  tags=note.tags, links=note.links, size=len(data))
+            if did:
+                changed.append(doc.id)
+        _write_manifest(src.id, manifest)
+        _set(src.id, last_commit=f"{len(wanted)} files")
+        return changed
+    finally:
+        share.close()
+
+
 async def _collect_url(src: KnowledgeSource) -> list[str]:
     import httpx
 
@@ -631,6 +718,8 @@ async def index_source(src_id: str, *, full: bool = False) -> KnowledgeSource:
             await _collect_git(src, full)
         elif src.kind == "url":
             await _collect_url(src)
+        elif src.kind == "share":
+            await _collect_share(src, full)
         with db.session() as s:
             ids = [d.id for d in s.exec(select(KnowledgeDoc).where(KnowledgeDoc.source_id == src_id)).all()
                    if full or d.indexed_hash != d.hash]
@@ -653,6 +742,7 @@ def delete_source(src_id: str) -> None:
     remove_docs(ids)
     for folder in (root() / "git" / src_id, root() / "uploads" / src_id):
         shutil.rmtree(folder, ignore_errors=True)
+    forget_share(src_id)
     with db.session() as s:
         row = s.get(KnowledgeSource, src_id)
         if row:
@@ -680,7 +770,7 @@ def due_sources() -> list[KnowledgeSource]:
     for r in rows:
         if r.status == "queued":
             out.append(r)
-        elif r.kind in ("git", "url") and r.refresh_minutes > 0 and (
+        elif r.kind in ("git", "url", "share") and r.refresh_minutes > 0 and (
                 r.last_indexed_at is None
                 or _aware(r.last_indexed_at) + timedelta(minutes=r.refresh_minutes) <= now):
             out.append(r)
@@ -708,7 +798,7 @@ def recover_stuck(minutes: int = 60) -> None:
 
 
 async def loop(broker, every: float = 60) -> None:
-    """Background: index queued sources and refresh git and web sources on schedule."""
+    """Background: index queued sources and refresh git, web and share sources on schedule."""
     recover_stuck(0)
     while True:
         try:

@@ -1,4 +1,4 @@
-"""The knowledge library: parsing, chunking, sources (uploads, web pages, Git / Obsidian),
+"""The knowledge library: parsing, chunking, sources (uploads, web pages, Git / Obsidian, NAS shares),
 search, recall, access and turning a runbook into skill proposals."""
 
 from __future__ import annotations
@@ -6,13 +6,17 @@ from __future__ import annotations
 import asyncio
 import functools
 import http.server
+import os
 import subprocess
+import sys
 import threading
+import types
 from pathlib import Path
 
 import pytest
 
 from app import knowledge
+from app import knowledge_shares as shares
 from app.models import KnowledgeSource
 
 from .test_learning import _until
@@ -220,6 +224,130 @@ async def test_git_errors_are_reported_without_the_token(hq):
     assert r.json()["has_token"]
     assert (await hq.http.post(f"/api/knowledge/collections/{col['id']}/sources",
                                json={"kind": "git", "url": "ftp://x"})).status_code == 422
+
+
+def test_share_addresses():
+    a = shares.parse("smb://truenas.home.arpa/docs/Runbooks/Proxmox")
+    assert (a.protocol, a.server, a.port, a.share, a.subpath) == ("smb", "truenas.home.arpa", 445, "docs", "Runbooks/Proxmox")
+    assert a.unc == "\\\\truenas.home.arpa\\docs\\Runbooks\\Proxmox" and a.label == "Proxmox"
+    b = shares.parse("\\\\truenas\\docs")
+    assert (b.server, b.share, b.subpath, b.label) == ("truenas", "docs", "", "docs")
+    assert shares.parse("//truenas/docs/a b").subpath == "a b"
+    assert shares.parse("smb://nas:4450/x").port == 4450
+    assert shares.parse("/shares/docs/../docs").path == "/shares/docs"
+    for bad in ("smb://truenas", "smb://mike:pw@truenas/docs", "truenas/docs", "", "C:\\docs"):
+        with pytest.raises(ValueError):
+            shares.parse(bad)
+    exc = shares.SHARE_EXCLUDE
+    assert not knowledge.matches(".zfs/snapshot/auto/a.md", shares.SHARE_INCLUDE, exc)
+    assert not knowledge.matches("Docs/~$plan.docx", shares.SHARE_INCLUDE, exc)
+    assert knowledge.matches("Docs/plan.docx", shares.SHARE_INCLUDE, exc)
+
+
+def _fill_share(root: Path) -> None:
+    (root / "Runbooks").mkdir(parents=True)
+    (root / "Runbooks" / "Backups.md").write_text(VAULT_NOTE)
+    (root / "Runbooks" / "ups.txt").write_text("The UPS is an APC SMT1500. Battery replaced 2025.")
+    (root / "photo.png").write_bytes(b"\x89PNG")
+    (root / ".zfs" / "snapshot" / "daily").mkdir(parents=True)
+    (root / ".zfs" / "snapshot" / "daily" / "Backups.md").write_text(VAULT_NOTE)
+
+
+async def _share_docs(hq, cid):
+    return {d["path"]: d for d in (await hq.http.get(f"/api/knowledge/collections/{cid}/docs")).json()["docs"]}
+
+
+async def test_mounted_share_folder_syncs_changes(hq, tmp_path, monkeypatch):
+    base = tmp_path / "shares"
+    _fill_share(base / "docs")
+    (tmp_path / "secret.md").write_text("# not yours")
+    os.symlink(tmp_path / "secret.md", base / "docs" / "link.md")
+    monkeypatch.setenv("AHQ_SHARES_DIR", str(base))
+    col = await _collection(hq)
+    url = "/api/knowledge/collections/" + col["id"] + "/sources"
+    # Only folders mounted under AHQ_SHARES_DIR.
+    r = await hq.http.post(url, json={"kind": "share", "url": str(tmp_path)})
+    assert r.status_code == 422 and "outside" in r.json()["detail"]
+    assert (await hq.http.post(url, json={"kind": "share", "url": f"{base}/missing"})).status_code == 422
+    x = (await hq.http.post(url, json={"kind": "share", "url": f"{base}/docs", "obsidian": True,
+                                       "vault_name": "Lab"})).json()
+    assert x["name"] == "docs" and ".zfs/**" in x["exclude"] and "**/*.pdf" in x["include"]
+    x = await _wait_ready(hq, x["id"])
+    assert x["status"] == "ready", x["error"]
+    docs = await _share_docs(hq, col["id"])
+    assert set(docs) == {"Runbooks/Backups.md", "Runbooks/ups.txt"}  # no snapshots, images or symlinks
+    note = docs["Runbooks/Backups.md"]
+    assert note["title"] == "Proxmox backups" and "proxmox" in note["tags"]
+    assert note["link"] == "obsidian://open?vault=Lab&file=Runbooks/Backups"
+    assert x["last_commit"] == "2 files"
+
+    # Change one file, delete one, add one; the unchanged one isn't read again.
+    p = base / "docs" / "Runbooks" / "Backups.md"
+    p.write_text(VAULT_NOTE.replace("02:00", "03:30"))
+    os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 10))
+    (base / "docs" / "Runbooks" / "ups.txt").unlink()
+    (base / "docs" / "Ideas.md").write_text("# Ideas\nA second UPS.")
+    reads: list[str] = []
+    orig = shares.FolderShare.read
+    monkeypatch.setattr(shares.FolderShare, "read", lambda self, rel: reads.append(rel) or orig(self, rel))
+    assert (await hq.http.post(f"/api/knowledge/sources/{x['id']}/reindex")).status_code == 202
+    await _wait_ready(hq, x["id"])
+    docs = await _share_docs(hq, col["id"])
+    assert set(docs) == {"Runbooks/Backups.md", "Ideas.md"} and sorted(reads) == ["Ideas.md", "Runbooks/Backups.md"]
+    res = (await hq.http.get("/api/knowledge/search", params={"q": "backups 03:30"})).json()
+    assert "03:30" in res["results"][0]["text"]
+    reads.clear()
+    await hq.http.post(f"/api/knowledge/sources/{x['id']}/reindex")
+    await _wait_ready(hq, x["id"])
+    assert reads == []
+    # Synced documents can't be deleted here; removing the source clears them.
+    assert (await hq.http.delete(f"/api/knowledge/docs/{docs['Ideas.md']['id']}")).status_code == 422
+    await hq.http.delete(f"/api/knowledge/sources/{x['id']}")
+    assert (await hq.http.get(f"/api/knowledge/collections/{col['id']}/docs")).json()["total"] == 0
+    assert not knowledge._manifest_file(x["id"]).exists()
+
+
+def _fake_smbclient(root: Path, calls: dict) -> types.ModuleType:
+    """smbclient's API, served from a local folder: \\\\server\\share\\a\\b -> root/share/a/b."""
+
+    def local(path: str) -> Path:
+        server, *rest = path.lstrip("\\").split("\\")
+        return root.joinpath(*rest)
+
+    def register_session(server, username=None, password=None, port=445, connection_cache=None, **kw):
+        calls["session"] = (server, username, password, port)
+        if password != "s3cret-pass":
+            raise RuntimeError(f"STATUS_LOGON_FAILURE for {username}")
+
+    m = types.ModuleType("smbclient")
+    m.register_session = register_session
+    m.scandir = lambda path, **kw: os.scandir(local(path))
+    m.open_file = lambda path, mode="rb", **kw: open(local(path), mode)
+    m.reset_connection_cache = lambda **kw: calls.setdefault("closed", True)
+    return m
+
+
+async def test_smb_share_source(hq, tmp_path, monkeypatch):
+    _fill_share(tmp_path / "docs")
+    calls: dict = {}
+    monkeypatch.setitem(sys.modules, "smbclient", _fake_smbclient(tmp_path, calls))
+    col = await _collection(hq)
+    r = await hq.http.post(f"/api/knowledge/collections/{col['id']}/sources", json={
+        "kind": "share", "url": "\\\\truenas.home.arpa\\docs\\Runbooks", "username": "agent-hq",
+        "token": "s3cret-pass"})
+    x = r.json()
+    assert r.status_code == 201 and "token" not in x and x["has_token"] and x["name"] == "Runbooks"
+    x = await _wait_ready(hq, x["id"])
+    assert x["status"] == "ready", x["error"]
+    assert calls["session"] == ("truenas.home.arpa", "agent-hq", "s3cret-pass", 445) and calls["closed"]
+    docs = await _share_docs(hq, col["id"])
+    assert set(docs) == {"Backups.md", "ups.txt"} and docs["Backups.md"]["link"] == ""
+    # A wrong password is an error on the source, without the password.
+    await hq.http.put(f"/api/knowledge/sources/{x['id']}", json={**x, "token": "wrong-pass"})
+    await hq.http.post(f"/api/knowledge/sources/{x['id']}/reindex")
+    x = await _wait_ready(hq, x["id"])
+    assert x["status"] == "error" and "LOGON_FAILURE" in x["error"] and "wrong-pass" not in x["error"]
+    assert x["docs"] == 2  # what was read stays until the share is reachable again
 
 
 @pytest.fixture

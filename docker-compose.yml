@@ -33,6 +33,9 @@ services:
       - /etc/hostname:/etc/host_hostname:ro
       - hq-data:/data                          # knowledge library: uploads, repo clones
       - ./deploy/caddy:/etc/agent-hq/caddy:ro
+      # Knowledge library NFS shares go under /shares (SMB shares need no mount). See the
+      # nas-docs volume at the bottom of this file.
+      # - nas-docs:/shares/docs:ro
 
   # General-purpose worker: runs agents whose pool is "default".
   worker:
@@ -156,6 +159,15 @@ services:
 
 volumes:
   hq-data:
+  # An NFS export from your NAS for the knowledge library, mounted read-only by Docker
+  # (no privileges needed in the container). Uncomment this and the line in hq's volumes,
+  # then add a Network share source with the path /shares/docs.
+  # nas-docs:
+  #   driver: local
+  #   driver_opts:
+  #     type: nfs
+  #     o: addr=truenas.home.arpa,ro,nfsvers=4.1,soft
+  #     device: :/mnt/tank/docs
   caddy-data:
   caddy-config:
   workbench-1:

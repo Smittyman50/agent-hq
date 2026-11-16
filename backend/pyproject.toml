@@ -29,6 +29,7 @@ dependencies = [
   # Knowledge library: PDF, Word, PowerPoint, Excel and HTML to Markdown; note frontmatter
   "markitdown[pdf,docx,pptx,xlsx]>=0.1.2",
   "pyyaml>=6",
+  "smbprotocol>=1.15",          # knowledge library: SMB shares on your NAS, read without a mount
   "cryptography>=42",           # webhook secrets encrypted at rest (AHQ_SECRET_KEY)
 ]
 

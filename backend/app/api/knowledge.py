@@ -12,6 +12,7 @@ from sqlmodel import func, select
 
 from .. import knowledge_proposals as kprop
 from .. import db, knowledge
+from .. import knowledge_shares as shares
 from ..models import AgentDef, KnowledgeChunk, KnowledgeCollection, KnowledgeDoc, KnowledgeProposal, KnowledgeSource
 
 router = APIRouter(tags=["knowledge"])
@@ -131,7 +132,7 @@ def delete_collection(collection_id: str):
 
 
 class SourceIn(BaseModel):
-    kind: str = "upload"  # upload | url | git
+    kind: str = "upload"  # upload | url | git | share
     name: str = ""
     url: str | None = None
     branch: str = ""
@@ -151,9 +152,16 @@ def _source_out(x: KnowledgeSource) -> dict[str, Any]:
 
 
 def _validate(body: SourceIn) -> None:
-    if body.kind not in ("upload", "url", "git"):
-        raise HTTPException(422, "kind is upload, url or git")
-    if body.kind in ("url", "git"):
+    if body.kind not in ("upload", "url", "git", "share"):
+        raise HTTPException(422, "kind is upload, url, git or share")
+    if body.kind == "share":
+        try:
+            loc = shares.parse(body.url or "")
+            if loc.protocol == "folder":
+                shares.check_folder(loc.path)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+    elif body.kind in ("url", "git"):
         url = (body.url or "").strip()
         if not url.startswith(("http://", "https://")):
             raise HTTPException(422, "the URL must start with http:// or https://")
@@ -181,9 +189,15 @@ async def create_source(collection_id: str, body: SourceIn):
         data["include"] = list(knowledge.DEFAULT_INCLUDE)
     if body.kind == "git" and not data["exclude"]:
         data["exclude"] = list(knowledge.DEFAULT_EXCLUDE)
+    if body.kind == "share":
+        data["include"] = data["include"] or list(shares.SHARE_INCLUDE)
+        data["exclude"] = data["exclude"] or list(shares.SHARE_EXCLUDE)
     if not data["name"] and body.kind != "url":  # a web page is named after its title
-        data["name"] = {"upload": "Uploads", "url": "",
-                        "git": knowledge._repo_name(data["url"] or "") or "Repository"}[body.kind]
+        if body.kind == "share":
+            data["name"] = shares.parse(data["url"] or "").label or "Share"
+        else:
+            data["name"] = {"upload": "Uploads", "url": "",
+                            "git": knowledge._repo_name(data["url"] or "") or "Repository"}[body.kind]
     x = KnowledgeSource(collection_id=collection_id,
                         status="ready" if body.kind == "upload" else "queued", **data)
     with db.session() as s:
@@ -203,6 +217,7 @@ def update_source(source_id: str, body: SourceIn):
         if x is None:
             raise HTTPException(404)
         reclone = x.kind == "git" and ((body.url or "").strip() != (x.url or "") or body.branch != x.branch)
+        moved = x.kind == "share" and (body.url or "").strip() != (x.url or "")
         for k, v in body.model_dump().items():
             if k == "kind" or (k == "token" and v is None):
                 continue
@@ -212,6 +227,8 @@ def update_source(source_id: str, body: SourceIn):
         s.add(x)
         s.commit()
         s.refresh(x)
+    if moved:
+        knowledge.forget_share(source_id)
     if reclone:
         import shutil
 
@@ -308,7 +325,7 @@ def delete_doc(doc_id: str):
             raise HTTPException(404)
         src = s.get(KnowledgeSource, d.source_id)
     if src and src.kind not in ("upload", "agent"):
-        raise HTTPException(422, "remove it from the repository or page instead; it would come back on the next sync")
+        raise HTTPException(422, "remove it from the repository, share or page instead; it would come back on the next sync")
     knowledge.remove_docs([doc_id])
     if src:
         docs, chunks = knowledge._counts(src.id)

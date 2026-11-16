@@ -308,17 +308,18 @@ class KnowledgeCollection(SQLModel, table=True):
 
 
 class KnowledgeSource(SQLModel, table=True):
-    """Where a collection's documents come from: uploaded files, a web page, or a Git repo
-    (an Obsidian vault pushed with the Obsidian Git plugin, runbooks, docs)."""
+    """Where a collection's documents come from: uploaded files, a web page, a Git repo
+    (an Obsidian vault pushed with the Obsidian Git plugin, runbooks, docs), or a network
+    share on your NAS (SMB, or a mounted NFS export)."""
 
     id: str = Field(default_factory=_id, primary_key=True)
     collection_id: str = Field(index=True)
-    kind: str = "upload"  # upload | url | git | agent (documents agents suggested, that you approved)
+    kind: str = "upload"  # upload | url | git | share | agent (documents agents suggested, that you approved)
     name: str = ""
-    url: str | None = None          # web page, or the repo's clone URL
+    url: str | None = None          # web page, the repo's clone URL, or the share (smb://… or /shares/…)
     branch: str = ""                # git: blank = the repo's default branch
-    username: str = ""              # git: the account the token belongs to
-    token: str | None = None        # git: access token (never sent back to the browser)
+    username: str = ""              # git: the account the token belongs to; share: the SMB user
+    token: str | None = None        # git: access token; share: SMB password (never sent back to the browser)
     include: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     exclude: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     obsidian: bool = False          # understand frontmatter, #tags, [[links]]; obsidian:// links
@@ -327,7 +328,7 @@ class KnowledgeSource(SQLModel, table=True):
     status: str = Field(default="queued", index=True)  # queued | indexing | ready | error
     error: str | None = Field(default=None, sa_column=Column(Text))
     last_indexed_at: datetime | None = None
-    last_commit: str = ""
+    last_commit: str = ""           # git: the commit read; share: how many files it found
     docs: int = 0
     chunks: int = 0
     created_at: datetime = Field(default_factory=_now)

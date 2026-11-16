@@ -358,7 +358,7 @@ export interface KnowledgeCollection {
 }
 
 export interface KnowledgeSource {
-  id: string; collection_id: string; kind: 'upload' | 'url' | 'git' | 'agent'; name: string; url: string | null;
+  id: string; collection_id: string; kind: 'upload' | 'url' | 'git' | 'share' | 'agent'; name: string; url: string | null;
   branch: string; username: string; token?: string | null; has_token?: boolean;
   include: string[]; exclude: string[]; obsidian: boolean; vault_name: string; refresh_minutes: number;
   status: 'queued' | 'indexing' | 'ready' | 'error'; error: string | null; last_indexed_at: string | null;

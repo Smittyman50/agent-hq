@@ -17,7 +17,7 @@ Nothing about specific agents or models is in the code. Providers, names, roles,
 - **Skills:** written-down procedures agents follow, propose and improve.
 - **The learning loop:** your 👍/👎 and corrections, and agents looking back at their work.
 - **Your profile:** what every agent always knows about you.
-- **A knowledge library:** your documents, runbooks and Obsidian vault, searchable with citations.
+- **A knowledge library:** your documents, runbooks, Obsidian vault and NAS shares, searchable with citations.
 - **Evals:** they show whether a change actually helps before it's applied.
 
 What they learn waits for your approval unless you say otherwise.
@@ -327,7 +327,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - skills: matching, loading, outcomes, versions and rollback, proposals in propose/auto/off modes, diffs and stale warnings
 - the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
 - your profile: in every agent's instructions (or not, per agent), the word cap, and suggestions you approve
-- the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
+- the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources and NAS shares (SMB and mounted folders) that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
 - long conversations: cutting only between turns, summarising older turns (and folding an old summary into a new one), dropping them when the summary fails, compaction in a real conversation, trimming tool results within a turn, the warning when instructions don't fit, and reading the window from Ollama (loaded model, Modelfile, or the default)
 - evals: cases from replies and feedback, replaying recorded tool calls, read-only tools running for real only when allowed, Ask/Block tools never running, the judge, and skill changes tested without and with (Auto-mode changes held when they make things worse)
 
@@ -336,7 +336,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 1. **Infrastructure,** once, on one host: `deploy/infra/docker-compose.yml` (Postgres 17 with pgvector, Valkey 8, and optionally Mosquitto 2 via the `mqtt` profile). Keeping Postgres and Valkey together on a host dedicated to Agent HQ while sharing your lab's existing MQTT broker works well: the first two hold Agent HQ's state, and MQTT is how the rest of the lab talks to it.
 2. **Application:** `cp .env.example .env`, fill in the URLs and keys, set up HTTPS (next section), then `docker compose up -d --build`. This starts:
    - `caddy`: HTTPS on 443 (certificate from your step-ca), with http:// redirected
-   - `hq`: API, UI and MQTT bridge (plain HTTP on 8000, for this host only). Its `hq-data` volume holds the knowledge library's uploads and Git clones. It also reads your step-ca root from `deploy/caddy/root_ca.crt` (`AHQ_EXTRA_CA_FILE`), so Git and web sources on your HTTPS hosts (your Gitea) are trusted.
+   - `hq`: API, UI and MQTT bridge (plain HTTP on 8000, for this host only). Its `hq-data` volume holds the knowledge library's uploads and Git clones. NFS shares for the knowledge library are mounted here too, under `/shares` (see Knowledge library). It also reads your step-ca root from `deploy/caddy/root_ca.crt` (`AHQ_EXTRA_CA_FILE`), so Git and web sources on your HTTPS hosts (your Gitea) are trusted.
    - `worker`: pool `default`
    - `worker-desktop` and `desktop-1`: pool `desktop`, plus an example agent desktop
    - `workbench-1` and `egress`: an example agent workbench and its allowlisting proxy (see Workbenches)
@@ -795,6 +795,12 @@ With neither, the agent can read documents but tells you it can't view images.
   - **Skipped folders:** `.obsidian`, `.trash` and `.git` always; add your own excludes (`Journal/**`).
   - **Access:** use a dedicated Gitea user with **Read** access to just that repo, and a token with *repository: Read*. Tokens are never sent back to the browser, and errors are shown with the token redacted.
 - **Git repository:** the same for any repo of runbooks or docs. Citations link to the file in Gitea.
+- **Network share (SMB / NFS):** a share on your NAS (TrueNAS, a Windows server, Samba), read in place and never written to.
+  - **SMB:** give the share as `smb://truenas.home.arpa/docs/Runbooks` or `\\truenas\docs\Runbooks` (a folder inside the share is fine), with a user and password. Agent HQ reads it over the network with `smbprotocol`, so the container needs no mount and no extra privileges. On TrueNAS, make a dedicated user (say `agent-hq`) and give it read-only access to the dataset. The password is never sent back to the browser, and errors are shown with it redacted.
+  - **NFS:** mount the export into the `hq` container under `/shares` (`AHQ_SHARES_DIR`) and give that path, e.g. `/shares/docs`. `docker-compose.yml` has a commented-out example that has Docker mount it read-only. Paths outside `/shares` are refused, so a source can't read the app's own data. Symlinks aren't followed. A local folder bind-mounted under `/shares` works the same way.
+  - **Reads:** Markdown, text, PDF, Word, PowerPoint, Excel and HTML by default (change the include patterns under Edit). Only files whose size or modified time changed are read again, and deleted files leave the library.
+  - **Skipped:** ZFS snapshot folders (`.zfs`), recycle bins (`#recycle`, `.recycle`, `$RECYCLE.BIN`), Office lock files (`~$…`), macOS and Windows clutter, `.obsidian`, `.trash` and `.git`; add your own excludes (`Archive/**`). A source stops with an error past 20,000 matching files: point it at a narrower folder.
+  - **Obsidian vault:** tick it for a vault kept on the share (synced there with Syncthing, say). Notes are read the Obsidian way and citations open in Obsidian.
 - **Web page:** fetched, turned into text, and re-checked on a schedule if you like.
 - **Uploaded files:** PDF, Word, PowerPoint, Excel, HTML, Markdown and text (converted with `markitdown`). A scanned PDF needs OCR first.
 
@@ -1158,7 +1164,8 @@ backend/app/
   skills.py          skills: matching, loading, outcomes, versions, proposals
   learning.py        the learning loop: ratings, corrections, reflections, skills from documents
   profile.py         your profile: in every agent's instructions; suggestions you approve
-  knowledge.py       knowledge library: sources (upload, web, Git/Obsidian), chunking, hybrid search, recall
+  knowledge.py       knowledge library: sources (upload, web, Git/Obsidian, shares), chunking, hybrid search, recall
+  knowledge_shares.py  NAS shares for the library: SMB over the network, or NFS/folders mounted under /shares
   knowledge_proposals.py  documents agents suggest: where they may, near-duplicates, approving into a collection
   evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
   context.py         long conversations: context windows, compaction, trimming, overflow warnings

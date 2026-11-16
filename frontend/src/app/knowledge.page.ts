@@ -5,7 +5,7 @@ import { RouterLink } from '@angular/router';
 import { Api, KnowledgeCollection, KnowledgeDoc, KnowledgeHit, KnowledgeSettings, KnowledgeSource } from './api.service';
 import { Workspace } from './workspace';
 
-type SourceKind = 'upload' | 'url' | 'git' | 'obsidian';
+type SourceKind = 'upload' | 'url' | 'git' | 'obsidian' | 'share';
 
 function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).filter(Boolean); }
 
@@ -93,14 +93,34 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
               <div class="muted small">Documents agents suggested and you approved (Requests → Knowledge).</div>
             } @else if (x.kind !== 'upload') {
               <div class="muted small">{{ x.refresh_minutes ? 'Checks for changes every ' + every(x.refresh_minutes) : 'Checks only when you ask' }}
-                @if (x.kind === 'git') { · {{ x.has_token ? 'token saved' : 'no token' }} }</div>
+                @if (x.kind === 'git') { · {{ x.has_token ? 'token saved' : 'no token' }} }
+                @if (x.kind === 'share') { · {{ x.url?.startsWith('/') ? 'mounted folder' : (x.username || 'guest') + (x.has_token ? ', password saved' : '') }}
+                  @if (x.obsidian) { · Obsidian vault } @if (x.last_commit) { · {{ x.last_commit }} } }</div>
             }
             @if (x.error) { <div class="error small">{{ x.error }}</div> }
             @if (editSource()?.id === x.id) {
               <form class="kn-edit" (ngSubmit)="saveSource()">
                 @if (editSource(); as e) {
                   <label>Name <input name="ename" [(ngModel)]="e.name"></label>
-                  @if (e.kind !== 'upload') { <label>URL <input name="eurl" [(ngModel)]="e.url"></label> }
+                  @if (e.kind === 'share') {
+                    <label>Share <small>smb://host/share/folder, \\\\host\\share, or a mounted folder under /shares</small>
+                      <input name="eurl" [(ngModel)]="e.url"></label>
+                    <div class="inline">
+                      <label>User <small>blank for a mounted folder</small><input name="euser" [(ngModel)]="e.username" autocomplete="off"></label>
+                      <label>Password <small>blank = keep the saved one</small>
+                        <input name="etoken" type="password" [(ngModel)]="e.token" autocomplete="new-password"></label>
+                    </div>
+                  } @else if (e.kind !== 'upload') { <label>URL <input name="eurl" [(ngModel)]="e.url"></label> }
+                  @if (e.kind === 'share') {
+                    <label>Include <small>one pattern per line</small>
+                      <textarea name="einc" rows="3" class="mono" [(ngModel)]="incText"></textarea></label>
+                    <label>Exclude <small>one pattern per line, e.g. Archive/**</small>
+                      <textarea name="eexc" rows="3" class="mono" [(ngModel)]="excText"></textarea></label>
+                    <label class="check"><input type="checkbox" name="eobs" [(ngModel)]="e.obsidian"> Obsidian vault
+                      <small>(frontmatter, #tags, [[links]]; citations open in Obsidian)</small></label>
+                    @if (e.obsidian) { <label>Vault name <small>as Obsidian shows it; blank = the folder's name</small>
+                      <input name="evault" [(ngModel)]="e.vault_name"></label> }
+                  }
                   @if (e.kind === 'git') {
                     <div class="inline">
                       <label>Branch <small>blank = default</small><input name="ebranch" [(ngModel)]="e.branch"></label>
@@ -177,6 +197,31 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
               <label>Check for changes every <small>minutes</small>
                 <input name="nrefresh" type="number" min="0" [(ngModel)]="draft.refresh_minutes"></label>
             }
+            @if (kind === 'share') {
+              <p class="hint inline-hint">A share on your NAS (TrueNAS, Windows, Samba), read in place and never written to.
+                SMB is read over the network: use a user with read-only access to the share. For an NFS export, mount it
+                into the hq container under /shares (see the README) and give that path. Only files whose size or
+                modified time changed are read again.</p>
+              <label>Share <small>smb://host/share/folder or \\\\host\\share\\folder; or a mounted folder like /shares/docs</small>
+                <input name="nurl" [(ngModel)]="draft.url" placeholder="smb://truenas.home.arpa/docs/Runbooks" required></label>
+              <div class="inline">
+                <label>User <small>SMB only</small><input name="nuser" [(ngModel)]="draft.username" placeholder="agent-hq" autocomplete="off"></label>
+                <label>Password <input name="ntoken" type="password" [(ngModel)]="draft.token" autocomplete="new-password"></label>
+                <label>Name <small>blank = the folder's name</small><input name="nname" [(ngModel)]="draft.name"></label>
+              </div>
+              <label class="check"><input type="checkbox" name="nobs" [(ngModel)]="draft.obsidian"> It's an Obsidian vault
+                <small>(frontmatter, #tags, [[links]]; citations open in Obsidian)</small></label>
+              @if (draft.obsidian) {
+                <label>Vault name <small>as Obsidian shows it; blank = the folder's name</small>
+                  <input name="nvault" [(ngModel)]="draft.vault_name"></label>
+              }
+              <label>Exclude <small>one per line; ZFS snapshots, recycle bins, Office lock files and .obsidian are always skipped</small>
+                <textarea name="nexc" rows="3" class="mono" [(ngModel)]="excText" placeholder="Archive/**&#10;Private/**"></textarea></label>
+              <p class="hint inline-hint">Reads Markdown, text, PDF, Word, PowerPoint, Excel and HTML; change the include
+                patterns under Edit afterwards.</p>
+              <label>Check for changes every <small>minutes</small>
+                <input name="nrefresh" type="number" min="0" [(ngModel)]="draft.refresh_minutes"></label>
+            }
             <div class="actions"><button type="submit">Add</button>
               <button type="button" class="ghost" (click)="adding.set(null)">Cancel</button></div>
             @if (error()) { <p class="error">{{ error() }}</p> }
@@ -185,6 +230,7 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
           <div class="actions tight">
             <button class="ghost small" (click)="startAdd('obsidian')">+ Obsidian vault (Git)</button>
             <button class="ghost small" (click)="startAdd('git')">+ Git repository</button>
+            <button class="ghost small" (click)="startAdd('share')">+ Network share (SMB / NFS)</button>
             <button class="ghost small" (click)="startAdd('url')">+ Web page</button>
             <button class="ghost small" (click)="startAdd('upload')">+ Uploaded files</button>
           </div>
@@ -234,7 +280,7 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
       } @else {
         <h2>Knowledge library</h2>
         <p class="hint">Your documents and notes, for agents to search and cite: an Obsidian vault in Git, runbook
-          repos, web pages and uploaded files. Create a collection to start. Search uses the embedding model from
+          repos, shares on your NAS, web pages and uploaded files. Create a collection to start. Search uses the embedding model from
           Settings → Memory; without one it matches keywords only.</p>
       }
     </section>
@@ -337,8 +383,8 @@ export class KnowledgePage implements OnInit, OnDestroy {
   names(ids: string[]) { return ids.map(i => this.ws.agentName(i)).join(', '); }
   every(m: number) { return m % 1440 === 0 ? `${m / 1440} day${m === 1440 ? '' : 's'}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`; }
   pill(s: string) { return ({ ready: 'done', error: 'failed', indexing: 'working', queued: 'queued' } as Record<string, string>)[s] ?? ''; }
-  kindLabel(x: KnowledgeSource) { return x.kind === 'git' ? (x.obsidian ? 'Obsidian vault' : 'Git') : x.kind === 'url' ? 'Web page' : x.kind === 'agent' ? 'From agents' : 'Uploads'; }
-  addTitle(k: SourceKind) { return { obsidian: 'Obsidian vault (Git)', git: 'Git repository', url: 'Web page', upload: 'Uploaded files' }[k]; }
+  kindLabel(x: KnowledgeSource) { return x.kind === 'git' ? (x.obsidian ? 'Obsidian vault' : 'Git') : x.kind === 'share' ? 'Network share' : x.kind === 'url' ? 'Web page' : x.kind === 'agent' ? 'From agents' : 'Uploads'; }
+  addTitle(k: SourceKind) { return { obsidian: 'Obsidian vault (Git)', git: 'Git repository', share: 'Network share (SMB / NFS)', url: 'Web page', upload: 'Uploaded files' }[k]; }
   sourceKind(d: KnowledgeDoc) { return this.sources().find(s => s.id === d.source_id)?.kind; }
 
   loadCollections(selectId?: string) {
@@ -413,7 +459,7 @@ export class KnowledgePage implements OnInit, OnDestroy {
     this.error.set('');
     this.excText = '';
     this.draft = { kind: kind === 'obsidian' ? 'git' : kind, obsidian: kind === 'obsidian', name: '',
-                   url: '', branch: '', username: kind === 'obsidian' || kind === 'git' ? 'agent-hq' : '',
+                   url: '', branch: '', username: kind === 'obsidian' || kind === 'git' || kind === 'share' ? 'agent-hq' : '',
                    token: '', vault_name: '', refresh_minutes: kind === 'upload' ? 0 : kind === 'url' ? 1440 : 15 };
     this.adding.set(kind);
   }
@@ -422,6 +468,7 @@ export class KnowledgePage implements OnInit, OnDestroy {
     const c = this.current()!;
     const body: Partial<KnowledgeSource> = { ...this.draft };
     if (body.kind === 'git') body.exclude = [...new Set([...this.defaultExclude, ...lines(this.excText)])];
+    if (body.kind === 'share') body.exclude = [...new Set([...this.shareExclude, ...lines(this.excText)])];
     this.error.set('');
     this.api.createSource(c.id, body).subscribe({
       next: () => { this.adding.set(null); this.refreshCurrent(); },
@@ -429,6 +476,10 @@ export class KnowledgePage implements OnInit, OnDestroy {
     });
   }
   private defaultExclude = ['.obsidian/**', '.trash/**', '.git/**', '**/node_modules/**'];
+  // Same as knowledge_shares.SHARE_EXCLUDE: ZFS snapshots, recycle bins, OS and Office clutter.
+  private shareExclude = ['.zfs/**', '**/.zfs/**', '#recycle/**', '.recycle/**', '$RECYCLE.BIN/**', '**/.Trash-*/**',
+    '.obsidian/**', '.trash/**', '.git/**', '**/node_modules/**', '**/.DS_Store', '**/Thumbs.db', '**/desktop.ini',
+    '**/~$*', '**/._*'];
 
   startEdit(x: KnowledgeSource) {
     this.incText = x.include.join('\n');
