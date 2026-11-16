@@ -109,6 +109,12 @@ class Settings:
     # Chat attachments: largest file, and most files on one message.
     attachment_max_bytes: int = field(default_factory=lambda: int(_env("ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024))))
     attachment_max_files: int = field(default_factory=lambda: int(_env("ATTACHMENT_MAX_FILES", "10")))
+    # OCR for scanned PDFs (knowledge library and chat attachments; see app/ocr.py).
+    # auto: on when Tesseract is installed. Languages are Tesseract codes, e.g. eng+deu.
+    ocr_mode: str = field(default_factory=lambda: _env("OCR", "auto").strip().lower())
+    ocr_languages: str = field(default_factory=lambda: _env("OCR_LANGUAGES", "eng").strip() or "eng")
+    ocr_dpi: int = field(default_factory=lambda: int(_env("OCR_DPI", "300")))
+    ocr_max_pages: int = field(default_factory=lambda: int(_env("OCR_MAX_PAGES", "200")))
     # How long an agent waits for you after asking you to take over its desktop.
     handoff_timeout: float = field(default_factory=lambda: float(_env("HANDOFF_TIMEOUT", "1800")))
     # Worker reliability knobs.

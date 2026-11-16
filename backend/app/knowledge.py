@@ -139,7 +139,7 @@ def pgvector_enabled() -> bool:
 
 
 def to_markdown(name: str, data: bytes) -> str:
-    """A file as Markdown text (PDF, Office and HTML via markitdown)."""
+    """A file as Markdown text (PDF, Office and HTML via markitdown; scanned PDFs via OCR)."""
     ext = PurePosixPath(name.lower()).suffix
     if ext in TEXT_EXT or not ext:
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -152,6 +152,12 @@ def to_markdown(name: str, data: bytes) -> str:
             from markitdown import MarkItDown
         except ImportError as e:  # pragma: no cover - installed with the app
             raise RuntimeError("markitdown is not installed") from e
+        if ext == ".pdf":
+            from .ocr import pdf_text
+
+            scanned = pdf_text(data)
+            if scanned is not None:
+                return scanned.strip()
         result = MarkItDown(enable_plugins=False).convert_stream(io.BytesIO(data), file_extension=ext)
         return (result.text_content or "").strip()
     raise ValueError(f"unsupported file type: {ext or name}")
@@ -666,7 +672,7 @@ def add_upload(src: KnowledgeSource, filename: str, data: bytes) -> KnowledgeDoc
         raise ValueError(f"{name}: larger than the {get_settings()['max_file_mb']} MB limit")
     text = to_markdown(name, data)
     if not text.strip():
-        raise ValueError(f"{name}: no text found (a scanned PDF needs OCR first)")
+        raise ValueError(f"{name}: no text found")
     folder = root() / "uploads" / src.id
     folder.mkdir(parents=True, exist_ok=True)
     stored = f"uploads/{src.id}/{hashlib.sha1(name.encode()).hexdigest()[:8]}-{name}"

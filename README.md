@@ -745,7 +745,7 @@ Attach files in the chat: the 📎 button, drag and drop onto the conversation, 
 
 **Code in replies:** every code block an agent writes has a bar with its language and **Copy** / **Save** buttons. Save downloads the code as a file, named the way the reply names it ("save it as `dungeon_rpg.py`"), or from a `# file: x.py` first line, else `snippet.<ext>` from the language.
 
-**Storage:** files live in the database (Postgres `bytea`), like avatars, so a worker on any machine reads the same bytes; no shared folder needed. Text is pulled out once, on upload: PDF, Word, PowerPoint, Excel, HTML and EPUB through `markitdown`, plus Markdown, CSV, JSON, logs and code as they are. Limits: `AHQ_ATTACHMENT_MAX_BYTES` (25 MB) per file and `AHQ_ATTACHMENT_MAX_FILES` (10) per message.
+**Storage:** files live in the database (Postgres `bytea`), like avatars, so a worker on any machine reads the same bytes; no shared folder needed. Text is pulled out once, on upload: PDF, Word, PowerPoint, Excel, HTML and EPUB through `markitdown`, plus Markdown, CSV, JSON, logs and code as they are. Scanned PDFs are read with OCR (see *Scanned PDFs* under the knowledge library). Limits: `AHQ_ATTACHMENT_MAX_BYTES` (25 MB) per file and `AHQ_ATTACHMENT_MAX_FILES` (10) per message.
 
 **What the agent gets:** the turn starts with a manifest: each file's ID (`att_…`), name, kind and size, and the first lines of each document. Its tools:
 
@@ -802,7 +802,13 @@ With neither, the agent can read documents but tells you it can't view images.
   - **Skipped:** ZFS snapshot folders (`.zfs`), recycle bins (`#recycle`, `.recycle`, `$RECYCLE.BIN`), Office lock files (`~$…`), macOS and Windows clutter, `.obsidian`, `.trash` and `.git`; add your own excludes (`Archive/**`). A source stops with an error past 20,000 matching files: point it at a narrower folder.
   - **Obsidian vault:** tick it for a vault kept on the share (synced there with Syncthing, say). Notes are read the Obsidian way and citations open in Obsidian.
 - **Web page:** fetched, turned into text, and re-checked on a schedule if you like.
-- **Uploaded files:** PDF, Word, PowerPoint, Excel, HTML, Markdown and text (converted with `markitdown`). A scanned PDF needs OCR first.
+- **Uploaded files:** PDF, Word, PowerPoint, Excel, HTML, Markdown and text (converted with `markitdown`).
+
+**Scanned PDFs:** pages that are an image with next to no text layer are read with Tesseract OCR, wherever a PDF comes from: uploads, Git, shares, web pages and chat attachments. A PDF with no such pages is converted as before. Otherwise its text is rebuilt page by page under `## Page N` headings (the text layer where a page has one, OCR where it doesn't), so search sections and citations follow the pages. The image installs Tesseract with English.
+  - **Settings:** `AHQ_OCR` (`auto`, the default, is on when Tesseract is installed; `on`; `off`), `AHQ_OCR_LANGUAGES` (`eng`; Tesseract codes joined with `+`, e.g. `eng+deu`), `AHQ_OCR_DPI` (300) and `AHQ_OCR_MAX_PAGES` (200 scanned pages per file; the rest are skipped with a warning in the log).
+  - **Other languages:** build with `--build-arg OCR_LANGS="deu fra"` (Debian's `tesseract-ocr-<lang>` packages) and set `AHQ_OCR_LANGUAGES=eng+deu+fra`.
+  - **Speed:** about a second or two per page on a modern CPU, run in the background. Large scans take a while to show up in the library.
+  - **Without OCR:** a fully scanned PDF is refused with the reason (upload) or skipped and logged (Git, shares), rather than stored empty.
 
 **How it's indexed:** documents are cut into sections at their headings and embedded with the embedding model from Settings → Memory. Search is hybrid (meaning plus keywords, with full-text search on Postgres); without an embedding model it matches keywords only.
 
@@ -1166,6 +1172,7 @@ backend/app/
   profile.py         your profile: in every agent's instructions; suggestions you approve
   knowledge.py       knowledge library: sources (upload, web, Git/Obsidian, shares), chunking, hybrid search, recall
   knowledge_shares.py  NAS shares for the library: SMB over the network, or NFS/folders mounted under /shares
+  ocr.py               OCR for scanned PDFs (Tesseract), used by the library and chat attachments
   knowledge_proposals.py  documents agents suggest: where they may, near-duplicates, approving into a collection
   evals.py           evals: cases, replayed tool calls, the judge, testing skill changes
   context.py         long conversations: context windows, compaction, trimming, overflow warnings
@@ -1217,7 +1224,6 @@ examples/            example crew (providers, agents, pools, tools, subscription
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
-- **OCR for scanned PDFs** in the knowledge library and in chat attachments.
 
 ## License
 

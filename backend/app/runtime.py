@@ -1573,8 +1573,10 @@ class Runtime:
                 return {"error": f"you have no {where} that can send files (or it is not reachable)"}
             try:
                 fname, data = await att.fetch_file(srv, path)
-                a = att.store(ctx.deps.thread_id, name or fname, data, source=where,
-                              agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
+                # off the event loop: a scanned PDF is OCR'd while it's stored
+                a = await asyncio.get_running_loop().run_in_executor(None, lambda: att.store(
+                    ctx.deps.thread_id, name or fname, data, source=where,
+                    agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id))
             except Exception as e:
                 return {"error": str(e)}
             return att.Outgoing(a).result()
