@@ -1211,3 +1211,9 @@ examples/            example crew (providers, agents, pools, tools, subscription
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
 - **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
 - **OCR for scanned PDFs** in the knowledge library and in chat attachments.
+
+## License
+
+Agent HQ is released under the [MIT License](LICENSE). Copyright (c) 2026 Michael J. Smith.
+
+Icons are from [Lucide](https://lucide.dev) (ISC License).
