@@ -877,7 +877,7 @@ Feedback never changes a test you've kept: a later note starts a fresh draft.
 The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a schedule: every N hours, daily, on chosen days of the week, monthly, or any cron expression.
 
 - **Time zone:** each schedule has its own (your browser's by default), and daylight-saving changes are handled: "every day at 7:00 AM" stays at 7:00 AM local time.
-- **Where results go:** each schedule has its own conversation, "Scheduled: <name>", which appears in the sidebar like any chat.
+- **Where results go:** each schedule has its own conversation, `Scheduled: <name>`, which appears in the sidebar like any chat.
 - **What a run is:** it posts a short "Scheduled run" note, then gives the agent the task as a turn, exactly as if you'd typed it. Delegation, tools and memory all work as usual, and so do the delegation threads.
 - **Editor:** shows the cadence in plain English and the next three run times as you change it. It also lists recent runs with their status (queued, running, done, failed, skipped), and has **Run now** (doesn't move the schedule) and **Open conversation**.
 
@@ -918,7 +918,7 @@ You can drag cards between Backlog, Ready, In progress and Done in the agent's o
 **WIP limits.** Each agent has a **goal WIP limit** (Settings → Agents → Standing goals; default 1, 0 = it takes no goals). Goals that are in progress, waiting or blocked all hold a slot, so a blocked goal stops that agent pulling new work until you deal with it, which is the Kanban signal to fix it or move it. Inside a goal, only **one next action** can be in progress at a time; the agent has to finish, block or drop it before starting another. That's the guard against losing track of the original problem.
 
 **The goal runner** runs in the API process and checks the board every `AHQ_GOALS_TICK` seconds (5):
-1. **Pull.** For each agent with free slots, move its next Ready goal to In progress. Each goal gets its own conversation, "Goal: <title>", in the sidebar.
+1. **Pull.** For each agent with free slots, move its next Ready goal to In progress. Each goal gets its own conversation, `Goal: <title>`, in the sidebar.
 2. **Advance.** For each goal in progress with nothing running in its conversation, queue a **goal turn**. Its prompt is the card itself: the objective, the done criteria, the next actions with their status and results, the last 12 log entries, and your note if you sent a done claim back. The agent doesn't rely on the conversation's history to know where it is, so compaction can't make it lose the thread.
 3. **Wait and resume.** A background delegation shows as Waiting and resumes once the delegate's result has been reported in the conversation. Approvals and desktop hand-offs show as Waiting while they're pending. "Wait for the user" resumes when you post in the goal's conversation; "check back in N minutes" resumes when the time comes.
 4. **Guard.** A goal is **blocked** when it goes `stall_turns` goal turns in a row without changing anything on the board (default 3), reaches its **turn** limit (40), its **hours** limit (72, wall clock since it started), or its **model requests** limit (400, counted from the usage ledger for everything that ran in its conversation, delegates included). You get a card in Requests → Goals and a `goal_blocked` MQTT notice. Raise a limit on the card (Edit → Limits) before resuming a goal that hit one.
