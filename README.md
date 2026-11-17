@@ -335,12 +335,13 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 ## Deploy (Docker)
 
 1. **Infrastructure,** once, on one host: `deploy/infra/docker-compose.yml` (Postgres 17 with pgvector, Valkey 8, and optionally Mosquitto 2 via the `mqtt` profile). Keeping Postgres and Valkey together on a host dedicated to Agent HQ while sharing your lab's existing MQTT broker works well: the first two hold Agent HQ's state, and MQTT is how the rest of the lab talks to it.
-2. **Application:** `cp .env.example .env`, fill in the URLs and keys, set up HTTPS (next section), then `docker compose up -d --build`. This starts:
+2. **Application:** `cp .env.example .env`, fill in the URLs and keys, set up HTTPS (next section), then `docker compose --profile images build` (the desktop and workbench images) and `docker compose up -d --build`. This starts:
    - `caddy`: HTTPS on 443 (certificate from your step-ca), with http:// redirected
    - `hq`: API, UI and MQTT bridge (plain HTTP on 8000, for this host only). Its `hq-data` volume holds the knowledge library's uploads and Git clones. NFS shares for the knowledge library are mounted here too, under `/shares` (see Knowledge library). It also reads your step-ca root from `deploy/caddy/root_ca.crt` (`AHQ_EXTRA_CA_FILE`), so Git and web sources on your HTTPS hosts (your Gitea) are trusted.
    - `worker`: pool `default`
-   - `worker-desktop` and `desktop-1`: pool `desktop`, plus an example agent desktop
-   - `workbench-1` and `egress`: an example agent workbench and its allowlisting proxy (see Workbenches)
+   - `worker-desktop`: pool `desktop`, for agents that drive desktops
+   - `docker-proxy`: the Docker API `hq` uses to run desktops and workbenches, which you create under **Settings → Desktops & workbenches** (see [Desktops and workbenches](#desktops-and-workbenches))
+   - `egress`: the workbenches' allowlisting proxy (see Workbenches)
 3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 4. **More workers on one host:** `docker compose up -d --scale worker=3`.
 
@@ -386,11 +387,11 @@ curl -H "Authorization: Bearer $AHQ_TOKEN" https://shockwave.home.arpa/api/agent
 
 Plain HTTP on port 8000 is published for Shockwave itself only (`127.0.0.1`). While you're getting HTTPS working, set `AHQ_HTTP_BIND=8000` in `.env` to reach it from your LAN, then remove the setting. If you set `AHQ_PUBLIC_URL`, change it to the https address.
 
-**Desktop viewers are behind the same sign-in.** Their ports are no longer published. Instead, Caddy serves each one at `https://<site>/desktops/desktop-N/` and checks your Agent HQ session first (`forward_auth` to `/api/auth/verify`). Each desktop's `SUBFOLDER` must match its path. On the agent, set **Desktop viewer URL** to `/desktops/desktop-1/`.
+**Desktop viewers are behind the same sign-in.** Their ports are no longer published. Instead, Caddy serves each one at `https://<site>/desktops/desktop-N/` and checks your Agent HQ session first (`forward_auth` to `/api/auth/verify`). Agent HQ sets each desktop's `SUBFOLDER` to match its path and fills in the agent's **Desktop viewer URL** when you give it a desktop.
 
 ### Workbenches: an agent's own Python environment
 
-A workbench is a small container per agent that gives it somewhere to write and run code. It's like a desktop, but for scripts instead of a browser. The `workbench-1` service in `docker-compose.yml` exposes an MCP server on `:8770` with these tools:
+A workbench is a small container per agent that gives it somewhere to write and run code. It's like a desktop, but for scripts instead of a browser. Each one (created under **Settings → Desktops & workbenches**) exposes an MCP server on `:8770` with these tools:
 
 | Tool | What it does | Approval suggested |
 |---|---|---|
@@ -401,7 +402,7 @@ A workbench is a small container per agent that gives it somewhere to write and 
 | `save_script`, `list_scripts` | saves a working script as a named, reusable tool | allow |
 | `read_file`, `write_file`, `list_files` | files in the workspace | allow |
 
-**Storage.** Everything lives in the `workbench-1` volume, mounted at `/work`:
+**Storage.** Everything lives in the workbench's volume (`ahq-<name>`), mounted at `/work`:
 - the agent's files
 - the venv at `/work/.venv`, so installed packages survive restarts and rebuilds
 - saved scripts in `/work/scripts`
@@ -412,10 +413,10 @@ A workbench is a small container per agent that gives it somewhere to write and 
 
 **The network is off by default.** The workbench is only on the internal `workbench` network, which has no route to the internet or your LAN. Its one way out is the `egress` proxy, which allows only the hosts in `deploy/egress/allowlist`. That's PyPI by default, so `pip_install` works.
 - **Allow another host:** add it to the allowlist, then run `docker compose restart egress`.
-- **Full network access for one workbench (internet and LAN):** tick **Internet and LAN access** on it under **Settings → Desktops & workbenches** (for one you run in compose: add `default` to its `networks:`).
+- **Full network access for one workbench (internet and LAN):** tick **Internet and LAN access** on it under **Settings → Desktops & workbenches**.
 
 **Set one up:**
-1. Run `docker compose up -d --build egress` (it also builds the `agent-hq/workbench` image).
+1. Build the image and start the proxy: `docker compose --profile images build` and `docker compose up -d egress`.
 2. Under **Settings → Desktops & workbenches**, click **+ Workbench**, or **+ Its own workbench** on the agent's page. See [Desktops and workbenches](#desktops-and-workbenches).
 3. Its code tools already ask for approval (see the table above). Change that per tool under its server's **Approvals** on **Settings → Tools**.
 
@@ -502,7 +503,7 @@ Desktops and workbenches are **resources**: one container each, plus the tool se
 
 **Create one.** Under **Settings → Desktops & workbenches**, click **+ Desktop** or **+ Workbench**. Or, on an agent's page, click **+ Its own desktop** / **+ Its own workbench**. Agent HQ then:
 1. picks the next free name (`desktop-2`, `workbench-3`…);
-2. creates and starts the container through the Docker API, with the same settings as the `desktop-1` / `workbench-1` services in `docker-compose.yml` and a named volume `ahq-<name>` for its data;
+2. creates and starts the container through the Docker API (a desktop with 1 GB of shared memory; a workbench read-only, without capabilities, on the internal network behind the egress proxy, capped at 2 CPUs, 2 GB and 512 processes) with a named volume `ahq-<name>` for its data;
 3. registers its tool servers: a desktop's screen (`:8765`) and browser (`:8931`, Playwright, unprefixed), or a workbench's `:8770`;
 4. ticks them on the agents you chose, and sets a desktop's **Desktop viewer URL** to `/desktops/<name>/` (Caddy routes any `desktop-<number>`).
 
@@ -512,11 +513,11 @@ Desktops and workbenches are **resources**: one container each, plus the tool se
 
 On an agent's page, **Desktops & workbenches** lists them all: tick one to give it to the agent (all of its servers go together), and dedicated ones belonging to someone else are greyed out.
 
-**Running them.** The resource's page has **Start**, **Stop**, **Restart**, **Recreate** (a new container from the current image, same data, e.g. after `docker compose build desktop-1`) and **Delete**. Delete takes it from its agents and removes its tool servers and container. Its data volume goes only if you say so. Otherwise a new desktop with the same name picks it up again.
+**Running them.** The resource's page has **Start**, **Stop**, **Restart**, **Recreate** (a new container from the current image, same data, e.g. after `docker compose --profile images build`) and **Delete**. Delete takes it from its agents and removes its tool servers and container. Its data volume goes only if you say so. Otherwise a new desktop with the same name picks it up again.
 
-**Docker access.** The `docker-proxy` service gives `hq`, and nothing else, a Docker API limited to containers, images, networks and volumes (`AHQ_DOCKER_URL=http://docker-proxy:2375`). The images come from compose: `desktop-1` builds `agent-hq/desktop:latest`, `workbench-1` builds `agent-hq/workbench:latest` (`AHQ_DESKTOP_IMAGE` / `AHQ_WORKBENCH_IMAGE`). Containers join `agent-hq_default` (desktops) or `agent-hq_workbench` (workbenches) under their name (`AHQ_RESOURCE_NETWORK` / `AHQ_WORKBENCH_NETWORK`, for another compose project name). Without Docker access, the page still registers tool servers and tracks resources, but you run the containers yourself. Anyone who controls `hq` can start containers on this host, so leave `docker-proxy` out if you'd rather not allow that.
+**Docker access.** The `docker-proxy` service gives `hq`, and nothing else, a Docker API limited to containers, images, networks and volumes (`AHQ_DOCKER_URL=http://docker-proxy:2375`). The images come from compose: the build-only services `desktop-image` and `workbench-image` (profile `images`, so they never run) build `agent-hq/desktop:latest` and `agent-hq/workbench:latest` (`AHQ_DESKTOP_IMAGE` / `AHQ_WORKBENCH_IMAGE`). Plain `docker compose up --build` skips them: after changing `./desktop` or `./workbench`, run `docker compose --profile images build`, then **Recreate** each desktop or workbench. Containers join `agent-hq_default` (desktops) or `agent-hq_workbench` (workbenches) under their name (`AHQ_RESOURCE_NETWORK` / `AHQ_WORKBENCH_NETWORK`, for another compose project name). Without Docker access, the page still registers tool servers and tracks resources, but you run the containers yourself. Anyone who controls `hq` can start containers on this host, so leave `docker-proxy` out if you'd rather not allow that.
 
-**Desktops you already run in compose.** The page lists `desktop-N` / `workbench-N` it finds (from tool servers pointing at those hosts, and from compose services) under **Import**. Importing makes each one a resource for its existing tool servers and agents. Compose keeps running the container: Start/Stop work, Recreate doesn't. To hand it over, delete its block from `docker-compose.yml`, then click **Take over**. Agent HQ replaces the container with its own, keeping the same data (bind mounts such as `./desktops/desktop-1` included). **Detach** forgets an imported one and leaves its tool servers as plain ones.
+**Desktops you already run in compose.** The page lists `desktop-N` / `workbench-N` it finds (from tool servers pointing at those hosts, and from compose services) under **Import**. Importing makes each one a resource for its existing tool servers and agents. Compose keeps running the container: Start/Stop work, Recreate doesn't. To hand it over, click **Take over**: Agent HQ reads the compose container's data mounts and replaces it with its own container on the same data (bind mounts such as `./desktops/desktop-1` included). Then delete its block from `docker-compose.yml` (and its volume from the `volumes:` list, which keeps the data but stops `docker compose down -v` deleting it) before your next `docker compose up`, which would otherwise start a second one. `docker compose up -d --remove-orphans` cleans up a block you deleted without taking it over first. **Detach** forgets an imported one and leaves its tool servers as plain ones.
 
 **One host.** Resources run on the Docker host next to `hq`. The workers that run their agents must be on that host too (any pool there: compose workers reach both networks).
 
@@ -1123,7 +1124,7 @@ Each desktop container now runs a Chromium window (kept on the desktop, with its
 - It costs far fewer tokens than screenshots.
 - It works in the same browser you see, so a login you do through take-control stays in place for the agent.
 
-Register it as an HTTP tool server at `http://desktop-1:8931/mcp`, tick **Controls an agent desktop**, and untick *Prefix tool names*, since its tools are already called `browser_*`. Agents should call `browser_snapshot` after navigating to read the page.
+Every desktop made under **Settings → Desktops & workbenches** registers it for you as `desktop-N-browser` (`http://desktop-N:8931/mcp`, **Controls an agent desktop** ticked, *Prefix tool names* unticked, since its tools are already called `browser_*`). Agents should call `browser_snapshot` after navigating to read the page.
 
 ### 2. Vision as a tool (per-agent vision model)
 

@@ -119,9 +119,10 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         <fieldset><legend>Container</legend>
           <p class="hint inline-hint">
             @if (r.managed) { Agent HQ runs <code>{{ r.container || 'no container yet' }}</code>. <b>Recreate</b> makes a new
-              container from the current image (after <code>docker compose build</code>) and keeps its data. }
-            @else { docker compose runs <code>{{ r.container || r.name + ' (not found)' }}</code>. To manage it here, delete its
-              block from docker-compose.yml, then <b>Take over</b>: Agent HQ replaces it with its own container, same data. }
+              container from the current image (after <code>docker compose --profile images build</code>) and keeps its data. }
+            @else { docker compose runs <code>{{ r.container || r.name + ' (not found)' }}</code>. To manage it here, click
+              <b>Take over</b>: Agent HQ replaces it with its own container on the same data. Then delete its block from
+              docker-compose.yml before your next <code>docker compose up</code>. }
           </p>
           <div class="actions">
             @if (r.viewer_url) { <a class="button ghost" [href]="r.viewer_url" target="_blank">Open viewer</a> }
@@ -256,8 +257,9 @@ export class ResourcesPage implements OnInit {
   }
 
   takeOver(r: Resource) {
-    if (!confirm(`Take over ${r.name}? Delete its block from docker-compose.yml first, or the next ` +
-                 '`docker compose up` starts a second one. Its container is replaced; its data is kept.')) return;
+    if (!confirm(`Take over ${r.name}? Its compose container is replaced by one Agent HQ runs, on the same data. ` +
+                 'Afterwards, delete its block from docker-compose.yml before your next `docker compose up`, ' +
+                 'or compose starts a second one.')) return;
     this.act(r, 'take-over');
   }
 

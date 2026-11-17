@@ -209,7 +209,7 @@ async def test_stop_start_recreate_and_delete(hq, docker):
 async def test_missing_image_or_no_docker(hq, docker, monkeypatch):
     docker.images.clear()
     res = (await hq.http.post("/api/resources", json={"kind": "desktop"})).json()
-    assert res["status"] == "error" and "docker compose build desktop-1" in res["error"]
+    assert res["status"] == "error" and "docker compose --profile images build" in res["error"]
     assert len(res["servers"]) == 2  # registered anyway; Recreate once the image is built
     docker.images.add("agent-hq/desktop:latest")
     assert (await hq.http.post(f"/api/resources/{res['id']}/recreate")).json()["status"] == "running"

@@ -51,8 +51,8 @@ services:
     deploy:
       replicas: 1          # raise for more parallel agent runs
 
-  # Worker for agents that drive the desktop below (set those agents' pool to "desktop").
-  # Runs on the same host, so it can reach http://desktop-1:8765/mcp on this network.
+  # Worker for agents that drive desktops (set those agents' pool to "desktop"). Runs on
+  # the same host as the desktops, so it reaches http://desktop-N:8765/mcp on this network.
   worker-desktop:
     <<: *app
     command: ["python", "-m", "app.worker", "--pools", "desktop", "--concurrency", "1"]
@@ -126,66 +126,23 @@ services:
       ALLOW_STOP: 1
       ALLOW_RESTARTS: 1
 
-  # An example agent desktop. You don't need to copy this block for more: create desktops
-  # under Settings -> Desktops & workbenches, which also registers their tool servers and
-  # gives them to agents. Compose still builds the image they use (agent-hq/desktop), so
-  # run `docker compose build desktop-1` after changing ./desktop, then Recreate them there.
-  # This one: Import it on that page, then (optionally) delete this block and Take over.
-  # No published ports: you reach the viewer only through caddy, signed in to Agent HQ.
-  desktop-1:
+  # Images for Settings -> Desktops & workbenches, which creates every desktop and
+  # workbench (and registers their tool servers). These services never run a container:
+  # they only build agent-hq/desktop and agent-hq/workbench. The images are built only
+  # with the "images" profile (plain `up --build` skips them):
+  #   docker compose --profile images build
+  # then click Recreate on each desktop / workbench to move it to the new image.
+  # Desktops: no published ports; you reach a viewer only through caddy, signed in.
+  # Workbenches: no network but the egress proxy (PyPI), unless you allow more there.
+  desktop-image:
     build: ./desktop
     image: agent-hq/desktop:latest
-    restart: unless-stopped
-    shm_size: "1gb"
-    volumes: ["./desktops/desktop-1:/config"]
-    environment:
-      PUID: "1000"
-      PGID: "1000"
-      TZ: America/New_York
-      SUBFOLDER: /desktops/desktop-1/   # must match the service name
+    profiles: [images]
 
-  # An agent's workbench: its own persistent Python venv, files and shell (MCP on :8770).
-  # Create more under Settings -> Desktops & workbenches (dedicated or shared); they use
-  # the image this service builds (agent-hq/workbench) and the same settings as below.
-  #
-  # Network: OFF by default. It's only on the internal "workbench" network, which has no
-  # route out; the egress proxy lets it reach PyPI for pip installs and nothing else.
-  # To give it full network access (internet and LAN), add "default" to its networks.
-  workbench-1:
+  workbench-image:
     build: ./workbench
     image: agent-hq/workbench:latest
-    restart: unless-stopped
-    networks: [workbench]
-    volumes: ["workbench-1:/work"]   # files, the venv (/work/.venv) and saved scripts
-    environment:
-      HTTPS_PROXY: http://egress:8888
-      HTTP_PROXY: http://egress:8888
-      NO_PROXY: localhost,127.0.0.1
-    read_only: true                  # only /work and /tmp are writable
-    tmpfs: ["/tmp"]
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    cpus: 2
-    mem_limit: 2g
-    pids_limit: 512
-
-  workbench-2:
-    build: ./workbench
-    image: agent-hq/workbench:latest
-    restart: unless-stopped
-    networks: [workbench]
-    volumes: ["workbench-2:/work"]   # only /work and /tmp are writable
-    environment:
-      HTTPS_PROXY: http://egress:8888
-      HTTP_PROXY: http://egress:8888
-      NO_PROXY: localhost,127.0.0.1
-    read_only: true
-    tmpfs: ["/tmp"]
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    cpus: 2
-    mem_limit: 2g
-    pids_limit: 512
+    profiles: [images]
 
   # The workbenches' only way out: an allowlisting proxy (PyPI by default). Edit
   # deploy/egress/allowlist and `docker compose restart egress` to allow other hosts.
@@ -210,8 +167,9 @@ volumes:
   #     device: :/mnt/tank/docs
   caddy-data:
   caddy-config:
-  workbench-1:
-  workbench-2:
+  # Workbench data lives in volumes Agent HQ mounts (ahq-<name>, or agent-hq_workbench-1
+  # for the one taken over from compose). They're not listed here, so `docker compose
+  # down -v` can't delete them.
 
 networks:
   default:

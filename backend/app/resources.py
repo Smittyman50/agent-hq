@@ -12,7 +12,7 @@ it to:
   run ends or AHQ_DESKTOP_LEASE_TTL after its last desktop call.
 
 Who has a resource is not stored twice: it is the agents whose tool_server_ids include
-its servers. Containers you run yourself (the desktop-1 / workbench-N services in
+its servers. Containers you run yourself (desktop-N / workbench-N services in
 docker-compose.yml) can be adopted: they get a Resource row (managed=False) for their
 existing tool servers, and compose keeps running the container until you take it over.
 """
@@ -173,7 +173,7 @@ def _data_mount(res: Resource) -> dict:
 
 
 def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
-    """The container, as the desktop-1 / workbench-1 services in docker-compose.yml make it."""
+    """The container: a desktop as linuxserver/webtop wants it, a workbench locked down."""
     mounts = mounts or [_data_mount(res)]
     restart = {"Name": "unless-stopped"}
     if res.kind == "desktop":
@@ -247,9 +247,8 @@ async def provision(res: Resource, d: Docker | None = None, *, mounts: list[dict
     d = d or docker()
     image = image or _image_for(res)
     if not await d.image_exists(image):
-        built = "desktop-1" if res.kind == "desktop" else "workbench-1"
-        raise DockerError(f"image {image} isn't on this host yet: run `docker compose build {built}` "
-                          f"(compose tags it {image}), then try again")
+        raise DockerError(f"image {image} isn't on this host yet: run `docker compose --profile images "
+                          "build`, then Recreate")
     name = res.container or container_name(res)
     await d.create(name, spec(res, image, mounts))
     res.container = name
