@@ -116,7 +116,7 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
           }
         </fieldset>
 
-        <div class="actions">
+        <div class="actions save-row">
           <button type="submit" [disabled]="!dirty(r) || busy()">{{ busy() ? 'Saving…' : 'Save' }}</button>
           <button type="button" class="ghost" (click)="revert(r)" [disabled]="!dirty(r) || busy()">Discard changes</button>
           @if (dirty(r)) { <span class="muted small">Unsaved changes</span> } @else if (saved()) { <span class="muted small">Saved</span> }
@@ -172,6 +172,7 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
             .list { min-width: 280px; max-width: 460px; overflow-x: hidden; }
             .list-head .inline { display: flex; gap: 6px; flex-wrap: nowrap; }
             .list-head button { white-space: nowrap; }
+            .save-row { margin-bottom: 20px; }
             .servers { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
             .servers li { display: flex; flex-direction: column; gap: 2px; }
             fieldset .inline-hint { margin-top: 8px; }
