@@ -742,6 +742,10 @@ export class Api {
   rateMessage(id: string, rating: 'up' | 'down' | null, comment = '') {
     return this.http.post<{ id: string; feedback: MessageFeedback | null }>(`/api/messages/${id}/feedback`, { rating, comment });
   }
+  rateLesson(messageId: string, memoryId: string, rating: 'up' | 'down' | null) {
+    return this.http.post<{ id: string; lesson_ratings: Record<string, 'up' | 'down'> }>(
+      `/api/messages/${messageId}/lessons/${memoryId}/rating`, { rating });
+  }
   learningSettings() { return this.http.get<LearningSettings>('/api/learning/settings'); }
   saveLearningSettings(x: LearningSettings) { return this.http.put<LearningSettings>('/api/learning/settings', x); }
   reflections(limit = 50) { return this.http.get<ReflectionLog>('/api/learning/reflections', { params: { limit } }); }

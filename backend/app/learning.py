@@ -283,6 +283,35 @@ def set_feedback(message: Message, rating: str | None, comment: str = "") -> Fee
     return fb
 
 
+def lesson_ids(message: Message) -> list[str]:
+    """The memories behind a "noted for next time" message, in the order they're listed."""
+    meta = message.meta or {}
+    return [str(i) for i in (meta.get("memory_ids") or [])] if meta.get("kind") == "lesson" else []
+
+
+def rate_lesson(message: Message, memory_id: str, rating: str | None) -> dict[str, str]:
+    """Your 👍 / 👎 on one lesson an agent noted for next time.
+
+    👍 confirms the memory (it counts as seen again and stays fresh); 👎 retires it so the
+    agent stops recalling it; clearing a 👎 brings the memory back. Returns the message's
+    lesson ratings, keyed by memory ID."""
+    ratings = dict((message.meta or {}).get("lesson_ratings") or {})
+    before = ratings.get(memory_id)
+    if rating == before:
+        return ratings
+    if before == "down":
+        memory.restore(memory_id)
+    if rating == "up":
+        memory.confirm(memory_id)
+    elif rating == "down":
+        memory.retire(memory_id, "You rated this lesson 👎 in the conversation where it was noted.")
+    if rating is None:
+        ratings.pop(memory_id, None)
+    else:
+        ratings[memory_id] = rating
+    return ratings
+
+
 # --------------------------------------------------------------------------- reflecting
 
 
@@ -550,7 +579,8 @@ async def reflect(rt, r_id: str) -> Reflection:
             await rt.save_message(
                 r.thread_id, Role.event,
                 f"{agent.name} noted for next time:\n" + "\n".join(f"- {t}" for t in saved),
-                agent_id=agent.id, kind="lesson", reflection_id=r.id, memory_ids=memory_ids)
+                agent_id=agent.id, kind="lesson", reflection_id=r.id, memory_ids=memory_ids,
+                lessons=saved)
     elif lessons:
         notes.append("lessons not saved (memory is off for this agent or for reflections)")
     from . import profile as profile_mod

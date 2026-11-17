@@ -94,6 +94,25 @@ async def test_thumbs_down_with_a_note_becomes_a_lesson(hq):
     assert any(x.meta.get("kind") == "lesson" and "noted for next time" in x.content
                for x in hq.messages(t["id"]))
     assert "[user rated this 👎: failures first, as a table]" in REFLECTED[0]
+    # You can rate the lesson itself: 👎 retires the memory, clearing it brings it back, 👍 confirms it.
+    note = next(x for x in hq.messages(t["id"]) if x.meta.get("kind") == "lesson")
+    assert note.meta["memory_ids"] == [m.id] and note.meta["lessons"] == [m.text]
+    url = f"/api/messages/{note.id}/lessons/{m.id}/rating"
+    r = await hq.http.post(url, json={"rating": "down"})
+    assert r.json()["lesson_ratings"] == {m.id: "down"}
+    with db.session() as s:
+        assert s.get(Memory, m.id).invalidated_at is not None
+    await hq.http.post(url, json={"rating": None})
+    with db.session() as s:
+        assert s.get(Memory, m.id).invalidated_at is None
+    r = await hq.http.post(url, json={"rating": "up"})
+    assert r.json()["lesson_ratings"] == {m.id: "up"}
+    with db.session() as s:
+        assert s.get(Memory, m.id).times_seen == m.times_seen + 1
+    assert (await hq.http.post(f"/api/messages/{note.id}/lessons/nope/rating",
+                               json={"rating": "up"})).status_code == 422
+    assert (await hq.http.post(f"/api/messages/{reply.id}/lessons/{m.id}/rating",
+                               json={"rating": "up"})).status_code == 422
     # Clearing the rating removes it.
     await hq.http.post(f"/api/messages/{reply.id}/feedback", json={"rating": None})
     with db.session() as s:

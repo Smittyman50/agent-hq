@@ -426,6 +426,13 @@ table.grid tr.current td { color: var(--text); font-weight: 600; }
 .rate-note { background: none; border: 0; padding: 2px 6px; color: var(--muted); font-size: 12px; font-style: italic;
   cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; }
 .rate-note:hover { color: var(--text); }
+.msg.event .body.lessons { white-space: normal; }
+.lesson { display: flex; align-items: flex-start; gap: 6px; }
+.lesson-text::before { content: '- '; }
+.lesson-text { flex: 1; min-width: 0; }
+.lesson.retired .lesson-text { text-decoration: line-through; opacity: .7; }
+.lesson .rate { margin-top: 0; flex-shrink: 0; }
+.msg:hover .lesson .rate, .lesson .rate.rated, .lesson .rate:focus-within { opacity: 1; }
 .rate-form { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .rate-form input { flex: 1; min-width: 0; }
 

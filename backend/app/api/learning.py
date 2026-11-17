@@ -113,3 +113,27 @@ async def give_feedback(message_id: str, body: FeedbackIn, request: Request):
     fb = {"rating": body.rating, "comment": body.comment.strip()[:2000]} if body.rating else None
     updated = await request.app.state.runtime.update_message(message_id, feedback=fb)
     return {"id": message_id, "feedback": (updated.meta or {}).get("feedback") if updated else fb}
+
+
+class LessonRatingIn(BaseModel):
+    rating: str | None  # up | down | None (clear)
+
+
+@router.post("/api/messages/{message_id}/lessons/{memory_id}/rating")
+async def rate_lesson(message_id: str, memory_id: str, body: LessonRatingIn, request: Request):
+    """Rate one lesson in an agent's "noted for next time" message: 👍 keeps it (confirms the
+    memory), 👎 retires the memory so the agent stops using it, null clears your rating."""
+    if body.rating not in (None, "up", "down"):
+        raise HTTPException(422, "rating is up, down or null")
+    with db.session() as s:
+        m = s.get(Message, message_id)
+    if m is None:
+        raise HTTPException(404)
+    if memory_id not in learning.lesson_ids(m):
+        raise HTTPException(422, "that lesson isn't part of this message")
+    try:
+        ratings = learning.rate_lesson(m, memory_id, body.rating)
+    except LookupError:
+        raise HTTPException(404, "that lesson is no longer in memory") from None
+    updated = await request.app.state.runtime.update_message(message_id, lesson_ratings=ratings)
+    return {"id": message_id, "lesson_ratings": (updated.meta or {}).get("lesson_ratings") if updated else ratings}

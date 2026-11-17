@@ -156,6 +156,23 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                     </form>
                   }
                 }
+              } @else if (lessonsOf(m).length) {
+                <div class="body lessons">
+                  <div>{{ agentName(m.agent_id) }} noted for next time:</div>
+                  @for (l of lessonsOf(m); track l.id) {
+                    <div class="lesson" [class.retired]="l.rating === 'down'">
+                      <span class="lesson-text">{{ l.text }}</span>
+                      <span class="rate" [class.rated]="!!l.rating">
+                        <button type="button" class="rate-btn" [class.on]="l.rating === 'up'"
+                          [title]="l.rating === 'up' ? 'Clear your rating' : 'Good lesson: keep it'"
+                          (click)="rateLesson(m, l.id, 'up')"><hq-icon name="thumbs-up" [size]="13" /></button>
+                        <button type="button" class="rate-btn down" [class.on]="l.rating === 'down'"
+                          [title]="l.rating === 'down' ? 'Bring this lesson back' : 'Wrong lesson: forget it'"
+                          (click)="rateLesson(m, l.id, 'down')"><hq-icon name="thumbs-down" [size]="13" /></button>
+                      </span>
+                    </div>
+                  }
+                </div>
               } @else {
                 @if (m.content) { <div class="body">{{ m.content }}</div> }
                 @if (filesOf(m).length) { <hq-files [files]="filesOf(m)" /> }
@@ -291,6 +308,28 @@ export class ChatPage implements OnInit, OnDestroy {
     this.applyFeedback(m.id, next ? { rating: next, comment } : null);
     this.api.rateMessage(m.id, next, comment).subscribe({ error: () => this.reload() });
     if (next === 'down') this.openNote(m); else if (this.noteFor() === m.id) this.noteFor.set(null);
+  }
+  /** The lessons in an agent's "noted for next time" message, each with your rating. */
+  lessonsOf(m: Message): { id: string; text: string; rating: 'up' | 'down' | null }[] {
+    if (m.meta?.['kind'] !== 'lesson') return [];
+    const ids = (m.meta?.['memory_ids'] as string[] | undefined) ?? [];
+    // Older messages have no lessons list: take the "- " lines of the text.
+    const texts = (m.meta?.['lessons'] as string[] | undefined)
+      ?? m.content.split('\n').filter(x => x.startsWith('- ')).map(x => x.slice(2));
+    if (!ids.length || ids.length !== texts.length) return [];
+    const ratings = (m.meta?.['lesson_ratings'] as Record<string, 'up' | 'down'> | undefined) ?? {};
+    return ids.map((id, i) => ({ id, text: texts[i], rating: ratings[id] ?? null }));
+  }
+  /** 👍 keeps a lesson (confirms the memory); 👎 retires the memory; clicking again clears it. */
+  rateLesson(m: Message, memoryId: string, rating: 'up' | 'down') {
+    const ratings = { ...((m.meta?.['lesson_ratings'] as Record<string, string> | undefined) ?? {}) };
+    const next = ratings[memoryId] === rating ? null : rating;
+    if (next) ratings[memoryId] = next; else delete ratings[memoryId];
+    this.messages.update(ms => ms.map(x => x.id === m.id
+      ? { ...x, meta: { ...(x.meta ?? {}), lesson_ratings: ratings } } : x));
+    this.api.rateLesson(m.id, memoryId, next).subscribe({
+      error: e => { alert(e.error?.detail ?? 'Could not rate this lesson'); this.reload(); },
+    });
   }
   makeTest(m: Message) {
     this.api.caseFromMessage(m.id).subscribe({
