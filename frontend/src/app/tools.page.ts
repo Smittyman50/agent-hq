@@ -2,7 +2,10 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SlicePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.service';
+import { Api, ApprovalMode, CatalogRemote, CatalogServer, ProbedTool, ToolServer, blankServer } from './api.service';
+
+const SEALED = 'enc:v1:';
+const KEPT = '(saved, encrypted)';
 
 @Component({
   selector: 'hq-tools',
@@ -10,23 +13,84 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
   template: `
   <div class="split">
     <aside class="list">
-      <div class="list-head"><h2>Tool servers</h2><button (click)="edit(null)">+ New</button></div>
+      <div class="list-head"><h2>Tool servers</h2>
+        <span class="inline"><button class="ghost" [class.active]="browsing()" (click)="browse()"
+          title="Browse the MCP server catalog: servers others have published, ready to add">Catalog</button>
+        <button (click)="edit(null)">+ New</button></span></div>
       @for (t of servers(); track t.id) {
         <button class="row" [class.active]="draft()?.id === t.id" [class.muted]="!t.enabled" (click)="edit(t)">
           <span class="name">{{ t.name }} <span class="pill">{{ t.transport }}</span>
             @if (t.all_agents) { <span class="pill">all agents</span> }
             @if (t.resource_id) { <span class="pill">resource</span> }</span>
           <span class="sub">{{ t.description || t.url || t.command }}</span>
+          @if (t.catalog_name) { <span class="sub muted small">from the catalog: {{ t.catalog_name }}</span> }
         </button>
       } @empty { <p class="hint">Register an MCP server, then tick it on any agent (or on all of them).</p> }
     </aside>
 
-    @if (draft(); as d) {
+    @if (browsing()) {
+      <section class="editor">
+        <h2>MCP server catalog</h2>
+        <p class="hint inline-hint">Servers published to the MCP registry ({{ registry() || 'not loaded yet' }}).
+          A listing is a description by its publisher, not a review: check the repository before you add one.
+          Whatever you add starts with every tool set to <b>Ask me</b> and isn't given to any agent.</p>
+        <form class="inline" (ngSubmit)="search()">
+          <input name="q" [(ngModel)]="query" placeholder="Search, e.g. gitea, proxmox, home assistant" autofocus>
+          <button type="submit">Search</button>
+        </form>
+        @if (catalogError()) { <p class="error">{{ catalogError() }}</p> }
+        @if (searching() && !results().length) { <p class="hint">Searching…</p> }
+        @for (c of results(); track c.name) {
+          <div class="catalog-entry">
+            <div><b>{{ c.title || c.name }}</b> <span class="pill">v{{ c.version }}</span>
+              @if (c.can_add) { <span class="pill">remote</span> }
+              @for (p of c.packages; track $index) { <span class="pill">{{ p.registry }}</span> }
+              @if (c.added_as) { <span class="pill done">added as {{ c.added_as }}</span> }</div>
+            <div class="muted small"><code>{{ c.name }}</code> ·
+              {{ c.publisher.kind === 'github' ? 'GitHub user ' + c.publisher.who : 'domain ' + c.publisher.who }}
+              @if (c.repository) { · <a [href]="c.repository" target="_blank" rel="noopener">repository</a> }
+              @if (c.website) { · <a [href]="c.website" target="_blank" rel="noopener">website</a> }</div>
+            <div>{{ c.description }}</div>
+            <div class="inline">
+              @for (r of c.remotes; track $index) {
+                @if (r.supported) {
+                  <button type="button" (click)="addFromCatalog(c, $index)" [title]="r.url">Add {{ r.type }} remote</button>
+                } @else { <span class="muted small">{{ r.note }}</span> }
+              }
+              @if (c.needs_runner) {
+                <span class="muted small">Runs as a package ({{ packageList(c) }}). Adding these needs the package
+                  runner, which runs each one in its own container; it's the next step.</span>
+              }
+            </div>
+          </div>
+        } @empty {
+          @if (searched() && !searching()) { <p class="hint">Nothing found.</p> }
+        }
+        @if (nextCursor()) {
+          <div class="actions"><button type="button" class="ghost" [disabled]="searching()" (click)="more()">More</button></div>
+        }
+      </section>
+    } @else if (draft(); as d) {
       <form class="editor" (ngSubmit)="save()">
         <h2>{{ d.id ? 'Edit ' + d.name : 'New tool server' }}</h2>
         @if (d.resource_id) {
           <p class="hint inline-hint">This server belongs to a desktop or workbench. Give it to agents, and delete it,
             on <a routerLink="/settings/resources">Desktops &amp; workbenches</a>. Set its approvals here.</p>
+        }
+        @if (picked(); as p) {
+          <p class="hint inline-hint">From the catalog: <code>{{ p.entry.name }}</code> v{{ p.entry.version }}
+            @if (p.entry.repository) { (<a [href]="p.entry.repository" target="_blank" rel="noopener">repository</a>)}.
+            Every tool is set to <b>Ask me</b>. Save, then <b>Test connection</b> to see its tools and relax
+            the rules for the ones you trust. Then tick it on the agents that need it.</p>
+          @for (h of p.remote.headers; track h.name) {
+            <p class="hint inline-hint"><b>{{ h.name }}</b>{{ h.required ? ' (required)' : '' }}{{ h.secret ? ', secret' : '' }}:
+              {{ h.description || 'fill in under Headers' }}</p>
+          }
+          @if (p.remote.variables.length) {
+            <p class="hint inline-hint">Replace {{ p.remote.variables.join(', ') }} in the URL with your values.</p>
+          }
+        } @else if (d.catalog_name) {
+          <p class="hint inline-hint">Added from the catalog: <code>{{ d.catalog_name }}</code> v{{ d.catalog_version }}.</p>
         }
         <label>Name <small>also used as the tool-name prefix</small><input name="name" [(ngModel)]="d.name" required></label>
         <label>Description<input name="description" [(ngModel)]="d.description"></label>
@@ -37,6 +101,9 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
           </select></label>
         @if (d.transport === 'http') {
           <label>URL<input name="url" [(ngModel)]="d.url" placeholder="http://perceptor:8811/mcp"></label>
+          <label>Headers <small>Name: value, one per line; stored encrypted when AHQ_SECRET_KEY is set</small>
+            <textarea name="headers" rows="2" [ngModel]="headersText(d)" (ngModelChange)="setHeaders(d, $event)"
+              placeholder="Authorization: Bearer …"></textarea></label>
         } @else {
           <label>Command<input name="command" [(ngModel)]="d.command" placeholder="uvx"></label>
           <label>Arguments <small>one per line</small>
@@ -118,13 +185,67 @@ export class ToolsPage implements OnInit {
   modes: { value: ApprovalMode; label: string }[] = [
     { value: 'allow', label: 'Allow' }, { value: 'ask', label: 'Ask me' }, { value: 'block', label: 'Block' }];
   error = signal('');
+  // The catalog
+  browsing = signal(false);
+  query = '';
+  results = signal<CatalogServer[]>([]);
+  nextCursor = signal<string | null>(null);
+  registry = signal('');
+  searching = signal(false);
+  searched = signal(false);
+  catalogError = signal('');
+  picked = signal<{ entry: CatalogServer; remote: CatalogRemote } | null>(null);
+  private sealed: Record<string, string> = {};
 
   ngOnInit() { this.load(); }
+
+  browse() {
+    this.browsing.set(true); this.draft.set(null);
+    if (!this.searched()) this.search();
+  }
+  search(cursor: string | null = null) {
+    this.searching.set(true); this.catalogError.set('');
+    if (!cursor) { this.results.set([]); this.nextCursor.set(null); }
+    this.api.catalog(this.query, cursor).subscribe({
+      next: page => {
+        this.registry.set(page.registry);
+        this.results.set(cursor ? [...this.results(), ...page.servers] : page.servers);
+        this.nextCursor.set(page.next_cursor); this.searching.set(false); this.searched.set(true);
+      },
+      error: e => { this.catalogError.set(e.error?.detail ?? 'Search failed'); this.searching.set(false); },
+    });
+  }
+  more() { this.search(this.nextCursor()); }
+  packageList(c: CatalogServer) { return c.packages.map(p => `${p.registry} ${p.identifier}`).join(', '); }
+  addFromCatalog(entry: CatalogServer, i: number) {
+    this.catalogError.set('');
+    this.api.catalogDraft(entry, i).subscribe({
+      next: d => {
+        this.browsing.set(false); this.error.set(''); this.tools.set([]); this.sealed = {};
+        this.picked.set({ entry, remote: entry.remotes[i] });
+        this.draft.set({ ...blankServer(), ...d });
+      },
+      error: e => this.catalogError.set(e.error?.detail ?? 'Could not add it'),
+    });
+  }
+
+  headersText(d: ToolServer) {
+    return Object.entries(d.headers ?? {}).map(([k, v]) => `${k}: ${v.startsWith(SEALED) ? KEPT : v}`).join('\n');
+  }
+  setHeaders(d: ToolServer, v: string) {
+    d.headers = Object.fromEntries(this.splitLines(v).map(l => {
+      const i = l.indexOf(':');
+      const k = (i < 0 ? l : l.slice(0, i)).trim(), val = i < 0 ? '' : l.slice(i + 1).trim();
+      return [k, val === KEPT ? (this.sealed[k] ?? '') : val];
+    }).filter(([k]) => k));
+  }
   load() { this.api.servers().subscribe(s => this.servers.set(s)); }
 
   edit(t: ToolServer | null) {
-    this.error.set(''); this.tools.set([]);
+    this.error.set(''); this.tools.set([]); this.browsing.set(false); this.picked.set(null);
     const d = t ? structuredClone(t) : blankServer();
+    d.headers ??= {};
+    this.sealed = Object.fromEntries(Object.entries(d.headers).filter(([, v]) => v.startsWith(SEALED)));
     d.approval_rules ??= {};
     d.eval_live ??= {};
     this.draft.set(d);
@@ -175,7 +296,7 @@ export class ToolsPage implements OnInit {
 
   save() {
     this.api.saveServer(this.draft()!).subscribe({
-      next: s => { this.load(); this.draft.set(structuredClone(s)); this.error.set(''); },
+      next: s => { this.load(); this.picked.set(null); this.edit(s); },
       error: e => this.error.set(e.error?.detail ?? 'Save failed'),
     });
   }

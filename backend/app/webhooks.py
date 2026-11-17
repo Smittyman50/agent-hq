@@ -110,10 +110,17 @@ def seal_existing() -> int:
                 h.secret = seal(h.secret)
                 s.add(h)
                 n += 1
+        from .models import ToolServer
+
+        for t in s.exec(select(ToolServer)).all():
+            if any(v and not v.startswith(SEALED) for v in (t.headers or {}).values()):
+                t.headers = {k: seal(v) for k, v in t.headers.items()}
+                s.add(t)
+                n += 1
         if n:
             s.commit()
     if n:
-        log.info("encrypted %d webhook secret(s)", n)
+        log.info("encrypted the secrets of %d webhook(s) and tool server(s)", n)
     return n
 
 

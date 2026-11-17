@@ -576,6 +576,19 @@ Click **Test connection** to list the server's tools (this connects from the API
 
 The worker image is a slim Python image without `npx` or `uvx`, so published servers you'd normally start with those commands are easier to run as their own container and register over HTTP, the way the web reader below does.
 
+**Headers.** An HTTP server can get headers, one `Name: value` per line, for example `Authorization: Bearer …` for a hosted server that wants an API key. With `AHQ_SECRET_KEY` set they are encrypted in the database (existing ones at the next start), and the form shows a saved value as `(saved, encrypted)`: leave that line as it is to keep it.
+
+### The MCP server catalog
+
+Instead of writing a tool server yourself, look for one someone has already published. **Settings → Tools → Catalog** searches the [official MCP Registry](https://registry.modelcontextprotocol.io), the open, community-run list of MCP servers. Each entry shows its publisher (a GitHub account, or a domain they proved they own), version, repository and how it runs.
+
+- **Remote servers** (hosted at a URL) have an **Add** button. It opens the usual form, filled in: name, description, URL and any headers the server asks for (an API key, say), with what each header is for. Fill in the values and save.
+- **Package servers** (an npm or PyPI package, or a Docker image) are listed but can't be added yet. They will run in a container of their own through the package runner, the next step on the roadmap.
+
+**Nothing is trusted by default.** A listing is the publisher's own description, not a review. A server added from the catalog starts with every tool set to **Ask me** and isn't given to any agent, so it does nothing until you've looked at it: save it, click **Test connection** to see its tools, relax the approvals for the ones you trust, then tick it on the agents that need it. Check the repository first, and remember that whatever the server is sent (your agents' tool arguments) goes to whoever hosts it. The Tools list shows which servers came from the catalog, and the catalog shows which entries you've already added.
+
+The search runs on the API host, which needs to reach the registry. `AHQ_MCP_REGISTRY_URL` points it at another registry that speaks the same API (a sub-registry, or one you host yourself); set it empty to turn the catalog off.
+
 ### Web reader: feeds, pages and search
 
 The `web-reader` service (in `docker-compose.yml`, code in `webreader/`) gives agents text-only web tools. It's much faster and cheaper than driving a browser, and works fine with small local models:

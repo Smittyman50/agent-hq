@@ -130,6 +130,9 @@ export interface ToolServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
+  headers?: Record<string, string> | null;   // HTTP headers; values come back encrypted
+  catalog_name?: string | null;              // added from the MCP server catalog
+  catalog_version?: string | null;
   prefix_tools: boolean;
   desktop: boolean;
   enabled: boolean;
@@ -162,6 +165,19 @@ export interface ResourceList { docker: boolean; resources: Resource[]; adoptabl
 export type ResourceAction = 'start' | 'stop' | 'restart' | 'recreate' | 'take-over';
 
 export type ApprovalMode = 'allow' | 'ask' | 'block';
+export interface CatalogInput { name: string; description: string; required: boolean; secret: boolean; value: string; }
+export interface CatalogRemote { type: string; url: string; headers: CatalogInput[]; variables: string[];
+  supported: boolean; note: string; templated: boolean; }
+export interface CatalogPackage { registry: string; identifier: string; version: string; transport: string; env: CatalogInput[]; }
+export interface CatalogServer {
+  name: string; title: string; description: string; version: string; website: string; repository: string;
+  publisher: { namespace: string; kind: 'github' | 'domain'; who: string };
+  status: string; published_at: string | null; updated_at: string | null; latest: boolean;
+  remotes: CatalogRemote[]; packages: CatalogPackage[];
+  can_add: boolean; needs_runner: boolean; added_as: string | null; suggested_name: string;
+}
+export interface CatalogPage { registry: string; servers: CatalogServer[]; next_cursor: string | null; }
+
 export interface ProbedTool {
   name: string; description: string;
   suggested_approval: ApprovalMode | null;   // what the server suggests in its metadata
@@ -368,7 +384,7 @@ export function blankSubscription(agent_id = ''): Subscription {
 
 export function blankServer(): ToolServer {
   return { name: '', description: '', transport: 'http', url: '', command: null, args: [],
-    env: {}, prefix_tools: true, desktop: false, all_agents: false, enabled: true, approval_rules: {} };
+    env: {}, headers: {}, prefix_tools: true, desktop: false, all_agents: false, enabled: true, approval_rules: {} };
 }
 
 export interface KnowledgeSettings { recall: boolean; recall_count: number; min_score: number; chunk_chars: number; max_file_mb: number; agent_suggestions: boolean; }
@@ -610,6 +626,14 @@ export class Api {
                 : this.http.post<ToolServer>('/api/tool-servers', t);
   }
   deleteServer(id: string) { return this.http.delete(`/api/tool-servers/${id}`); }
+  catalog(q: string, cursor: string | null = null) {
+    const params: Record<string, string> = { q };
+    if (cursor) params['cursor'] = cursor;
+    return this.http.get<CatalogPage>('/api/catalog', { params });
+  }
+  catalogDraft(entry: CatalogServer, remote = 0) {
+    return this.http.post<ToolServer>('/api/catalog/draft', entry, { params: { remote } });
+  }
 
   resources() { return this.http.get<ResourceList>('/api/resources'); }
   createResource(body: { kind: ResourceKind; scope: ResourceScope; description?: string;

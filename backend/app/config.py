@@ -84,10 +84,14 @@ class Settings:
         "WEBHOOK_NETWORKS", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7,fe80::/10"))
     # Requests per minute a new hook accepts (0 = no limit); each hook can change it.
     webhook_rate_per_minute: int = field(default_factory=lambda: int(_env("WEBHOOK_RATE_PER_MINUTE", "60")))
-    # Encrypts webhook secrets in the database. Any long random string, e.g.
+    # Encrypts webhook secrets and tool server headers in the database. Any long random string, e.g.
     # `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Keep it safe: hooks
     # stop verifying senders if it changes (rotate their secrets then).
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", ""))
+    # MCP server catalog (Settings → Tools → Browse catalog): a registry that speaks the
+    # official MCP Registry API (/v0/servers). The official one by default; point it at a
+    # sub-registry or one you host yourself. Empty turns the catalog off.
+    mcp_registry_url: str = field(default_factory=lambda: _env("MCP_REGISTRY_URL", "https://registry.modelcontextprotocol.io").rstrip("/"))
     # Run scheduled agent tasks from this API process (on by default; safe with several API
     # processes, since each run is claimed with a lock).
     scheduler_enabled: bool = field(default_factory=lambda: _env("SCHEDULER", "1").lower() not in ("0", "false", "no"))

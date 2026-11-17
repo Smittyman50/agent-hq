@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from .. import approvals
+from ..webhooks import seal
 from ..db import get_session
 from ..models import AgentDef, ToolServer, Transport
 from ..runtime import mcp_toolset
@@ -22,6 +23,10 @@ class ToolServerIn(BaseModel):
     command: str | None = None
     args: list[str] = []
     env: dict[str, str] = {}
+    # HTTP headers (values come back encrypted when AHQ_SECRET_KEY is set; send them back as is)
+    headers: dict[str, str] = {}
+    catalog_name: str | None = None
+    catalog_version: str | None = None
     prefix_tools: bool = True
     desktop: bool = False
     # {tool name or "*": "allow" | "ask" | "block"}. None (left out) keeps the current rules.
@@ -51,6 +56,10 @@ def list_servers(s: Session = Depends(get_session)):
     return s.exec(select(ToolServer).order_by(ToolServer.name)).all()
 
 
+def _headers(h: dict[str, str]) -> dict[str, str]:
+    return {k.strip(): seal(v) for k, v in (h or {}).items() if k.strip()}
+
+
 def _shown(names: list[str] | None) -> list[str]:
     return sorted({x.strip() for x in names or [] if x.strip()})
 
@@ -62,7 +71,8 @@ def create_server(body: ToolServerIn, s: Session = Depends(get_session)):
     _check_shape(body)
     _check_rules(body.approval_rules)
     t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {},
-                      "eval_live": body.eval_live or {}, "shown_tools": _shown(body.shown_tools)})
+                      "eval_live": body.eval_live or {}, "shown_tools": _shown(body.shown_tools),
+                      "headers": _headers(body.headers)})
     s.add(t)
     s.commit()
     s.refresh(t)
@@ -76,8 +86,9 @@ def update_server(server_id: str, body: ToolServerIn, s: Session = Depends(get_s
         raise HTTPException(404)
     _check_shape(body, t)
     _check_rules(body.approval_rules)
-    for k, v in body.model_dump(exclude={"approval_rules", "eval_live", "shown_tools"}).items():
+    for k, v in body.model_dump(exclude={"approval_rules", "eval_live", "shown_tools", "headers"}).items():
         setattr(t, k, v)
+    t.headers = _headers(body.headers)
     if body.approval_rules is not None:
         t.approval_rules = {k: v for k, v in body.approval_rules.items() if v}
     if body.eval_live is not None:

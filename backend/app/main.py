@@ -26,6 +26,7 @@ from .api import conversations as conversations_api
 from .api import workitems as workitems_api
 from .api import auth as auth_api
 from .api import resources as resources_api
+from .api import catalog as catalog_api
 from .api import agents, avatars, desktop, memory as memory_api, providers, schedules, subagents as subagents_api, subscriptions, system, threads, tool_servers, webhooks as webhooks_api
 from .broker import Broker
 from .config import settings
@@ -130,7 +131,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app.add_middleware(auth_api.AuthMiddleware)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
-    for r in (auth_api.router, approvals_api.router, attachments_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, resources_api.router, threads.router, subscriptions.router, webhooks_api.router, webhooks_api.public, workitems_api.router,
+    for r in (auth_api.router, approvals_api.router, attachments_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, catalog_api.router, resources_api.router, threads.router, subscriptions.router, webhooks_api.router, webhooks_api.public, workitems_api.router,
               system.router):
         app.include_router(r)
 

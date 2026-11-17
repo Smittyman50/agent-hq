@@ -245,6 +245,11 @@ def mcp_toolset(srv: ToolServer) -> MCPToolset:
     if srv.transport == Transport.http:
         if not srv.url:
             raise ValueError(f"tool server {srv.name} has no URL")
+        if srv.headers:
+            from .webhooks import unseal
+
+            return MCPToolset(srv.url, id=srv.name,
+                              headers={k: unseal(v) for k, v in srv.headers.items()})
         return MCPToolset(srv.url, id=srv.name)
     if not srv.command:
         raise ValueError(f"tool server {srv.name} has no command")

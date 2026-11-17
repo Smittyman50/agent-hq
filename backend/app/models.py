@@ -211,6 +211,12 @@ class ToolServer(SQLModel, table=True):
     # Set when the server belongs to a Resource (a desktop or workbench Agent HQ manages).
     # Assigning the resource to an agent ticks its servers; deleting it removes them.
     resource_id: str | None = Field(default=None, index=True)
+    # HTTP headers sent to an HTTP server, e.g. {"Authorization": "Bearer ..."}. Values are
+    # encrypted at rest when AHQ_SECRET_KEY is set (see webhooks.seal).
+    headers: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Added from the MCP server catalog: the registry's server name and version.
+    catalog_name: str | None = None
+    catalog_version: str | None = None
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
 
