@@ -147,6 +147,23 @@ services:
     mem_limit: 2g
     pids_limit: 512
 
+    workbench-2:
+    build: ./workbench
+    restart: unless-stopped
+    networks: [workbench]
+    volumes: ["workbench-2:/work"]   # only /work and /tmp are writable
+    environment:
+      HTTPS_PROXY: http://egress:8888
+      HTTP_PROXY: http://egress:8888
+      NO_PROXY: localhost,127.0.0.1
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 512
+
   # The workbenches' only way out: an allowlisting proxy (PyPI by default). Edit
   # deploy/egress/allowlist and `docker compose restart egress` to allow other hosts.
   egress:
@@ -171,6 +188,7 @@ volumes:
   caddy-data:
   caddy-config:
   workbench-1:
+  workbench-2:
 
 networks:
   default:
