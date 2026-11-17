@@ -1,13 +1,13 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
-import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits, AgentContextInfo, ThinkingSupport } from './api.service';
+import { Router, RouterLink } from '@angular/router';
+import { AgentDef, Api, ProviderInfo, ToolServer, blankAgent, defaultSubagentLimits, AgentContextInfo, ThinkingSupport, Resource, ResourceKind } from './api.service';
 import { ModelPicker } from './model-picker';
 import { Avatar } from './avatar';
 
 @Component({
   selector: 'hq-agents',
-  imports: [FormsModule, ModelPicker, Avatar],
+  imports: [FormsModule, ModelPicker, Avatar, RouterLink],
   template: `
   <div class="split">
     <aside class="list">
@@ -99,10 +99,31 @@ import { Avatar } from './avatar';
 
         <fieldset>
           <legend>Tools (MCP servers)</legend>
-          @for (t of servers(); track t.id) {
-            <label class="check"><input type="checkbox" [checked]="d.tool_server_ids.includes(t.id!)"
-              (change)="toggle(d.tool_server_ids, t.id!)"> {{ t.name }} <small>{{ t.description }}</small></label>
+          @for (t of plainServers(); track t.id) {
+            @if (t.all_agents) {
+              <label class="check" title="Set on Settings → Tools: every agent gets it"><input type="checkbox" checked disabled>
+                {{ t.name }} <small>all agents · {{ t.description }}</small></label>
+            } @else {
+              <label class="check"><input type="checkbox" [checked]="d.tool_server_ids.includes(t.id!)"
+                (change)="toggle(d.tool_server_ids, t.id!)"> {{ t.name }} <small>{{ t.description }}</small></label>
+            }
           } @empty { <p class="hint">No tool servers registered yet (Settings → Tools).</p> }
+        </fieldset>
+
+        <fieldset>
+          <legend>Desktops &amp; workbenches</legend>
+          @for (r of resources(); track r.id) {
+            <label class="check" [class.muted]="takenBy(d, r)">
+              <input type="checkbox" [checked]="hasRes(d, r)" [disabled]="!!takenBy(d, r)" (change)="toggleRes(d, r)">
+              {{ r.name }} <span class="pill">{{ r.scope }}</span>
+              <small>{{ takenBy(d, r) ? 'dedicated to ' + takenBy(d, r) : r.description }}</small></label>
+          } @empty { <p class="hint inline-hint">None yet.</p> }
+          <div class="actions">
+            <button type="button" class="ghost" (click)="newOwn(d, 'desktop')" [disabled]="!d.id || resBusy()">+ Its own desktop</button>
+            <button type="button" class="ghost" (click)="newOwn(d, 'workbench')" [disabled]="!d.id || resBusy()">+ Its own workbench</button>
+          </div>
+          <p class="hint inline-hint">@if (!d.id) { Save the agent first to give it its own. }
+            Shared ones and containers are on <a routerLink="/settings/resources">Desktops &amp; workbenches</a>.</p>
         </fieldset>
 
         <fieldset>
@@ -383,6 +404,42 @@ export class AgentsPage implements OnInit {
     this.addModel = '';
   }
 
+  /** Tool servers that aren't part of a desktop or workbench resource. */
+  plainServers = computed(() => this.servers().filter(t => !t.resource_id));
+  resources = signal<Resource[]>([]);
+  resBusy = signal(false);
+
+  hasRes(d: AgentDef, r: Resource) { return r.servers.some(t => d.tool_server_ids.includes(t.id)); }
+  /** The other agent a dedicated resource belongs to, if any. */
+  takenBy(d: AgentDef, r: Resource) {
+    return r.scope === 'dedicated' ? (r.agents.find(a => a.id !== d.id)?.name ?? '') : '';
+  }
+  toggleRes(d: AgentDef, r: Resource) {
+    const ids = r.servers.map(t => t.id);
+    if (this.hasRes(d, r)) {
+      d.tool_server_ids = d.tool_server_ids.filter(i => !ids.includes(i));
+      if (r.viewer_url && d.desktop_url === r.viewer_url) d.desktop_url = null;
+    } else {
+      d.tool_server_ids = [...d.tool_server_ids, ...ids.filter(i => !d.tool_server_ids.includes(i))];
+      if (r.viewer_url && !d.desktop_url) d.desktop_url = r.viewer_url;
+    }
+  }
+  /** Create a dedicated desktop or workbench for this (saved) agent and tick it. */
+  newOwn(d: AgentDef, kind: ResourceKind) {
+    this.resBusy.set(true); this.error.set('');
+    this.api.createResource({ kind, scope: 'dedicated', agent_ids: [d.id!] }).subscribe({
+      next: r => {
+        this.resBusy.set(false);
+        this.servers.update(list => [...list, ...r.servers.map(t => ({ ...t, resource_id: r.id }) as unknown as ToolServer)]);
+        this.toggleRes(d, r);
+        this.resources.update(list => [...list, r]);
+        this.api.servers().subscribe(s => this.servers.set(s));
+        if (r.error) this.error.set(`${r.name} was created, but: ${r.error}`);
+      },
+      error: e => { this.resBusy.set(false); this.error.set(e.error?.detail ?? 'Could not create it'); },
+    });
+  }
+
   subTools(d: AgentDef) {
     return this.servers().filter(t => d.tool_server_ids.includes(t.id!) && !t.desktop);
   }
@@ -396,6 +453,7 @@ export class AgentsPage implements OnInit {
     this.api.agents().subscribe(a => this.agents.set(a));
     this.api.servers().subscribe(s => this.servers.set(s));
     this.api.providers().subscribe(p => this.providers.set(p));
+    this.api.resources().subscribe({ next: l => this.resources.set(l.resources), error: () => {} });
   }
 
   edit(a: AgentDef | null) {

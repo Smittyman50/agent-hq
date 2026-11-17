@@ -57,7 +57,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import workitems
+from . import resources, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -253,10 +253,13 @@ def mcp_toolset(srv: ToolServer) -> MCPToolset:
 
 
 def agent_tool_servers(agent: AgentDef) -> list[ToolServer]:
-    if not agent.tool_server_ids:
-        return []
+    """The servers ticked on the agent, then those every agent gets (all_agents)."""
     with db.session() as s:
-        servers = [s.get(ToolServer, i) for i in agent.tool_server_ids]
+        servers = [s.get(ToolServer, i) for i in agent.tool_server_ids or []]
+        ticked = {srv.id for srv in servers if srv is not None}
+        servers += [srv for srv in s.exec(select(ToolServer).where(ToolServer.all_agents == True)  # noqa: E712
+                                          .order_by(ToolServer.name)).all()
+                    if srv.id not in ticked and not srv.desktop]
     return [srv for srv in servers if srv is not None and srv.enabled]
 
 
@@ -404,6 +407,9 @@ def has_fallback(agent: AgentDef) -> bool:
     return bool(agent.fallback_model)
 
 
+DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
+                "Do not retry now. Report that the shared desktop is busy, or ask whoever you "
+                "report to to try again later.")
 DESKTOP_PAUSED = ("The user has taken control of this desktop, so desktop tools are paused. "
                   "Do not retry. Report that you are waiting for the user to hand the desktop "
                   "back; you will be woken when they do.")
@@ -574,6 +580,8 @@ class ObservedToolset(WrapperToolset):
     agent_name: str = ""
     broker: Broker | None = None
     desktop_server_id: str | None = None
+    # A shared desktop resource: one conversation at a time (app/resources.py).
+    lease_resource_id: str | None = None
     source: str = "internal"  # internal (Agent HQ's own tools) | mcp (your tool servers)
 
     async def call_tool(self, name, tool_args, ctx: RunContext[RunDeps], tool):
@@ -589,6 +597,13 @@ class ObservedToolset(WrapperToolset):
                                       agent_id=d.agent_id, tool=name, depth=d.depth,
                                       error="paused: you have control of this desktop")
             return DESKTOP_PAUSED
+        if self.lease_resource_id:
+            busy = await self._take_desktop(d)
+            if busy:
+                await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
+                                          agent_id=d.agent_id, tool=name, depth=d.depth,
+                                          error=f"shared desktop busy: {busy.get('agent')} is using it")
+                return DESKTOP_BUSY.format(agent=busy.get("agent") or "another agent")
         await self.broker.publish(d.thread_id, "tool_call", agent=self.agent_name,
                                   agent_id=d.agent_id, tool=name, args=tool_args, depth=d.depth)
         step = {"tool": name, "args": _brief(tool_args), "args_full": tool_args}
@@ -606,6 +621,20 @@ class ObservedToolset(WrapperToolset):
                                   agent_id=d.agent_id, tool=name, preview=str(result)[:500],
                                   depth=d.depth)
         return result
+
+
+    async def _take_desktop(self, d: RunDeps) -> dict | None:
+        """Wait for the shared desktop; None once it's this conversation's, else who has it."""
+        from . import resources
+
+        async def waiting(cur: dict) -> None:
+            await self.broker.publish(d.thread_id, "desktop_wait", agent=self.agent_name,
+                                      agent_id=d.agent_id, depth=d.depth,
+                                      holder=cur.get("agent"), resource_id=self.lease_resource_id)
+
+        return await resources.acquire_lease(self.broker.r, self.lease_resource_id,
+                                             thread_id=d.thread_id, job_id=d.job_id,
+                                             agent=self.agent_name, on_wait=waiting)
 
 
 # --------------------------------------------------------------------------- runtime
@@ -1097,6 +1126,7 @@ class Runtime:
         reserve = int(context.get_settings()["reserve_tokens"])
         # Within a run, older tool results are trimmed harder as it nears the window.
         trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0)
+        shared = resources.shared_desktops([desk for _, desk in toolsets if desk])
         built = Agent(
             model,
             name=agent.name,
@@ -1110,6 +1140,7 @@ class Runtime:
             # The agent's thinking level, translated for its model (app/thinking.py).
             model_settings=model_settings,
             toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
+                                      lease_resource_id=shared.get(desk) if desk else None,
                                       source="mcp" if i < mcp_count else "internal")
                       for i, (t, desk) in enumerate(toolsets)],
         )
@@ -1118,6 +1149,20 @@ class Runtime:
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
                         history: list | None = None, as_worker: bool = False):
+        """Run the agent (see _run_agent), then let go of any shared desktop this run took."""
+        try:
+            return await self._run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+        finally:
+            if deps.replay is None:
+                shared = resources.shared_desktops([srv.id for srv in desktop_servers(agent)])
+                for res_id in set(shared.values()):
+                    try:
+                        await resources.release_lease(self.broker.r, res_id, deps.job_id)
+                    except Exception as e:  # it expires by itself anyway
+                        log.warning("couldn't release shared desktop %s: %s", res_id, e)
+
+    async def _run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
+                         history: list | None = None, as_worker: bool = False):
         """Run on the agent's model; on failure or escalation, rerun on its fallback model.
 
         Every run is written to the usage ledger. Sub-agents run under their caps: a limit

@@ -54,6 +54,8 @@ export const routes: Routes = [
       { path: 'evals', component: EvalsPage },
       { path: 'profile', component: ProfilePage },
       { path: 'tools', component: ToolsPage },
+      // Loaded when opened: keeps the main bundle under its budget.
+      { path: 'resources', loadComponent: () => import('./resources.page').then(m => m.ResourcesPage) },
       { path: 'events', component: EventsPage },
       { path: 'system', component: SystemPage },
       { path: 'security', component: SecurityPage },

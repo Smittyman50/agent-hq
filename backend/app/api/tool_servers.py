@@ -29,7 +29,15 @@ class ToolServerIn(BaseModel):
     eval_live: dict[str, bool] | None = None  # tools safe to run for real in tests
     shown_tools: list[str] | None = None  # None (left out) keeps the current list; [] = all
     read_only: bool = False
+    # Every agent gets it without ticking it (not for desktops).
+    all_agents: bool = False
     enabled: bool = True
+
+
+def _check_shape(body: ToolServerIn, t: ToolServer | None = None) -> None:
+    if body.all_agents and (body.desktop or (t is not None and t.resource_id)):
+        raise HTTPException(422, "a desktop or workbench can't be given to all agents; "
+                                 "make it a shared resource on the Resources page instead")
 
 
 def _check_rules(rules: dict[str, str] | None) -> None:
@@ -51,6 +59,7 @@ def _shown(names: list[str] | None) -> list[str]:
 def create_server(body: ToolServerIn, s: Session = Depends(get_session)):
     if s.exec(select(ToolServer).where(ToolServer.name == body.name)).first():
         raise HTTPException(409, f"a tool server named '{body.name}' already exists")
+    _check_shape(body)
     _check_rules(body.approval_rules)
     t = ToolServer(**{**body.model_dump(), "approval_rules": body.approval_rules or {},
                       "eval_live": body.eval_live or {}, "shown_tools": _shown(body.shown_tools)})
@@ -65,6 +74,7 @@ def update_server(server_id: str, body: ToolServerIn, s: Session = Depends(get_s
     t = s.get(ToolServer, server_id)
     if not t:
         raise HTTPException(404)
+    _check_shape(body, t)
     _check_rules(body.approval_rules)
     for k, v in body.model_dump(exclude={"approval_rules", "eval_live", "shown_tools"}).items():
         setattr(t, k, v)
@@ -85,6 +95,9 @@ def delete_server(server_id: str, s: Session = Depends(get_session)):
     t = s.get(ToolServer, server_id)
     if not t:
         raise HTTPException(404)
+    if t.resource_id:
+        raise HTTPException(409, f"{t.name} belongs to a resource; delete or detach it on the "
+                                 "Resources page instead")
     for a in s.exec(select(AgentDef)).all():
         if server_id in a.tool_server_ids:
             a.tool_server_ids = [i for i in a.tool_server_ids if i != server_id]

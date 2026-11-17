@@ -16,6 +16,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'evals', label: 'Evals', icon: 'evals' },
   { path: 'profile', label: 'Profile', icon: 'profile' },
   { path: 'tools', label: 'Tools', icon: 'tools' },
+  { path: 'resources', label: 'Desktops & workbenches', icon: 'monitor' },
   { path: 'events', label: 'Events', icon: 'events' },
   { path: 'system', label: 'System', icon: 'system' },
   { path: 'security', label: 'Security', icon: 'lock' },

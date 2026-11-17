@@ -1,26 +1,33 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SlicePipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.service';
 
 @Component({
   selector: 'hq-tools',
-  imports: [FormsModule, SlicePipe],
+  imports: [FormsModule, SlicePipe, RouterLink],
   template: `
   <div class="split">
     <aside class="list">
       <div class="list-head"><h2>Tool servers</h2><button (click)="edit(null)">+ New</button></div>
       @for (t of servers(); track t.id) {
         <button class="row" [class.active]="draft()?.id === t.id" [class.muted]="!t.enabled" (click)="edit(t)">
-          <span class="name">{{ t.name }} <span class="pill">{{ t.transport }}</span></span>
+          <span class="name">{{ t.name }} <span class="pill">{{ t.transport }}</span>
+            @if (t.all_agents) { <span class="pill">all agents</span> }
+            @if (t.resource_id) { <span class="pill">resource</span> }</span>
           <span class="sub">{{ t.description || t.url || t.command }}</span>
         </button>
-      } @empty { <p class="hint">Register an MCP server, then tick it on any agent.</p> }
+      } @empty { <p class="hint">Register an MCP server, then tick it on any agent (or on all of them).</p> }
     </aside>
 
     @if (draft(); as d) {
       <form class="editor" (ngSubmit)="save()">
         <h2>{{ d.id ? 'Edit ' + d.name : 'New tool server' }}</h2>
+        @if (d.resource_id) {
+          <p class="hint inline-hint">This server belongs to a desktop or workbench. Give it to agents, and delete it,
+            on <a routerLink="/settings/resources">Desktops &amp; workbenches</a>. Set its approvals here.</p>
+        }
         <label>Name <small>also used as the tool-name prefix</small><input name="name" [(ngModel)]="d.name" required></label>
         <label>Description<input name="description" [(ngModel)]="d.description"></label>
         <label>Transport
@@ -42,6 +49,10 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
           <label class="check"><input type="checkbox" name="prefix" [(ngModel)]="d.prefix_tools"> Prefix tool names</label>
           <label class="check" title="Its tools pause while you have control of the desktop, and agents using it can ask you to take over">
             <input type="checkbox" name="desktop" [(ngModel)]="d.desktop"> Controls an agent desktop</label>
+          @if (!d.desktop && !d.resource_id) {
+            <label class="check" title="Every agent gets this server without ticking it, e.g. MQTT or the web reader. Sub-agents too.">
+              <input type="checkbox" name="all_agents" [(ngModel)]="d.all_agents"> All agents</label>
+          }
           <label class="check" title="Every tool counts as read-only (as if the server marked it so): webhook-started work doesn't ask before them, and they start ticked as safe in tests. Only for servers you know can't change anything, e.g. gitea-mcp --read-only.">
             <input type="checkbox" name="readonly" [(ngModel)]="d.read_only"> Only reads</label>
           <label class="check"><input type="checkbox" name="enabled" [(ngModel)]="d.enabled"> Enabled</label>
@@ -51,7 +62,7 @@ import { Api, ApprovalMode, ProbedTool, ToolServer, blankServer } from './api.se
           <button type="submit">Save</button>
           @if (d.id) {
             <button type="button" class="ghost" (click)="probe(d)">Test connection</button>
-            <button type="button" class="danger" (click)="remove(d)">Delete</button>
+            @if (!d.resource_id) { <button type="button" class="danger" (click)="remove(d)">Delete</button> }
           }
         </div>
         @if (d.id) {

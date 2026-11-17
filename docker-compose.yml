@@ -23,9 +23,12 @@ services:
     # Plain HTTP for this host only by default: browse through https via the caddy service.
     # Set AHQ_HTTP_BIND=8000 in .env to reach it over the network without HTTPS.
     ports: ["${AHQ_HTTP_BIND:-127.0.0.1:8000}:8000"]
+    # "docker-api" reaches docker-proxy, so the Resources page can run desktops and workbenches.
+    networks: [default, workbench, docker-api]
     environment:
       AHQ_CORS_ORIGINS: http://localhost:4200
       AHQ_WORKER_PREFIX: hq
+      AHQ_DOCKER_URL: http://docker-proxy:2375
       # Your step-ca root, so the knowledge library trusts your Gitea and internal sites
       # over HTTPS (the same root_ca.crt the caddy service uses).
       AHQ_EXTRA_CA_FILE: /etc/agent-hq/caddy/root_ca.crt
@@ -104,15 +107,34 @@ services:
       - caddy-config:/config
     depends_on: [hq]
 
-  # One service per agent desktop. Copy this block (desktop-2, SUBFOLDER /desktops/desktop-2/)
-  # to add more; the name must be desktop-<number> for the viewer route.
-  # In the UI, register two HTTP tool servers (tick "Controls an agent desktop" on both):
-  #   http://desktop-1:8765/mcp   screenshots, mouse, keyboard
-  #   http://desktop-1:8931/mcp   the desktop's Chromium via Playwright (untick "Prefix tool names")
-  # tick them on the agent, and set its desktop viewer URL to /desktops/desktop-1/.
+  # Docker API for hq, limited to containers, images, networks and volumes, so the
+  # Settings -> Desktops & workbenches page can create, start, stop and remove them.
+  # Only hq is on its network. Anyone who controls hq can run containers on this host:
+  # leave this service out (and AHQ_DOCKER_URL unset) to manage containers by hand.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    networks: [docker-api]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
+
+  # An example agent desktop. You don't need to copy this block for more: create desktops
+  # under Settings -> Desktops & workbenches, which also registers their tool servers and
+  # gives them to agents. Compose still builds the image they use (agent-hq/desktop), so
+  # run `docker compose build desktop-1` after changing ./desktop, then Recreate them there.
+  # This one: Import it on that page, then (optionally) delete this block and Take over.
   # No published ports: you reach the viewer only through caddy, signed in to Agent HQ.
   desktop-1:
     build: ./desktop
+    image: agent-hq/desktop:latest
     restart: unless-stopped
     shm_size: "1gb"
     volumes: ["./desktops/desktop-1:/config"]
@@ -123,15 +145,15 @@ services:
       SUBFOLDER: /desktops/desktop-1/   # must match the service name
 
   # An agent's workbench: its own persistent Python venv, files and shell (MCP on :8770).
-  # Register http://workbench-1:8770/mcp in the UI (Settings -> Tools), tick it on the
-  # agent that owns it, and keep "Prefix tool names" on if an agent has more than one.
-  # Copy this block (workbench-2 and its own volume) for each agent that needs one.
+  # Create more under Settings -> Desktops & workbenches (dedicated or shared); they use
+  # the image this service builds (agent-hq/workbench) and the same settings as below.
   #
   # Network: OFF by default. It's only on the internal "workbench" network, which has no
   # route out; the egress proxy lets it reach PyPI for pip installs and nothing else.
   # To give it full network access (internet and LAN), add "default" to its networks.
   workbench-1:
     build: ./workbench
+    image: agent-hq/workbench:latest
     restart: unless-stopped
     networks: [workbench]
     volumes: ["workbench-1:/work"]   # files, the venv (/work/.venv) and saved scripts
@@ -149,6 +171,7 @@ services:
 
   workbench-2:
     build: ./workbench
+    image: agent-hq/workbench:latest
     restart: unless-stopped
     networks: [workbench]
     volumes: ["workbench-2:/work"]   # only /work and /tmp are writable
@@ -194,4 +217,7 @@ networks:
   default:
   # Internal: containers on only this network can't reach the internet or your LAN.
   workbench:
+    internal: true
+  # Internal: only hq and docker-proxy, so agents' containers can't reach the Docker API.
+  docker-api:
     internal: true

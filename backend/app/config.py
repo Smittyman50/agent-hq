@@ -117,6 +117,20 @@ class Settings:
     ocr_max_pages: int = field(default_factory=lambda: int(_env("OCR_MAX_PAGES", "200")))
     # How long an agent waits for you after asking you to take over its desktop.
     handoff_timeout: float = field(default_factory=lambda: float(_env("HANDOFF_TIMEOUT", "1800")))
+    # Resources (desktops and workbenches made from the UI, see app/resources.py): the Docker
+    # API Agent HQ creates their containers with (the docker-proxy service; empty = off, and
+    # the Resources page can only track containers you run yourself), the images and the
+    # networks they join (compose prefixes networks with the project name).
+    docker_url: str = field(default_factory=lambda: _env("DOCKER_URL", "").rstrip("/"))
+    desktop_image: str = field(default_factory=lambda: _env("DESKTOP_IMAGE", "agent-hq/desktop:latest"))
+    workbench_image: str = field(default_factory=lambda: _env("WORKBENCH_IMAGE", "agent-hq/workbench:latest"))
+    resource_network: str = field(default_factory=lambda: _env("RESOURCE_NETWORK", "agent-hq_default"))
+    workbench_network: str = field(default_factory=lambda: _env("WORKBENCH_NETWORK", "agent-hq_workbench"))
+    compose_project: str = field(default_factory=lambda: _env("COMPOSE_PROJECT", "agent-hq"))
+    # A shared desktop is used by one conversation at a time. Another waits this long for
+    # it (seconds), and a conversation keeps it this long after its last desktop call.
+    desktop_lease_wait: float = field(default_factory=lambda: float(_env("DESKTOP_LEASE_WAIT", "600")))
+    desktop_lease_ttl: int = field(default_factory=lambda: int(_env("DESKTOP_LEASE_TTL", "300")))
     # Worker reliability knobs.
     worker_heartbeat: float = field(default_factory=lambda: float(_env("WORKER_HEARTBEAT", "15")))
     claim_idle_ms: int = field(default_factory=lambda: int(_env("CLAIM_IDLE_MS", "60000")))

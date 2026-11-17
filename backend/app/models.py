@@ -205,8 +205,39 @@ class ToolServer(SQLModel, table=True):
     # You know this server only reads (e.g. gitea-mcp --read-only): every tool counts as
     # read-only, as if it carried readOnlyHint (webhook caution, Safe in tests).
     read_only: bool = False
+    # Every agent gets this server without ticking it (MQTT, web reader: tools that aren't
+    # anyone's in particular). Desktops and workbenches can't be: they are resources.
+    all_agents: bool = False
+    # Set when the server belongs to a Resource (a desktop or workbench Agent HQ manages).
+    # Assigning the resource to an agent ticks its servers; deleting it removes them.
+    resource_id: str | None = Field(default=None, index=True)
     enabled: bool = True
     created_at: datetime = Field(default_factory=_now)
+
+
+class Resource(SQLModel, table=True):
+    """A desktop or workbench: a container per resource, with the tool servers it serves.
+
+    Dedicated: one agent's own. Shared: several agents use it (a shared desktop is used
+    by one conversation at a time, see app/resources.py). Who has it is the agents whose
+    tool_server_ids include its servers.
+    """
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = Field(index=True, unique=True)  # desktop-2, workbench-3: its network name
+    kind: str = "desktop"        # desktop | workbench
+    scope: str = "dedicated"     # dedicated | shared
+    description: str = ""
+    # Created by Agent HQ (it can start, stop, delete and recreate the container), or
+    # adopted from docker-compose.yml (compose owns the container until you take it over).
+    managed: bool = True
+    container: str = ""          # Docker container name
+    # Workbench only: reach the internet and LAN directly, not just PyPI via the egress proxy.
+    network_access: bool = False
+    status: str = "new"          # new | running | stopped | missing | error
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class Skill(SQLModel, table=True):

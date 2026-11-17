@@ -9,7 +9,7 @@ A self-hosted multi-agent system. You add model providers (your Ollama servers, 
   - **Valkey** (or Redis): job delivery through Streams, plus results, locks, live UI events and the worker registry.
   - **MQTT:** incoming events from monitors, devices, Zabbix, Home Assistant and so on.
 - **Tools:** any MCP server, registered in the UI
-- **Desktops:** one `linuxserver/webtop` container per agent, driven by a small MCP server and viewable in the UI
+- **Desktops:** one `linuxserver/webtop` container each, created from the UI and dedicated to an agent or shared, driven by a small MCP server and viewable in the UI
 
 Nothing about specific agents or models is in the code. Providers, names, roles, instructions, models, tools, pools, delegation rights and event subscriptions are all database rows, so renaming or re-tasking an agent takes effect on its next job.
 
@@ -412,15 +412,12 @@ A workbench is a small container per agent that gives it somewhere to write and 
 
 **The network is off by default.** The workbench is only on the internal `workbench` network, which has no route to the internet or your LAN. Its one way out is the `egress` proxy, which allows only the hosts in `deploy/egress/allowlist`. That's PyPI by default, so `pip_install` works.
 - **Allow another host:** add it to the allowlist, then run `docker compose restart egress`.
-- **Full network access for one workbench (internet and LAN):** add `default` to its `networks:`.
+- **Full network access for one workbench (internet and LAN):** tick **Internet and LAN access** on it under **Settings → Desktops & workbenches** (for one you run in compose: add `default` to its `networks:`).
 
 **Set one up:**
-1. Run `docker compose up -d --build workbench-1 egress`.
-2. Register `http://workbench-1:8770/mcp` as an HTTP tool server under **Settings → Tools**.
-3. Tick it on the agent that owns it.
-4. Its code tools already ask for approval (see the table above). Change that per tool under the server's **Approvals**.
-
-For another agent, copy the `workbench-1` block as `workbench-2`, with its own volume.
+1. Run `docker compose up -d --build egress` (it also builds the `agent-hq/workbench` image).
+2. Under **Settings → Desktops & workbenches**, click **+ Workbench**, or **+ Its own workbench** on the agent's page. See [Desktops and workbenches](#desktops-and-workbenches).
+3. Its code tools already ask for approval (see the table above). Change that per tool under its server's **Approvals** on **Settings → Tools**.
 
 ### Skills: know-how agents write down and improve
 
@@ -499,12 +496,29 @@ A rule on `*` covers every tool on that server that doesn't have its own rule. A
 
 The same table has a **Safe in tests** column. It decides which tools may run for real in an eval when a test case has no recording for the call. Tools the server marks read-only (`readOnlyHint`) start ticked. Only tools set to Allow ever run in a test.
 
-### Agent desktops
+### Desktops and workbenches
 
-To add another desktop, copy the `desktop-1` block in `docker-compose.yml`. Name it `desktop-2`, set `SUBFOLDER: /desktops/desktop-2/`, and give it its own `/config` volume. It needs no published port, and Caddy routes any `desktop-<number>` without changes. Then, in the UI:
-1. Register `http://desktop-2:8765/mcp` as an HTTP tool server, and tick **Controls an agent desktop** on it.
-2. Tick it on the agent that owns the desktop, and set that agent's **Desktop viewer URL** to `/desktops/desktop-2/`.
-3. Set that agent's pool to one served by a worker that can reach the desktop's network.
+Desktops and workbenches are **resources**: one container each, plus the tool servers it serves. You create them in the UI and give them to agents. Tools that aren't anyone's in particular, like MQTT or the web reader, stay plain tool servers. Tick **All agents** on one under **Settings → Tools** and every agent gets it without you ticking it on each.
+
+**Create one.** Under **Settings → Desktops & workbenches**, click **+ Desktop** or **+ Workbench**. Or, on an agent's page, click **+ Its own desktop** / **+ Its own workbench**. Agent HQ then:
+1. picks the next free name (`desktop-2`, `workbench-3`…);
+2. creates and starts the container through the Docker API, with the same settings as the `desktop-1` / `workbench-1` services in `docker-compose.yml` and a named volume `ahq-<name>` for its data;
+3. registers its tool servers: a desktop's screen (`:8765`) and browser (`:8931`, Playwright, unprefixed), or a workbench's `:8770`;
+4. ticks them on the agents you chose, and sets a desktop's **Desktop viewer URL** to `/desktops/<name>/` (Caddy routes any `desktop-<number>`).
+
+**Dedicated or shared.**
+- **Dedicated:** one agent's own. Agent HQ refuses to give it to another agent, whether from the Resources page or by ticking it on the agent's page.
+- **Shared:** any number of agents. A shared workbench is shared files. A shared desktop is used by **one conversation at a time**. The first desktop call takes it. Calls from other conversations wait up to `AHQ_DESKTOP_LEASE_WAIT` seconds (600) and then report it busy. It's let go when that run ends, or `AHQ_DESKTOP_LEASE_TTL` seconds (300) after its last desktop call. Agents delegating within the same conversation share it without waiting. **Take control** pauses the desktop for every agent that has it.
+
+On an agent's page, **Desktops & workbenches** lists them all: tick one to give it to the agent (all of its servers go together), and dedicated ones belonging to someone else are greyed out.
+
+**Running them.** The resource's page has **Start**, **Stop**, **Restart**, **Recreate** (a new container from the current image, same data, e.g. after `docker compose build desktop-1`) and **Delete**. Delete takes it from its agents and removes its tool servers and container. Its data volume goes only if you say so. Otherwise a new desktop with the same name picks it up again.
+
+**Docker access.** The `docker-proxy` service gives `hq`, and nothing else, a Docker API limited to containers, images, networks and volumes (`AHQ_DOCKER_URL=http://docker-proxy:2375`). The images come from compose: `desktop-1` builds `agent-hq/desktop:latest`, `workbench-1` builds `agent-hq/workbench:latest` (`AHQ_DESKTOP_IMAGE` / `AHQ_WORKBENCH_IMAGE`). Containers join `agent-hq_default` (desktops) or `agent-hq_workbench` (workbenches) under their name (`AHQ_RESOURCE_NETWORK` / `AHQ_WORKBENCH_NETWORK`, for another compose project name). Without Docker access, the page still registers tool servers and tracks resources, but you run the containers yourself. Anyone who controls `hq` can start containers on this host, so leave `docker-proxy` out if you'd rather not allow that.
+
+**Desktops you already run in compose.** The page lists `desktop-N` / `workbench-N` it finds (from tool servers pointing at those hosts, and from compose services) under **Import**. Importing makes each one a resource for its existing tool servers and agents. Compose keeps running the container: Start/Stop work, Recreate doesn't. To hand it over, delete its block from `docker-compose.yml`, then click **Take over**. Agent HQ replaces the container with its own, keeping the same data (bind mounts such as `./desktops/desktop-1` included). **Detach** forgets an imported one and leaves its tool servers as plain ones.
+
+**One host.** Resources run on the Docker host next to `hq`. The workers that run their agents must be on that host too (any pool there: compose workers reach both networks).
 
 Agents that use desktop tools need a vision-capable model. Anyone who can open a viewer can use whatever sessions the agent's browser is logged in to. That's why viewers are reachable only through Caddy, signed in to Agent HQ. For local development without Caddy, give the desktop `ports: ["3000:3000"]` and `SUBFOLDER: /`.
 
@@ -550,7 +564,7 @@ Register MCP servers on the **Settings → Tools** page:
 - **HTTP:** a URL like `http://perceptor:8811/mcp`
 - **stdio:** a command plus arguments, which is launched **on whichever worker runs the agent**, so it must be installed there
 
-Click **Test connection** to list the server's tools (this connects from the API host), then tick the server on any agent. Tool names are prefixed with the server name by default (`proxmox_list_vms`) so they never collide.
+Click **Test connection** to list the server's tools (this connects from the API host), then tick the server on any agent, or tick **All agents** on the server to give it to every agent (sub-agents included). Desktops and workbenches aren't registered here: create them under **Settings → Desktops & workbenches** (see [Desktops and workbenches](#desktops-and-workbenches)). Tool names are prefixed with the server name by default (`proxmox_list_vms`) so they never collide.
 
 The worker image is a slim Python image without `npx` or `uvx`, so published servers you'd normally start with those commands are easier to run as their own container and register over HTTP, the way the web reader below does.
 
@@ -564,7 +578,7 @@ The `web-reader` service (in `docker-compose.yml`, code in `webreader/`) gives a
 | `fetch_page(url, offset)` | A page's readable content as Markdown (the article or documentation, without menus, ads or scripts). Long pages come back in parts: call again with `next_offset`. |
 | `search_web(query, limit, time_range, categories)` | Results from **your own SearXNG**: titles, links, snippets. Only offered when `SEARXNG_URL` is set. |
 
-Register it under **Settings → Tools**: HTTP, `http://web-reader:8800/mcp`, untick **Prefix tool names**, leave **Controls an agent desktop** unticked. Then tick it on your researcher. A good split is for the researcher to use feeds, pages and search first, and delegate to the desktop agent only for pages that need a login, JavaScript, or actually looking at them (charts, dashboards).
+Register it under **Settings → Tools**: HTTP, `http://web-reader:8800/mcp`, untick **Prefix tool names**, leave **Controls an agent desktop** unticked. Then tick it on your researcher (or tick **All agents**). A good split is for the researcher to use feeds, pages and search first, and delegate to the desktop agent only for pages that need a login, JavaScript, or actually looking at them (charts, dashboards).
 
 **Behaviour:**
 - `fetch_page` honours `robots.txt` (`WEBREADER_RESPECT_ROBOTS=false` to turn that off) and returns at most `WEBREADER_MAX_CHARS` (12,000) characters per call.
@@ -596,7 +610,7 @@ The `mqtt-publisher` service (in `docker-compose.yml`, code in `mqttpublisher/`)
 1. On your broker, create a user for the publisher with **write access only to the topics you'll allow**. The broker then enforces the same limits as the publisher.
 2. In `.env`, set `MQTT_PUBLISH_URL=mqtt://agent-hq-pub:<password>@<broker>:1883` (`mqtts://` for TLS; for a step-ca certificate, mount your root certificate and set `MQTT_PUBLISH_CA_FILE`). Set `MQTT_PUBLISH_ALLOW` to the topic filters `publish` may use, for example `agent-hq/agents/#,homelab/cmd/#`.
 3. Run `docker compose up -d mqtt-publisher`.
-4. Under **Settings → Tools**, register HTTP `http://mqtt-publisher:8810/mcp`, untick **Prefix tool names**, and leave **Controls an agent desktop** unticked. Then tick it on the agents that should publish.
+4. Under **Settings → Tools**, register HTTP `http://mqtt-publisher:8810/mcp`, untick **Prefix tool names**, and leave **Controls an agent desktop** unticked. Then tick it on the agents that should publish, or tick **All agents** on it.
 
 **Safeguards:**
 - Topics with wildcards, broker system topics (`$SYS/…`) and anything matching `MQTT_PUBLISH_DENY` (default `agent-hq/notifications/#`, so agents can't fake your notifications) are refused.
@@ -1189,6 +1203,8 @@ backend/app/
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
   api/desktop.py     take control of an agent's desktop / hand it back
+  resources.py       desktops and workbenches: containers via the Docker API, dedicated/shared, leases
+  api/resources.py   Settings → Desktops & workbenches
   api/webhooks.py    webhook management (/api/webhooks) and deliveries (POST /hooks/<name>)
   llm.py             model providers: build an agent's model; list a provider's models
   chatgpt.py         ChatGPT plan providers: Sign in with ChatGPT, stored tokens, cross-worker refresh lock

@@ -137,7 +137,25 @@ export interface ToolServer {
   eval_live?: Record<string, boolean>;
   shown_tools?: string[];                    // empty = all
   read_only?: boolean;
+  all_agents?: boolean;                      // every agent gets it without ticking it
+  resource_id?: string | null;               // belongs to a desktop/workbench resource
 }
+
+export type ResourceKind = 'desktop' | 'workbench';
+export type ResourceScope = 'dedicated' | 'shared';
+export interface Resource {
+  id: string; name: string; kind: ResourceKind; scope: ResourceScope; description: string;
+  managed: boolean;            // false: adopted from docker-compose.yml, compose runs it
+  container: string; network_access: boolean;
+  status: 'new' | 'running' | 'stopped' | 'missing' | 'error' | 'unknown';
+  error: string | null; viewer_url: string | null;
+  servers: { id: string; name: string; url: string | null; desktop: boolean }[];
+  agents: { id: string; name: string }[];
+  in_use_by: { agent: string; thread_id: string } | null;  // shared desktop's lease
+}
+export interface Adoptable { name: string; kind: ResourceKind; servers: string[]; agents: string[]; }
+export interface ResourceList { docker: boolean; resources: Resource[]; adoptable: Adoptable[]; }
+export type ResourceAction = 'start' | 'stop' | 'restart' | 'recreate' | 'take-over';
 
 export type ApprovalMode = 'allow' | 'ask' | 'block';
 export interface ProbedTool {
@@ -346,7 +364,7 @@ export function blankSubscription(agent_id = ''): Subscription {
 
 export function blankServer(): ToolServer {
   return { name: '', description: '', transport: 'http', url: '', command: null, args: [],
-    env: {}, prefix_tools: true, desktop: false, enabled: true, approval_rules: {} };
+    env: {}, prefix_tools: true, desktop: false, all_agents: false, enabled: true, approval_rules: {} };
 }
 
 export interface KnowledgeSettings { recall: boolean; recall_count: number; min_score: number; chunk_chars: number; max_file_mb: number; agent_suggestions: boolean; }
@@ -588,6 +606,26 @@ export class Api {
                 : this.http.post<ToolServer>('/api/tool-servers', t);
   }
   deleteServer(id: string) { return this.http.delete(`/api/tool-servers/${id}`); }
+
+  resources() { return this.http.get<ResourceList>('/api/resources'); }
+  createResource(body: { kind: ResourceKind; scope: ResourceScope; description?: string;
+                         network_access?: boolean; agent_ids?: string[] }) {
+    return this.http.post<Resource>('/api/resources', body);
+  }
+  updateResource(id: string, body: { scope?: ResourceScope; description?: string; network_access?: boolean }) {
+    return this.http.put<Resource>(`/api/resources/${id}`, body);
+  }
+  assignResource(id: string, agentIds: string[]) {
+    return this.http.put<Resource>(`/api/resources/${id}/agents`, { agent_ids: agentIds });
+  }
+  resourceAction(id: string, action: ResourceAction) {
+    return this.http.post<Resource>(`/api/resources/${id}/${action}`, {});
+  }
+  deleteResource(id: string, removeData = false) {
+    return this.http.delete(`/api/resources/${id}`, { params: { remove_data: removeData } });
+  }
+  detachResource(id: string) { return this.http.post(`/api/resources/${id}/detach`, {}); }
+  adoptResources() { return this.http.post<Resource[]>('/api/resources/adopt', {}); }
   probeServer(id: string) {
     return this.http.get<ProbedTool[]>(`/api/tool-servers/${id}/tools`);
   }

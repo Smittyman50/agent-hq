@@ -80,6 +80,15 @@ def _check_limits(s: Session, body: AgentIn) -> dict[str, Any]:
     return {k: lim[k] for k in default_subagent_limits()}
 
 
+def _apply_resources(s: Session, agent_id: str | None, body: AgentIn) -> None:
+    """A desktop or workbench resource comes whole (all its servers), a dedicated one only
+    to its own agent, and a desktop fills in the viewer URL (app/resources.py)."""
+    from .. import resources
+
+    body.tool_server_ids = resources.check_agent_tools(s, agent_id, body.tool_server_ids)
+    body.desktop_url = resources.desktop_url_for(s, body.tool_server_ids, body.desktop_url)
+
+
 def _clear_other_defaults(s: Session, keep_id: str) -> None:
     for a in s.exec(select(AgentDef).where(AgentDef.is_default == True)).all():  # noqa: E712
         if a.id != keep_id:
@@ -125,6 +134,7 @@ def list_agents(include_subagents: bool = False, s: Session = Depends(get_sessio
 def create_agent(body: AgentIn, s: Session = Depends(get_session)):
     _check_name(s, body.name)
     _check_provider(s, body)
+    _apply_resources(s, None, body)
     a = AgentDef(**{**body.model_dump(), "subagent_limits": _check_limits(s, body)})
     s.add(a)
     if a.is_default:
@@ -148,7 +158,8 @@ def export_agents(s: Session = Depends(get_session)) -> dict[str, Any]:
     prov_by_id = {p.id: p.name for p in providers}
     return {
         "providers": [p.model_dump(exclude={"id", "created_at", "api_key", "oauth"}) for p in providers],
-        "tool_servers": [t.model_dump(exclude={"id", "created_at"}) for t in servers],
+        # A resource's servers travel as plain servers: its container is this host's.
+        "tool_servers": [t.model_dump(exclude={"id", "created_at", "resource_id"}) for t in servers],
         "agents": [
             {**a.model_dump(exclude={"id", "created_at", "updated_at", "tool_server_ids", "delegates",
                                      "provider_id", "vision_provider_id", "fallback_provider_id",
@@ -208,7 +219,8 @@ def import_agents(body: dict[str, Any], s: Session = Depends(get_session)) -> di
         existing = s.exec(select(ToolServer).where(ToolServer.name == t["name"])).first()
         row = existing or ToolServer(name=t["name"])
         for k, v in t.items():
-            setattr(row, k, v)
+            if k not in ("id", "created_at", "resource_id") and hasattr(row, k):
+                setattr(row, k, v)
         s.add(row)
     s.commit()
     servers = {t.name: t.id for t in s.exec(select(ToolServer)).all()}
@@ -288,6 +300,7 @@ def update_agent(agent_id: str, body: AgentIn, s: Session = Depends(get_session)
     _check_provider(s, body)
     if a.is_subagent:
         raise HTTPException(409, "sub-agents are temporary and can't be edited")
+    _apply_resources(s, agent_id, body)
     for k, v in {**body.model_dump(), "subagent_limits": _check_limits(s, body)}.items():
         setattr(a, k, v)
     a.updated_at = _now()
