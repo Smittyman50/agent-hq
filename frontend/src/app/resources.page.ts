@@ -78,33 +78,33 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         </div>
       </form>
     } @else if (selected(); as r) {
-      <div class="editor">
+      <form class="editor" (ngSubmit)="save(r)">
         <h2>{{ r.name }} <span class="pill">{{ r.kind }}</span>
           <span class="pill" [class.done]="r.status === 'running'" [class.failed]="r.status === 'error' || r.status === 'missing'">{{ r.status }}</span></h2>
         @if (r.error) { <p class="error">{{ r.error }}</p> }
         @if (error()) { <p class="error">{{ error() }}</p> }
 
-        <label>Description<input name="desc" [(ngModel)]="edit.description" (change)="saveDetails(r)"></label>
+        <label>Description<input name="desc" [(ngModel)]="edit.description"></label>
         <label>Scope
-          <select name="scope" [(ngModel)]="edit.scope" (ngModelChange)="saveDetails(r)">
+          <select name="scope" [(ngModel)]="edit.scope" (ngModelChange)="edit.scope === 'dedicated' && (edit.agent_ids = edit.agent_ids.slice(0, 1))">
             <option value="dedicated">Dedicated: one agent's own</option>
             <option value="shared">Shared: several agents{{ r.kind === 'desktop' ? ', one conversation at a time' : '' }}</option>
           </select></label>
         @if (r.kind === 'workbench') {
           <label class="check" title="Off: only PyPI, through the egress proxy">
-            <input type="checkbox" name="net" [(ngModel)]="edit.network_access" (ngModelChange)="saveDetails(r)"> Internet and LAN access</label>
+            <input type="checkbox" name="net" [(ngModel)]="edit.network_access"> Internet and LAN access</label>
         }
 
         <fieldset><legend>Agents</legend>
-          @if (r.scope === 'dedicated') {
-            <select name="owner" [ngModel]="r.agents[0]?.id ?? ''" (ngModelChange)="assign(r, $event ? [$event] : [])">
+          @if (edit.scope === 'dedicated') {
+            <select name="owner" [ngModel]="edit.agent_ids[0] ?? ''" (ngModelChange)="edit.agent_ids = $event ? [$event] : []">
               <option value="">Nobody</option>
               @for (a of agents(); track a.id) { <option [value]="a.id">{{ a.name }}</option> }
             </select>
           } @else {
             @for (a of agents(); track a.id) {
-              <label class="check"><input type="checkbox" [checked]="has(r, a.id!)"
-                (change)="assign(r, flip(r, a.id!))"> {{ a.name }}</label>
+              <label class="check"><input type="checkbox" [checked]="edit.agent_ids.includes(a.id!)"
+                (change)="toggle(edit.agent_ids, a.id!)"> {{ a.name }}</label>
             }
             @if (r.kind === 'desktop') {
               <p class="hint inline-hint">One conversation uses it at a time; others wait for it (up to 10 minutes by default).
@@ -116,6 +116,12 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
           }
         </fieldset>
 
+        <div class="actions">
+          <button type="submit" [disabled]="!dirty(r) || busy()">{{ busy() ? 'Saving…' : 'Save' }}</button>
+          <button type="button" class="ghost" (click)="revert(r)" [disabled]="!dirty(r) || busy()">Discard changes</button>
+          @if (dirty(r)) { <span class="muted small">Unsaved changes</span> } @else if (saved()) { <span class="muted small">Saved</span> }
+        </div>
+
         <fieldset><legend>Container</legend>
           <p class="hint inline-hint">
             @if (r.managed) { Agent HQ runs <code>{{ r.container || 'no container yet' }}</code>. <b>Recreate</b> makes a new
@@ -125,7 +131,7 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
               docker-compose.yml before your next <code>docker compose up</code>. }
           </p>
           <div class="actions">
-            @if (r.viewer_url) { <a class="button ghost" [href]="r.viewer_url" target="_blank">Open viewer</a> }
+            @if (r.viewer_url) { <button type="button" class="ghost" (click)="openViewer(r.viewer_url)">Open viewer</button> }
             @if (r.status === 'running') {
               <button type="button" class="ghost" (click)="act(r, 'restart')" [disabled]="busy()">Restart</button>
               <button type="button" class="ghost" (click)="act(r, 'stop')" [disabled]="busy()">Stop</button>
@@ -141,9 +147,11 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         </fieldset>
 
         <fieldset><legend>Tool servers</legend>
-          @for (t of r.servers; track t.id) {
-            <div><code>{{ t.name }}</code> <span class="muted small">{{ t.url }}</span></div>
-          }
+          <ul class="servers">
+            @for (t of r.servers; track t.id) {
+              <li><code>{{ t.name }}</code><span class="muted small">{{ t.url }}</span></li>
+            }
+          </ul>
           <p class="hint inline-hint">Set their approvals and shown tools on <a routerLink="/settings/tools">Tools</a>.</p>
         </fieldset>
 
@@ -153,7 +161,7 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
           }
           <button type="button" class="danger" (click)="remove(r)">Delete</button>
         </div>
-      </div>
+      </form>
     } @else {
       <div class="empty">Select a desktop or workbench, or create one. Each is a container of its own,
         dedicated to one agent or shared by several.</div>
@@ -164,9 +172,12 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
             .list { min-width: 280px; max-width: 460px; overflow-x: hidden; }
             .list-head .inline { display: flex; gap: 6px; flex-wrap: nowrap; }
             .list-head button { white-space: nowrap; }
+            .servers { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+            .servers li { display: flex; flex-direction: column; gap: 2px; }
+            fieldset .inline-hint { margin-top: 8px; }
             .adopt { display: flex; gap: 8px; align-items: center; margin: 6px 0 10px; }
             .adopt .hint { margin: 0; flex: 1; }
-            a.button { text-decoration: none; display: inline-block; }`],
+`],
 })
 export class ResourcesPage implements OnInit {
   private api = inject(Api);
@@ -178,8 +189,10 @@ export class ResourcesPage implements OnInit {
   creating = signal<NewResource | null>(null);
   busy = signal(false);
   error = signal('');
-  edit: { description: string; scope: ResourceScope; network_access: boolean } =
-    { description: '', scope: 'dedicated', network_access: false };
+  /** The form: nothing changes until Save. */
+  edit: { description: string; scope: ResourceScope; network_access: boolean; agent_ids: string[] } =
+    { description: '', scope: 'dedicated', network_access: false, agent_ids: [] };
+  saved = signal(false);
 
   selected = computed(() => this.list().find(r => r.id === this.selectedId()) ?? null);
   groups = computed(() => [
@@ -205,22 +218,34 @@ export class ResourcesPage implements OnInit {
   }
 
   select(r: Resource) {
-    this.creating.set(null); this.error.set('');
+    const cur = this.selected();
+    if (cur && cur.id !== r.id && this.dirty(cur) && !confirm(`Discard your unsaved changes to ${cur.name}?`)) return;
+    this.creating.set(null); this.error.set(''); this.saved.set(false);
     this.selectedId.set(r.id);
-    this.edit = { description: r.description, scope: r.scope, network_access: r.network_access };
+    this.revert(r);
+  }
+
+  revert(r: Resource) {
+    this.edit = { description: r.description, scope: r.scope, network_access: r.network_access,
+                  agent_ids: r.agents.map(a => a.id) };
+  }
+
+  dirty(r: Resource) {
+    const e = this.edit, ids = r.agents.map(a => a.id);
+    return e.description !== r.description || e.scope !== r.scope || e.network_access !== r.network_access
+      || e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i));
   }
 
   startNew(kind: ResourceKind) {
+    const cur = this.selected();
+    if (cur && this.dirty(cur) && !confirm(`Discard your unsaved changes to ${cur.name}?`)) return;
     this.error.set(''); this.selectedId.set(null);
     this.creating.set({ kind, scope: 'dedicated', description: '', network_access: false, agent_ids: [] });
   }
 
+  openViewer(url: string) { window.open(url, '_blank', 'noopener'); }
+
   agentNames(r: Resource) { return r.agents.map(a => a.name).join(', '); }
-  has(r: Resource, id: string) { return r.agents.some(a => a.id === id); }
-  flip(r: Resource, id: string) {
-    const ids = r.agents.map(a => a.id);
-    return ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id];
-  }
   toggle(list: string[], id: string) { const i = list.indexOf(id); i >= 0 ? list.splice(i, 1) : list.push(id); }
 
   private fail = (e: any) => { this.busy.set(false); this.error.set(e.error?.detail ?? 'That didn\'t work'); };
@@ -234,19 +259,26 @@ export class ResourcesPage implements OnInit {
     });
   }
 
-  saveDetails(r: Resource) {
-    queueMicrotask(() => {
-      this.error.set('');
-      this.api.updateResource(r.id, this.edit).subscribe({
-        next: x => { this.put(x); this.edit = { description: x.description, scope: x.scope, network_access: x.network_access }; },
-        error: e => { this.fail(e); this.edit = { description: r.description, scope: r.scope, network_access: r.network_access }; },
-      });
-    });
-  }
-
-  assign(r: Resource, ids: string[]) {
-    this.error.set('');
-    this.api.assignResource(r.id, ids).subscribe({ next: x => this.put(x), error: e => { this.fail(e); this.load(); } });
+  /** Save the form. Going shared, the scope changes before more agents are added; going
+   *  dedicated, the extra agents are taken off first. */
+  save(r: Resource) {
+    const e = { ...this.edit, agent_ids: [...this.edit.agent_ids] };
+    const details = { description: e.description, scope: e.scope, network_access: e.network_access };
+    const ids = r.agents.map(a => a.id);
+    const agentsChanged = e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i));
+    const update = () => this.api.updateResource(r.id, details);
+    const assign = () => this.api.assignResource(r.id, e.agent_ids);
+    const [first, second] = e.scope === 'shared' ? [update, assign] : [assign, update];
+    const steps = agentsChanged ? [first, second] : [update];
+    this.busy.set(true); this.error.set(''); this.saved.set(false);
+    const run = (i: number, last: Resource) => {
+      if (i === steps.length) {
+        this.busy.set(false); this.put(last); this.revert(last); this.saved.set(true);
+        return;
+      }
+      steps[i]().subscribe({ next: x => run(i + 1, x), error: err => { this.fail(err); this.load(); } });
+    };
+    run(0, r);
   }
 
   act(r: Resource, action: ResourceAction) {
