@@ -1,8 +1,9 @@
-"""Self-forming teams on standing goals: an agent allowed sub-agents, with a team size above
-1, hands startable next actions to sub-agents that work them in parallel. Dependencies
-between actions, team slots, results landing on actions (no report turns), a failed result
-blocking its action for the lead, the runner waiting on the team only when the lead has
-nothing to do, the done check, approval mode, and Stop."""
+"""Self-forming teams on standing goals: an agent with a team size above 1 hands startable
+next actions to team members that work them in parallel: its existing agents
+(delegate_action) and sub-agents (assign_action). Dependencies between actions, team slots,
+results landing on actions (no report turns), a failed result blocking its action for the
+lead, the runner waiting on the team only when the lead has nothing to do, the done check,
+approval mode, Stop, and one action per agent per goal."""
 
 from __future__ import annotations
 
@@ -17,7 +18,8 @@ from app.models import Job, JobKind, WorkItem, WorkStatus
 
 from .conftest import SCRIPTS, _last_prompt, _tool_returns
 
-TEAM: dict = {"fail": set(), "tasks": [], "delay": 1.0, "tools": [], "roles": {}, "assigned": []}
+TEAM: dict = {"fail": set(), "tasks": [], "delay": 1.0, "tools": [], "roles": {}, "assigned": [],
+              "agents": []}
 
 
 def _returns(messages) -> dict:
@@ -100,6 +102,40 @@ async def team_lead(messages, info):
 
 SCRIPTS["team-lead"] = team_lead
 
+
+async def agent_lead(messages, info):
+    """Like team_lead, but hands the two audits to existing agents with delegate_action
+    (names in TEAM["agents"]). As a team member it answers the same way."""
+    prompt = _last_prompt(messages)
+    if prompt.startswith("You're on") or not prompt.startswith("[Goal turn") or "(none yet" not in prompt:
+        return await team_lead(messages, info)
+    if info.function_tools:
+        TEAM["tools"].append(sorted(t.name for t in info.function_tools))
+    name, content = _last(messages)
+    got = _returns(messages)
+    adds = got.get("add_action", [])
+    if name is None:
+        return ModelResponse(parts=[ToolCallPart("add_action", {"title": "Audit core switch"})])
+    if name == "add_action" and len(adds) == 1:
+        return ModelResponse(parts=[ToolCallPart("add_action", {"title": "Audit edge switch"})])
+    if name == "add_action" and len(adds) == 2:
+        return ModelResponse(parts=[ToolCallPart("add_action", {
+            "title": "Write the VLAN notes", "after": [adds[0]["action_id"], adds[1]["action_id"]]})])
+    core_to, edge_to = TEAM["agents"]
+    if name == "add_action" and len(adds) == 3:
+        return ModelResponse(parts=[ToolCallPart("delegate_action", {
+            "action_id": adds[0]["action_id"], "agent_name": core_to, "instructions": "Use SNMP."})])
+    if name == "delegate_action" and len(got["delegate_action"]) == 1:
+        TEAM["assigned"].append(content)
+        return ModelResponse(parts=[ToolCallPart("delegate_action", {
+            "action_id": adds[1]["action_id"], "agent_name": edge_to})])
+    if name == "delegate_action":
+        TEAM["assigned"].append(content)
+    return ModelResponse(parts=[TextPart(f"Team at work: {content}")])
+
+
+SCRIPTS["agent-lead"] = agent_lead
+
 LIMITS = {"concurrent": 3, "per_task": 3, "per_day": 20, "max_minutes": 5, "max_requests": 10}
 
 
@@ -144,7 +180,7 @@ def _all_goals():
 
 
 def _reset():
-    TEAM.update(fail=set(), tasks=[], delay=1.0, tools=[], roles={}, assigned=[])
+    TEAM.update(fail=set(), tasks=[], delay=1.0, tools=[], roles={}, assigned=[], agents=[])
 
 
 # --------------------------------------------------------------------------- the loop
@@ -161,7 +197,7 @@ async def test_team_works_parallel_actions_then_the_lead_finishes(hq):
     assert notes.depends_on == [core.id, edge.id] and notes.status == WorkStatus.backlog
     assert wi.on_team(core) and wi.on_team(edge) and core.assignee_agent_id != edge.assignee_agent_id
     card = wi.card(_g(g["id"]))
-    assert card["team"] == {"size": 3, "working": 2, "free_slots": 0}
+    assert card["team"] == {"size": 3, "working": 2, "free_slots": 0, "agents": [], "sub_agents": True}
     by_id = {a["id"]: a for a in card["actions"]}
     assert by_id[notes.id]["waiting_for"] == [core.id, edge.id]
     assert by_id[core.id]["worked_by"].startswith("Core auditor (Mainframe #")
@@ -240,7 +276,7 @@ async def test_dependencies_and_team_slots(hq):
         wi.set_action(g["id"], a.id, WorkStatus.done, actor="x")
         raise AssertionError("the lead finished its team's action")
     except wi.WorkError as e:
-        assert "sub-agent on your team is working" in str(e)
+        assert "team member is working" in str(e)
     # A reservation that couldn't become a sub-agent is released.
     wi.release_team(g["id"], a.id)
     assert _acts(g["id"])["First"].status == WorkStatus.backlog and not _acts(g["id"])["First"].job_id
@@ -375,3 +411,157 @@ async def test_the_lead_says_why_no_existing_agent_will_do(hq):
     out = await assign(ctx, a.id, "Helper", "dunno")
     assert out["status"] == "refused" and "why none of the existing agents" in out["summary"]
     assert _acts(g["id"])["First"].status == WorkStatus.backlog and not _acts(g["id"])["First"].job_id
+
+
+# --------------------------------------------------------------------------- existing agents
+
+async def _crew(hq) -> tuple[dict, dict]:
+    breaker = await hq.agent(name="Breaker", description="Network switches and routers",
+                             model="fake:team-lead", pronouns="he/him")
+    lifeline = await hq.agent(name="Lifeline", description="Monitoring and alerts",
+                              model="fake:team-lead")
+    return breaker, lifeline
+
+
+async def test_existing_agents_work_actions_in_parallel(hq):
+    """A lead with agents to delegate to and no sub-agents still forms a team: it hands
+    actions to its own agents with delegate_action, keeps working, and their results land on
+    the actions (no report turns), shown as its agents rather than sub-agents."""
+    _reset()
+    await hq.start_worker(concurrency=6)
+    breaker, lifeline = await _crew(hq)
+    TEAM["agents"] = ["Breaker", "Lifeline"]
+    lead = await hq.agent(name="Mainframe", model="fake:agent-lead", goal_team_size=3,
+                          delegates=[breaker["id"], lifeline["id"]])
+    from app.runtime import load_agent
+    assert wi.team_size(load_agent(lead["id"])) == 3
+    g = await _goal(hq, lead["id"])
+    await run_until(hq, lambda: (_g(g["id"]).waiting_on or {}).get("kind") == "team")
+    acts = _acts(g["id"])
+    core, edge = acts["Audit core switch"], acts["Audit edge switch"]
+    assert wi.on_team(core) and wi.on_team(edge)
+    assert (core.assignee_agent_id, edge.assignee_agent_id) == (breaker["id"], lifeline["id"])
+    # The lead got delegate_action, not assign_action (it can't create sub-agents).
+    assert "delegate_action" in TEAM["tools"][0] and "assign_action" not in TEAM["tools"][0]
+    assert all(c["ok"] for c in TEAM["assigned"][:2])
+    card = wi.card(_g(g["id"]))
+    assert card["team"] == {"size": 3, "working": 2, "free_slots": 0,
+                            "agents": ["Breaker", "Lifeline"], "sub_agents": False}
+    by_id = {a["id"]: a for a in card["actions"]}
+    assert by_id[core.id]["worked_by"] == "Breaker" and by_id[core.id]["member"] == "agent"
+    assert "Breaker (your agent)" in wi.card_prompt(_g(g["id"]))
+    assert "delegate_action" in wi.card_prompt(_g(g["id"])) and "assign_action" not in wi.card_prompt(_g(g["id"]))
+    # Breaker got the goal, its action and the lead's instructions, as a delegated task.
+    jobs = [j for j in hq.jobs() if (j.meta or {}).get("goal_action")]
+    assert {j.assignee_agent_id for j in jobs} == {breaker["id"], lifeline["id"]}
+    assert all(j.kind == JobKind.task and j.background and j.requester_agent_id == lead["id"] for j in jobs)
+    core_job = next(j for j in jobs if j.assignee_agent_id == breaker["id"])
+    assert "Your action: Audit core switch" in core_job.task and "Use SNMP." in core_job.task
+    # The conversation shows the hand-over as a delegation card with the short version.
+    cards = [m for m in hq.messages(_g(g["id"]).thread_id) if (m.meta or {}).get("kind") == "delegation_result"]
+    assert any((m.meta or {}).get("task") == "Audit core switch\n\nUse SNMP." for m in cards)
+    # Results land, the lead finishes the notes and claims done; no report turns.
+    await run_until(hq, lambda: _g(g["id"]).status == WorkStatus.review)
+    acts = _acts(g["id"])
+    assert acts["Audit core switch"].status == WorkStatus.done
+    assert acts["Audit core switch"].result.startswith("found 3 VLANs for Audit core switch")
+    assert acts["Write the VLAN notes"].status == WorkStatus.done
+    assert any(e.actor == "Lifeline" and e.text.startswith("Done: Audit edge switch")
+               for e in wi.events(g["id"]))
+    assert any(e.text == "Assigned to Breaker: Audit core switch" for e in wi.events(g["id"]))
+    reports = [j for j in hq.jobs() if j.kind == JobKind.turn and (j.meta or {}).get("report_for")]
+    assert reports == []
+    d = (await hq.http.get(f"/api/work-items/{g['id']}")).json()
+    by_title = {a["title"]: a for a in d["actions"]}
+    assert by_title["Audit core switch"]["assignee"] == "Breaker"
+    assert by_title["Audit core switch"]["assignee_kind"] == "agent"
+    assert d["team_agents"] == ["Breaker", "Lifeline"] and d["team_sub_agents"] is False
+
+
+async def test_delegate_action_rules(hq):
+    """Only your own agents, one action each per goal, and a refusal leaves nothing reserved."""
+    from types import SimpleNamespace
+
+    breaker, lifeline = await _crew(hq)
+    await hq.agent(name="Stranger", model="fake:worker")
+    lead = await hq.agent(name="Mainframe", model="fake:agent-lead", goal_team_size=3,
+                          delegates=[breaker["id"], lifeline["id"]])
+    g = await _goal(hq, lead["id"])
+    wi.pull(lead["id"])
+    a = wi.new_action(g["id"], "First", actor="x")
+    b = wi.new_action(g["id"], "Second", actor="x")
+    c = wi.new_action(g["id"], "Third", actor="x", after=[a.id])
+    ts = wi.goal_toolset(hq.runtime, team=True, sub_agents=False, agents=True)
+    assert "delegate_action" in ts.tools and "assign_action" not in ts.tools
+    hand = ts.tools["delegate_action"].function
+    ctx = SimpleNamespace(deps=SimpleNamespace(agent_id=lead["id"], thread_id=_g(g["id"]).thread_id,
+                                               depth=0, chain=[lead["id"]], job_id=None))
+    out = await hand(ctx, a.id, "Stranger")
+    assert out["status"] == "refused" and "isn't one of your agents" in out["summary"]
+    assert "Breaker, Lifeline" in out["summary"]
+    out = await hand(ctx, c.id, "Breaker")
+    assert out["status"] == "refused" and "comes after 'First'" in out["summary"]
+    out = await hand(ctx, a.id, "breaker")  # names match case-insensitively
+    assert out["ok"] and out["agent"] == "Breaker"
+    out = await hand(ctx, b.id, "Breaker")
+    assert out["status"] == "refused" and "Breaker is already working on 'First'" in out["summary"]
+    second = _acts(g["id"])["Second"]
+    assert second.status == WorkStatus.backlog and not second.job_id and second.assignee_agent_id is None
+    out = await hand(ctx, b.id, "Lifeline")
+    assert out["ok"]
+    # The lead can't take over its team's action, and claim_done waits for them.
+    try:
+        wi.set_action(g["id"], a.id, WorkStatus.done, actor="x")
+        raise AssertionError("the lead finished its team's action")
+    except wi.WorkError as e:
+        assert "team member is working" in str(e)
+    out = await ts.tools["claim_done"].function(ctx, "all done")
+    assert "team is still working" in out["error"]
+
+
+async def test_team_size_with_agents(hq):
+    """Agents to delegate to are enough for a team, without sub-agents; and with agents on
+    the team, the sub-agent "At once" limit doesn't cap its size (spawning still checks it)."""
+    from app.runtime import load_agent
+
+    breaker, _ = await _crew(hq)
+    only_agents = await hq.agent(name="Lead A", model="fake:team-lead", goal_team_size=4,
+                                 delegates=[breaker["id"]])
+    assert wi.team_size(load_agent(only_agents["id"])) == 4
+    everyone = await hq.agent(name="Lead B", model="fake:team-lead", goal_team_size=4, delegates=["*"],
+                              subagent_mode="allowed", subagent_limits={**LIMITS, "concurrent": 1})
+    assert wi.team_size(load_agent(everyone["id"])) == 4
+    agent = load_agent(everyone["id"])
+    assert {x.name for x in wi.team_agents(agent)} >= {"Breaker", "Lifeline", "Lead A"}
+    # Delegates that are all disabled don't make a team.
+    from app.models import AgentDef
+    with db.session() as s:
+        row = s.get(AgentDef, breaker["id"])
+        row.enabled = False
+        s.add(row)
+        s.commit()
+    assert wi.team_size(load_agent(only_agents["id"])) == 1
+
+
+async def test_a_duplicate_sub_agent_points_to_delegate_action(hq, monkeypatch):
+    """When a sub-agent would duplicate one of the lead's agents, the refusal says to hand
+    the action to that agent with delegate_action."""
+    from types import SimpleNamespace
+    from app import subagents
+
+    async def fake_embed(texts, is_query):
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(subagents, "_embed", fake_embed)
+    breaker, _ = await _crew(hq)
+    lead = await _lead(hq, delegates=[breaker["id"]])
+    g = await _goal(hq, lead["id"])
+    wi.pull(lead["id"])
+    a = wi.new_action(g["id"], "Audit the switches", actor="x")
+    assign = wi.goal_toolset(hq.runtime, team=True, agents=True).tools["assign_action"].function
+    ctx = SimpleNamespace(deps=SimpleNamespace(agent_id=lead["id"], thread_id=_g(g["id"]).thread_id,
+                                               depth=0, chain=[lead["id"]], job_id=None, cautious=False))
+    out = await assign(ctx, a.id, "Breaker helper", "None of them has time for it today.")
+    assert out["status"] == "refused" and "would duplicate Breaker" in out["summary"]
+    assert "delegate_action" in out["summary"]
+    assert _acts(g["id"])["Audit the switches"].status == WorkStatus.backlog

@@ -82,7 +82,7 @@ function blankGoal(agentId = ''): GoalIn {
                         @if (g.status === 'waiting' && g.waiting_on) { <span class="muted">on {{ waitLabel(g) }}</span> }
                         @if (g.priority > 0) { <span class="pill">P{{ g.priority }}</span> }
                         @if (g.actions_total) { <span class="muted">{{ g.actions_done }}/{{ g.actions_total }} actions</span> }
-                        @if (g.team_working) { <span class="pill team" [title]="g.team_working + ' sub-agent(s) on its team working'">team ×{{ g.team_working }}</span> }
+                        @if (g.team_working) { <span class="pill team" [title]="g.team_working + ' team member(s) working'">team ×{{ g.team_working }}</span> }
                       </span>
                       @if (g.current_action) { <span class="tile-now">▸ {{ g.current_action }}</span> }
                     </button>
@@ -175,14 +175,15 @@ function blankGoal(agentId = ''): GoalIn {
           }
 
           <h3>Next actions <small>{{ g.actions_done }}/{{ g.actions_total }} done ·
-            @if (g.team_size > 1) { team of {{ g.team_size }}: {{ g.agent_name }} + {{ g.team_size - 1 }} sub-agent(s), {{ g.team_working }} working }
+            @if (g.team_size > 1) { team of {{ g.team_size }}: {{ g.agent_name }} + {{ g.team_size - 1 }} at once
+              ({{ teamFrom(g) }}), {{ g.team_working }} working }
             @else { one at a time }</small></h3>
           <ul class="goal-actions">
             @for (a of g.actions; track a.id) {
               <li [class]="'act-' + a.status + (a.on_team ? ' act-team' : '')">
                 <span class="act-mark">{{ a.on_team ? '⇉' : mark(a.status) }}</span>
                 <span class="act-body"><span class="act-title">{{ a.title }}</span>
-                  @if (a.assignee) { <span class="sub act-who">{{ a.on_team ? 'working: ' : 'by ' }}{{ a.assignee }} <span class="pill sub">sub-agent</span></span> }
+                  @if (a.assignee) { <span class="sub act-who">{{ a.on_team ? 'working: ' : 'by ' }}{{ a.assignee }} <span class="pill sub">{{ a.assignee_kind === 'agent' ? 'agent' : 'sub-agent' }}</span></span> }
                   @if (a.waiting_for.length) { <span class="sub act-after">waits for {{ titlesOf(g, a.waiting_for) }}</span> }
                   @else if (a.after.length && a.status === 'backlog') { <span class="sub act-after">after {{ titlesOf(g, a.after) }} (done)</span> }
                   @if (a.details) { <span class="sub">{{ a.details }}</span> }
@@ -194,7 +195,7 @@ function blankGoal(agentId = ''): GoalIn {
                   }
                   @if (a.status !== 'done' && a.status !== 'dropped') {
                     <button class="mini ghost" (click)="setAction(g, a.id, 'dropped')"
-                            [title]="a.on_team ? 'Drop it (a late result from its sub-agent is ignored)' : 'Drop'">✕</button>
+                            [title]="a.on_team ? 'Drop it (a late result from its team member is ignored)' : 'Drop'">✕</button>
                   }
                 </span>
               </li>
@@ -311,6 +312,10 @@ export class BoardPage implements OnInit, OnDestroy {
         : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
     }
     return WAITING[w?.kind ?? ''] ?? w?.kind;
+  }
+  teamFrom(g: GoalDetail) {
+    const who = [...g.team_agents, ...(g.team_sub_agents ? ['sub-agents'] : [])];
+    return who.length > 1 ? who.slice(0, -1).join(', ') + ' or ' + who[who.length - 1] : (who[0] ?? 'sub-agents');
   }
   titlesOf(g: GoalDetail, ids: string[]) {
     return ids.map(id => g.actions.find(a => a.id === id)?.title ?? id).join(', ');

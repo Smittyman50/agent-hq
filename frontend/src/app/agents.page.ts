@@ -139,13 +139,14 @@ import { Avatar } from './avatar';
             action at a time. Goals that are in progress, waiting or blocked count. 0 = it takes no goals.</p>
           <label class="inline-num">Team size (parallel actions per goal)
             <input name="goalteam" type="number" min="1" max="10" [(ngModel)]="d.goal_team_size"
-                   [disabled]="d.subagent_mode === 'off'"></label>
+                   [disabled]="d.subagent_mode === 'off' && !d.delegates.length"></label>
           <p class="hint inline-hint">
-            @if (d.subagent_mode === 'off') { Turn on sub-agents below to let it form a team. }
-            @else { Itself plus up to {{ (d.goal_team_size ?? 1) - 1 }} sub-agent(s) working other next actions of
-              the same goal in parallel, within its sub-agent limits{{ d.subagent_mode === 'ask' ? ' and after you approve its request' : '' }}.
+            @if (d.subagent_mode === 'off' && !d.delegates.length) { Give it agents to delegate to above, or turn on sub-agents below, to let it form a team. }
+            @else { Itself plus up to {{ (d.goal_team_size ?? 1) - 1 }} team member(s) working other next actions of
+              the same goal in parallel{{ d.delegates.length ? ': the agents it can delegate to first, each on one action at a time' : '' }}{{
+              d.subagent_mode !== 'off' ? (d.delegates.length ? ', then sub-agents' : ': sub-agents') + ' within its sub-agent limits' + (d.subagent_mode === 'ask' ? ' and after you approve its request' : '') : '' }}.
               1 = no team. You still confirm when a goal is done.
-              @if (d.subagent_mode === 'allowed' && (d.goal_team_size ?? 1) - 1 > (d.subagent_limits.concurrent ?? 1)) {
+              @if (d.subagent_mode === 'allowed' && !d.delegates.length && (d.goal_team_size ?? 1) - 1 > (d.subagent_limits.concurrent ?? 1)) {
                 <span class="warn-line">Its sub-agent limit allows {{ d.subagent_limits.concurrent }} at once, so the team
                   is {{ 1 + (d.subagent_limits.concurrent ?? 1) }} until you raise “At once” below.</span> } }</p>
         </fieldset>

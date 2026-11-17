@@ -39,7 +39,7 @@ export interface AgentDef {
   use_profile?: boolean;
   context_window?: number | null;
   goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
-  goal_team_size?: number; // parallel next actions per goal: itself + sub-agents (needs sub-agents on)
+  goal_team_size?: number; // parallel next actions per goal: itself + its agents and sub-agents (needs delegates or sub-agents)
   is_subagent?: boolean;
 }
 
@@ -434,12 +434,13 @@ export interface Goal {
   needs_you: 'review' | 'proposal' | 'blocked' | 'question' | null;
   limits: GoalLimits; custom_limits: Partial<GoalLimits>; turns: number; stalled_turns: number;
   result: string; review_note: string; actions_total: number; actions_done: number; current_action: string | null;
-  team_size: number; team_working: number;
+  team_size: number; team_working: number; team_agents: string[]; team_sub_agents: boolean;
   created_at: string; updated_at: string; started_at: string | null; finished_at: string | null;
 }
 export interface GoalAction { id: string; title: string; details: string; status: WorkStatus; label: string;
   result: string; position: number; started_at: string | null; finished_at: string | null;
-  after: string[]; waiting_for: string[]; startable: boolean; on_team: boolean; assignee: string | null; }
+  after: string[]; waiting_for: string[]; startable: boolean; on_team: boolean; assignee: string | null;
+  assignee_kind: 'agent' | 'sub-agent' | null; }
 export interface GoalEvent { id: string; at: string; actor: string; kind: string; text: string; action_id: string | null; }
 export interface GoalDetail extends Goal { actions: GoalAction[]; events: GoalEvent[]; requests_used: number; default_limits: GoalLimits; }
 export interface BoardLane { id: string; name: string; goal_wip: number; wip_used: number; enabled: boolean; }

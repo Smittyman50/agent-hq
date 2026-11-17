@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import col, select
 
-from .. import db, workitems as wi
-from ..models import AgentDef, Role, WorkItem, WorkStatus
+from .. import db, subagents, workitems as wi
+from ..models import AgentDef, Role, SubagentMode, WorkItem, WorkStatus
 
 router = APIRouter(tags=["board"])
 
@@ -22,6 +22,7 @@ def _iso(dt: datetime | None) -> str | None:
 def _goal_out(g: WorkItem, agents: dict[str, AgentDef], acts: list[WorkItem] | None = None) -> dict:
     acts = wi.actions(g.id) if acts is None else acts
     agent = agents.get(g.owner_agent_id or "")
+    size = wi.team_size(agent)
     current = next((a for a in acts if a.status == WorkStatus.in_progress and not a.job_id), None)
     return {
         "id": g.id, "kind": g.kind, "title": g.title, "objective": g.objective,
@@ -36,28 +37,36 @@ def _goal_out(g: WorkItem, agents: dict[str, AgentDef], acts: list[WorkItem] | N
         "actions_total": len([a for a in acts if a.status != WorkStatus.dropped]),
         "actions_done": len([a for a in acts if a.status == WorkStatus.done]),
         "current_action": current.title if current else None,
-        "team_size": wi.team_size(agent), "team_working": sum(1 for a in acts if wi.on_team(a)),
+        "team_size": size, "team_working": sum(1 for a in acts if wi.on_team(a)),
+        # Who the lead can put on the team: its own agents, and sub-agents if it's allowed them.
+        "team_agents": [x.name for x in wi.team_agents(agent)] if size > 1 else [],
+        "team_sub_agents": size > 1 and agent is not None
+        and subagents.mode_of(agent) != SubagentMode.off,
         "created_at": _iso(g.created_at), "updated_at": _iso(g.updated_at),
         "started_at": _iso(g.started_at), "finished_at": _iso(g.finished_at),
     }
 
 
-def _action_out(a: WorkItem, acts: list[WorkItem], names: dict[str, str]) -> dict:
+def _action_out(a: WorkItem, acts: list[WorkItem], names: dict[str, AgentDef]) -> dict:
     waiting = wi.unmet(a, acts) if a.status == WorkStatus.backlog else []
     return {"id": a.id, "title": a.title, "details": a.objective, "status": a.status.value,
             "label": wi.LABELS[a.status], "result": a.result, "position": a.position,
             "after": list(a.depends_on or []), "waiting_for": [d.id for d in waiting],
             "startable": wi.startable(a, acts), "on_team": wi.on_team(a),
-            "assignee": (names.get(a.assignee_agent_id) or "a sub-agent") if a.assignee_agent_id else None,
+            "assignee": (m.name if (m := names.get(a.assignee_agent_id)) else "a sub-agent")
+            if a.assignee_agent_id else None,
+            # One of the lead's own agents (delegate_action) or a sub-agent (assign_action).
+            "assignee_kind": ("agent" if (m := names.get(a.assignee_agent_id)) and not m.is_subagent
+                              else "sub-agent") if a.assignee_agent_id else None,
             "started_at": _iso(a.started_at), "finished_at": _iso(a.finished_at)}
 
 
-def _names(acts: list[WorkItem]) -> dict[str, str]:
+def _names(acts: list[WorkItem]) -> dict[str, AgentDef]:
     ids = [a.assignee_agent_id for a in acts if a.assignee_agent_id]
     if not ids:
         return {}
     with db.session() as s:
-        return {x.id: x.name for x in s.exec(select(AgentDef).where(col(AgentDef.id).in_(ids))).all()}
+        return {x.id: x for x in s.exec(select(AgentDef).where(col(AgentDef.id).in_(ids))).all()}
 
 
 def _agents() -> dict[str, AgentDef]:

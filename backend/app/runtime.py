@@ -951,6 +951,12 @@ class Runtime:
         await self._finish_task(job, result)
 
     async def _finish_task(self, job: Job, result: WorkResult) -> None:
+        team = bool((job.meta or {}).get("goal_action"))
+        if team:
+            # A goal team member: its result goes on its action (app/workitems.py) first,
+            # since the job already shows as finished and the goal runner must not see a
+            # finished team job whose action is still being worked.
+            workitems.team_result(job, result.status, result.summary, result.details)
         skills.finish_job(job.id, result.status)
         learning.job_finished(job.id, result.status)
         assignee = load_agent(job.assignee_agent_id)
@@ -978,9 +984,6 @@ class Runtime:
                 background=job.background, depth=job.depth,
                 started_at=job.created_at.isoformat() if job.created_at else None)
         await self._capture_delegation(job, assignee, result)
-        team = bool((job.meta or {}).get("goal_action"))
-        if team:  # a goal team member: its result goes on its action (app/workitems.py)
-            workitems.team_result(job, result.status, result.summary, result.details)
         if assignee.is_subagent:
             subagents.retire(assignee.id)  # one task each; frees the slot for the next
         # Wake a waiting delegator, if there is one.
@@ -1076,7 +1079,10 @@ class Runtime:
             goal = workitems.goal_for_thread(thread_id)
             if goal is not None and goal.owner_agent_id == agent.id:
                 instructions.append(workitems.GOAL_RULES)
-                toolsets.append((workitems.goal_toolset(self, team=workitems.team_size(agent) > 1), None))
+                toolsets.append((workitems.goal_toolset(
+                    self, team=workitems.team_size(agent) > 1,
+                    sub_agents=mode != SubagentMode.off,
+                    agents=bool(workitems.team_agents(agent))), None))
         if not agent.is_subagent:
             instructions.append(workitems.PROPOSE_RULES)
             toolsets.append((workitems.propose_toolset(self), None))
@@ -2166,6 +2172,27 @@ class Runtime:
         return row
 
     # ------------------------------------------------------------ sub-agent tools
+
+    async def delegate_action(self, deps: RunDeps, me: AgentDef, target: AgentDef, *,
+                              task: str, shown: str, extra_meta: dict[str, Any]) -> Job:
+        """Queue a background task for one of `me`'s agents, shown in the conversation as a
+        delegation card (`shown` is the short version). Used by goal teams
+        (app/workitems.py delegate_action): with `goal_action` in its meta, the result goes
+        onto that action instead of into a report turn."""
+        chain = list(getattr(deps, "chain", None) or [me.id])
+        depth = int(getattr(deps, "depth", 0) or 0) + 1
+        job = Job(
+            kind=JobKind.task, origin_thread_id=deps.thread_id, requester_agent_id=me.id,
+            assignee_agent_id=target.id, parent_job_id=getattr(deps, "job_id", None), task=task,
+            background=True, depth=depth, chain=[*chain, target.id], pool=target.pool,
+            meta={**extra_meta, **({"cautious": True} if getattr(deps, "cautious", False) else {})})
+        msg = await self.save_message(
+            deps.thread_id, Role.event, f"{me.name} → {target.name}: {shown}",
+            agent_id=target.id, kind="delegation_result", job_id=job.id, status="queued",
+            task=shown, requester_id=me.id, requester=me.name, assignee=target.name,
+            background=True, depth=depth, started_at=_now().isoformat())
+        job.meta = {**(job.meta or {}), "message_id": msg.id}
+        return await self._submit(job)
 
     async def spawn(self, deps: RunDeps, me: AgentDef, *, role: str, task: str,
                     why_not_existing_agents: str, instructions: str = "", model: str | None = None,

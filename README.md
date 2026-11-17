@@ -323,6 +323,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
 - deleting agents: only once disabled, never with work in flight, removing what it owns while keeping usage, team memories and skills, and returning its goals to the backlog
 - sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
 - sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
+- goal teams: your agents (delegate_action) and sub-agents (assign_action) working actions in parallel, dependencies, team slots, one action per agent per goal, results landing on actions with no report turns, a failed result blocking its action, waiting on the team, the done check, approval mode, duplicate refusals pointing to your agent, and Stop
 - workbenches and tool approvals: allow/ask/block per tool, waiting for a decision, "don't ask again", timeouts, and a real workbench over MCP
 - skills: matching, loading, outcomes, versions and rollback, proposals in propose/auto/off modes, diffs and stale warnings
 - the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
@@ -943,7 +944,8 @@ Only one API process should look at a goal at a time; a Valkey lock per goal mak
 | `log_note(text)` | A note on the log; doesn't count as progress |
 | `wait_for(kind, reason, minutes)` | `user`: asks you something and waits for your answer. `time`: checks back later (5 minutes to a week) |
 | `claim_done(evidence)` | Moves the goal to Review with the evidence; refused while its team is still working |
-| `assign_action(id, role, why_not_existing_agents, instructions, model, tools)` | Agents with a team only: hands a startable action to a new sub-agent (see below) |
+| `delegate_action(id, agent_name, instructions)` | Agents with a team and agents to delegate to: hands a startable action to one of its existing agents (see below) |
+| `assign_action(id, role, why_not_existing_agents, instructions, model, tools)` | Agents with a team allowed sub-agents: hands a startable action to a new sub-agent (see below) |
 
 The agent can't change the objective or the done criteria; only you can (Edit on the card). If it thinks they're wrong, it's told to say so and wait for you.
 
@@ -957,32 +959,33 @@ The agent can't change the objective or the done criteria; only you can (Edit on
 
 **MQTT notices** on `AHQ_MQTT_NOTIFY_TOPIC`: `goal_review`, `goal_proposal`, `goal_question` and `goal_blocked`, each with the goal's ID, title, agent and a link (`AHQ_PUBLIC_URL`).
 
-### Teams: sub-agents working a goal's actions in parallel
+### Teams: your agents and sub-agents working a goal's actions in parallel
 
-An agent allowed to create sub-agents can form a team for a goal: while it works one next action itself, sub-agents work other actions of the same goal in parallel. It's swarming, in Kanban terms: the agent's goal WIP stays where it is (one outcome at a time, by default), and the *action* WIP inside that goal grows by its team.
+An agent can form a team for a goal: while it works one next action itself, team members work other actions of the same goal in parallel. Team members are **its existing agents** (the ones it may delegate to) and, if it's allowed them, **new sub-agents**. It's swarming, in Kanban terms: the agent's goal WIP stays where it is (one outcome at a time, by default), and the *action* WIP inside that goal grows by its team.
 
 ```mermaid
 flowchart LR
-    L["Lead: works its own<br/>action, one at a time"] -- "assign_action(a2)" --> S1["Sub-agent 1<br/>works a2"]
-    L -- "assign_action(a3)" --> S2["Sub-agent 2<br/>works a3"]
-    S1 -- "result on a2:<br/>done or blocked" --> B[("Board")]
+    L["Lead: works its own<br/>action, one at a time"] -- "delegate_action(a2, Breaker)" --> A1["Breaker<br/>(your agent) works a2"]
+    L -- "assign_action(a3)" --> S2["Sub-agent<br/>works a3"]
+    A1 -- "result on a2:<br/>done or blocked" --> B[("Board")]
     S2 -- "result on a3" --> B
     B -- "a4 (after a2, a3)<br/>becomes startable" --> L
 ```
 
-**Turning it on:** Settings → Agents → Standing goals → **Team size** (parallel actions per goal: the agent plus its sub-agents; default 1 = no team). It only takes effect with sub-agents set to *Ask me first* or *Allowed within limits*, and with *Allowed within limits* it's capped by the sub-agent limit **At once** (the editor says so when it is).
+**Turning it on:** Settings → Agents → Standing goals → **Team size** (parallel actions per goal: the agent plus its team members; default 1 = no team). It takes effect when the agent has agents under **Can delegate to**, or sub-agents set to *Ask me first* or *Allowed within limits*, or both. With sub-agents only, *Allowed within limits* caps it by the sub-agent limit **At once** (the editor says so when it is); with agents on the team, that limit still applies to the sub-agents it creates, not to the team size.
 
 **How it works:**
-- **Serial stays serial.** When the agent adds an action that needs others' results, or would clash with them, it lists them in `after`. An action is startable, by the agent or its team, only when everything in its `after` list is done (dropped actions don't hold it up). The card shows what each action waits for.
-- **Handing over.** `assign_action` creates a sub-agent through the normal sub-agent path, so everything already set for sub-agents applies: the mode (in *Ask me first*, the agent asks with `request_subagents` first, and your approval covers the goal's conversation), the models and tool servers it may give them (including a cloud model, which matters when the local GPU is busy), minutes and model requests each, how many at once and per day, and the team-wide limits. Team members never get a desktop and can't create sub-agents of their own.
-- **No duplicates of your agents.** As with any sub-agent, the lead has to say why none of your existing agents should do the action (`why_not_existing_agents`), and a team member whose role names one of your agents, or whose work is close to one's description, is refused with a pointer to delegate to that agent instead (under an approved *Ask me first* request, only an outright name clash is refused, since the request already showed you any overlap). The comparison uses the role, the action and the lead's instructions for it, not the goal and team context in the briefing, so a long briefing can't water it down.
+- **Serial stays serial.** When the agent adds an action that needs others' results, or would clash with them, it lists them in `after`. An action is startable, by the agent or its team, only when everything in its `after` list is done (dropped ones don't hold it up). The card shows what each action waits for.
+- **Your agents first.** `delegate_action` hands an action to one of the agents the lead may delegate to. That agent works it as a background delegated task with everything it already has: its own model, tools, memory, skills, knowledge and desktop. It shows in the conversation as a delegation card with the action and the lead's instructions. Each agent works one action per goal at a time, and the usual delegation rules apply (no loops back up the chain, the depth limit, *ask first* for work a webhook started). The goal turn's instructions name the lead's agents and tell it to use them before creating sub-agents, and to use `delegate_action` rather than `delegate` for a whole action, so it keeps working while they do.
+- **Sub-agents for the rest.** `assign_action` creates a sub-agent through the normal sub-agent path, so everything already set for sub-agents applies: the mode (in *Ask me first*, the agent asks with `request_subagents` first, and your approval covers the goal's conversation), the models and tool servers it may give them (including a cloud model, which matters when the local GPU is busy), minutes and model requests each, how many at once and per day, and the team-wide limits. Sub-agents on a team never get a desktop and can't create sub-agents of their own.
+- **No duplicates of your agents.** As with any sub-agent, the lead has to say why none of your existing agents should do the action (`why_not_existing_agents`), and a sub-agent whose role names one of your agents, or whose work is close to one's description, is refused with a pointer to that agent: `delegate_action` when the lead can delegate to it (under an approved *Ask me first* request, only an outright name clash is refused, since the request already showed you any overlap). The comparison uses the role, the action and the lead's instructions for it, not the goal and team context in the briefing, so a long briefing can't water it down.
 - **What a team member is told:** the goal and its objective, its one action and the lead's instructions for it, and what the team has found so far (the results of the actions it depends on, and the latest others). It's told not to change anything outside its action.
-- **Results land on the board.** A team member's result goes onto its action: *done* completes it with what it found; *partial* or *failed* blocks it with the reason, for the lead to re-plan. There's no report turn per result: the next goal turn's card shows every result, with who did it.
-- **The runner keeps the lead busy.** While its team works, the lead keeps getting goal turns as long as it has something of its own: its action in progress, a blocked action to re-plan, or a startable one to take or assign. When everything left is either with the team or waiting on it, the goal shows as **Waiting on its team**, and resumes as results come in.
+- **Results land on the board.** A team member's result goes onto its action, before anything else happens when it finishes: *done* completes it with what it found; *partial* or *failed* blocks it with the reason, for the lead to re-plan. There's no report turn per result: the next goal turn's card shows every result, with who did it, marked *your agent* or *sub-agent*.
+- **The runner keeps the lead busy.** While its team works, the lead keeps getting goal turns as long as it has something of its own: its action in progress, a blocked action to re-plan, or a startable one to take or hand over. When everything left is either with the team or waiting on it, the goal shows as **Waiting on its team**, and resumes as results come in.
 - **Same guards, same review.** The goal's model-request limit counts its team too, a team result counts as progress, `claim_done` is refused while any team member is still working, and you still confirm done. Stop (or dropping the goal) stops the whole team, and their actions go back to to-do.
-- **You can step in:** drop an action a sub-agent is working on, and its late result is noted in the log but not applied.
+- **You can step in:** drop an action a team member is working on, and its late result is noted in the log but not applied.
 
-On the board, a card with a team shows **team ×N** while N sub-agents are working, and its action list shows who's working or did each action, and what each waits for.
+On the board, a card with a team shows **team ×N** while N team members are working, and its action list shows who's working or did each action (tagged *agent* or *sub-agent*), and what each waits for. The goal's detail names who the lead can put on its team.
 
 **Built for incidents next.** The board's rows aren't specific to goals: each work item has a kind, a source and a correlation key, and the same columns, runner, next actions and WIP rules will carry incidents (alerts grouped into one problem to solve) later.
 
@@ -1181,7 +1184,7 @@ backend/app/
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger, MQTT notices
   workitems.py       standing goals: the board, WIP limits, pulling from Ready, the goal runner and its
                      guards, the card prompt, goal tools, proposals, teams (dependencies, team slots,
-                     sub-agent results on actions)
+                     results on actions from the lead's agents and sub-agents)
   api/workitems.py   the board API (/api/board, /api/work-items)
   slots.py           provider slots: cross-worker limit on concurrent model requests (Valkey leases)
   api/avatars.py     agent avatar upload / serve (animated GIF + still first frame)
@@ -1219,7 +1222,6 @@ examples/            example crew (providers, agents, pools, tools, subscription
 
 - **Incidents on the board:** alerts and webhook events grouped by a correlation key into one work item (kind `incident`) that the lab crew works with the same columns, next actions and WIP limits as goals.
 - **A weekly review for goals:** an optional schedule per agent to prune its backlog and flag stuck goals, GTD style.
-- **Team members on other agents:** let a goal's lead pull in existing agents (by delegation) as well as sub-agents for parallel actions.
 
 - **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
 - **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.

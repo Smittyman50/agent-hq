@@ -21,11 +21,12 @@ Columns: backlog -> ready -> in_progress <-> waiting -> review -> done (+ blocke
 - **Done is your call.** The agent claims done with evidence; you confirm or send it back
   with a note (Requests -> Goals).
 - **Agents propose goals** (they land in Backlog, flagged, until you approve them).
-- **Self-forming teams.** An agent allowed sub-agents, with a team size above 1, hands
-  startable next actions to sub-agents (assign_action) that work them in parallel while it
-  works its own. Actions name what they depend on (`after`), so serial work stays serial.
-  A sub-agent's result lands on its action: done completes it, partial or failed blocks it
-  for the lead to re-plan. Team size, sub-agent limits and approvals all still apply.
+- **Self-forming teams.** An agent with a team size above 1 hands startable next actions
+  to team members that work them in parallel while it works its own: its existing agents
+  (delegate_action, preferred) and, if it's allowed them, new sub-agents (assign_action).
+  Actions name what they depend on (`after`), so serial work stays serial. A team member's
+  result lands on its action: done completes it, partial or failed blocks it for the lead
+  to re-plan. Team size, delegation rules, sub-agent limits and approvals all still apply.
 
 The same rows will carry incidents later (kind="incident", grouped by correlation_key).
 """
@@ -143,25 +144,39 @@ def goal_for_thread(thread_id: str | None) -> WorkItem | None:
                       .order_by(col(WorkItem.created_at).desc())).first()
 
 
-PENDING = "pending"  # job_id of an action reserved for a sub-agent that's being created
+PENDING = "pending"  # job_id of an action reserved for a team member that's being set up
+
+
+def team_agents(agent: AgentDef | None) -> list[AgentDef]:
+    """The existing agents this agent can put on a goal's team: the ones it may delegate to."""
+    from .runtime import allowed_delegates
+
+    if agent is None or agent.is_subagent:
+        return []
+    return allowed_delegates(agent)
 
 
 def team_size(agent: AgentDef | None) -> int:
-    """How many of a goal's actions this agent's team may work at once (its own one plus
-    sub-agents). 1 unless sub-agents are allowed for it."""
+    """How many of a goal's actions this agent's team may work at once: its own one plus
+    team members (its existing agents and sub-agents). 1 when it has neither."""
     from . import subagents
 
-    if agent is None or agent.is_subagent or subagents.mode_of(agent) == SubagentMode.off:
+    if agent is None or agent.is_subagent:
+        return 1
+    mode = subagents.mode_of(agent)
+    agents = bool(team_agents(agent))
+    if mode == SubagentMode.off and not agents:
         return 1
     size = max(1, min(int(agent.goal_team_size or 1), 10))
-    if subagents.mode_of(agent) == SubagentMode.allowed:
-        # No bigger than its sub-agent limit allows at once (in "ask" mode, your grant decides).
+    if mode == SubagentMode.allowed and not agents:
+        # Sub-agents only: no bigger than its sub-agent limit allows at once (in "ask" mode,
+        # your grant decides). With agents on the team, spawning still checks that limit.
         size = min(size, 1 + max(0, int(subagents.limits_of(agent).get("concurrent") or 0)))
     return size
 
 
 def on_team(a: WorkItem) -> bool:
-    """A sub-agent is working this action right now."""
+    """A team member (one of the lead's agents, or a sub-agent) is working this action."""
     return a.status == WorkStatus.in_progress and bool(a.job_id)
 
 
@@ -501,10 +516,10 @@ def set_action(goal_id: str, action_id: str, status: WorkStatus, *, actor: str,
     with db.session() as s:
         g, a = _goal_and_action(s, goal_id, action_id)
         if a.job_id and a.status == WorkStatus.in_progress and actor != "you":
-            raise WorkError(f"a sub-agent on your team is working on '{a.title}'; its result "
-                            "lands here by itself")
+            raise WorkError(f"a team member is working on '{a.title}'; its result lands here "
+                            "by itself")
         if a.job_id and status != WorkStatus.in_progress:
-            a.job_id = None  # you took it over: a late result from the sub-agent is ignored
+            a.job_id = None  # you took it over: a late result from the team member is ignored
         if status == WorkStatus.in_progress:
             acts = list(s.exec(select(WorkItem).where(WorkItem.parent_id == goal_id)).all())
             waiting_on = unmet(a, acts)
@@ -516,7 +531,7 @@ def set_action(goal_id: str, action_id: str, status: WorkStatus, *, actor: str,
             if busy is not None:
                 raise WorkError(f"one action at a time for yourself: finish, block or drop "
                                 f"'{busy.title}' ({busy.id}) first"
-                                + (" (or assign_action other startable ones to your team)"
+                                + (" (or hand other startable ones to your team)"
                                    if team_size(s.get(AgentDef, g.owner_agent_id)) > 1 else ""))
             a.assignee_agent_id = None
             a.started_at = a.started_at or _now()
@@ -544,15 +559,18 @@ def set_action(goal_id: str, action_id: str, status: WorkStatus, *, actor: str,
 
 # --------------------------------------------------------------------------- the team
 
-def reserve_for_team(goal_id: str, action_id: str, *, actor: str) -> WorkItem:
-    """Hold a startable action for a sub-agent that's about to be created, if the team has
-    a free slot. release_team() undoes it when the sub-agent can't be created."""
+def reserve_for_team(goal_id: str, action_id: str, *, actor: str,
+                     member_id: str | None = None) -> WorkItem:
+    """Hold a startable action for a team member that's about to start on it (one of the
+    lead's agents, `member_id`, or a sub-agent about to be created), if the team has a free
+    slot. release_team() undoes it when the work can't be handed over."""
     with db.session() as s:
         g, a = _goal_and_action(s, goal_id, action_id)
         agent = s.get(AgentDef, g.owner_agent_id)
         size = team_size(agent)
         if size <= 1:
-            raise WorkError("you have no team for goals (team size 1, or sub-agents are off)")
+            raise WorkError("you have no team for goals (team size 1, or no agents to delegate "
+                            "to and sub-agents off)")
         acts = list(s.exec(select(WorkItem).where(WorkItem.parent_id == goal_id)).all())
         if a.status != WorkStatus.backlog:
             raise WorkError(f"'{a.title}' is {LABELS[a.status]}; only to-do actions can be assigned")
@@ -562,9 +580,16 @@ def reserve_for_team(goal_id: str, action_id: str, *, actor: str) -> WorkItem:
                 f"'{d.title}' ({d.id})" for d in waiting_on) + "; assign it once that's done")
         working = [x for x in acts if on_team(x)]
         if len(working) >= size - 1:
-            raise WorkError(f"your team is full: {len(working)} sub-agent(s) working (team size "
+            raise WorkError(f"your team is full: {len(working)} team member(s) working (team size "
                             f"{size} = you + {size - 1}). Work one yourself or wait for a result.")
+        busy = next((x for x in working if member_id and x.assignee_agent_id == member_id), None)
+        if busy is not None:
+            who = s.get(AgentDef, member_id)
+            raise WorkError(f"{who.name if who else 'that agent'} is already working on "
+                            f"'{busy.title}' ({busy.id}) for this goal: one action each. Hand "
+                            "this one to someone else, or wait for that result.")
         a.status, a.job_id, a.started_at = WorkStatus.in_progress, PENDING, _now()
+        a.assignee_agent_id = member_id
         s.add(a)
         s.commit()
         s.refresh(a)
@@ -576,28 +601,31 @@ def release_team(goal_id: str, action_id: str) -> None:
         a = s.get(WorkItem, action_id)
         if a is not None and a.job_id == PENDING:
             a.status, a.job_id, a.started_at = WorkStatus.backlog, None, None
+            a.assignee_agent_id = None
             s.add(a)
             s.commit()
 
 
-def assigned(goal_id: str, action_id: str, sub: AgentDef, job_id: str, *, actor: str) -> None:
+def assigned(goal_id: str, action_id: str, member: AgentDef, job_id: str, *, actor: str) -> None:
+    """The action's team member has its task: a sub-agent, or one of the lead's agents."""
     with db.session() as s:
         g, a = _goal_and_action(s, goal_id, action_id)
         if a.job_id == PENDING:
             a.job_id = job_id
-        a.assignee_agent_id = sub.id
+        a.assignee_agent_id = member.id
         _touch(a)
         _touch(g, progress=True)
         s.add(a)
         s.add(g)
-        _log(s, goal_id, "action", f"Assigned to {sub.name}: {a.title}", actor, a.id,
-             subagent=sub.name, job_id=job_id)
+        who = {"subagent": member.name} if member.is_subagent else {"agent": member.name}
+        _log(s, goal_id, "action", f"Assigned to {member.name}: {a.title}", actor, a.id,
+             job_id=job_id, **who)
         s.commit()
 
 
 def team_task(g: WorkItem, a: WorkItem, lead: AgentDef, instructions: str) -> str:
-    """What a team sub-agent is told: the goal, its one action, and what the team found so
-    far that it builds on."""
+    """What a team member is told (one of the lead's agents or a sub-agent): the goal, its
+    one action, and what the team found so far that it builds on."""
     acts = actions(g.id)
     before = [x for x in acts if x.id in (a.depends_on or []) and x.result]
     others = [x for x in acts if x.status == WorkStatus.done and x.result and x not in before][-5:]
@@ -615,8 +643,8 @@ def team_task(g: WorkItem, a: WorkItem, lead: AgentDef, instructions: str) -> st
 
 
 def team_result(job: Job, status: str, summary: str, details: str = "") -> None:
-    """A team sub-agent finished: its result goes on its action. Done completes it;
-    partial or failed blocks it for the goal's agent to re-plan."""
+    """A team member finished: its result goes on its action. Done completes it; partial
+    or failed blocks it for the goal's agent to re-plan."""
     action_id = (job.meta or {}).get("goal_action")
     with db.session() as s:
         a = s.get(WorkItem, action_id) if action_id else None
@@ -624,7 +652,7 @@ def team_result(job: Job, status: str, summary: str, details: str = "") -> None:
             return
         g = s.get(WorkItem, a.parent_id)
         sub = s.get(AgentDef, job.assignee_agent_id)
-        who = sub.name if sub else "a sub-agent"
+        who = sub.name if sub else "a team member"
         if a.status != WorkStatus.in_progress or a.job_id not in (job.id, PENDING):
             _log(s, g.id, "note", f"{who} reported on '{a.title}' after it was taken over; "
                  f"result not applied: {summary[:300]}", "runner", a.id)
@@ -649,14 +677,15 @@ def team_result(job: Job, status: str, summary: str, details: str = "") -> None:
 
 
 def team_stopped(job: Job) -> None:
-    """A team sub-agent was stopped (Stop, or the goal was dropped): its action goes back
-    to do."""
+    """A team member was stopped (Stop, or the goal was dropped): its action goes back to
+    do."""
     action_id = (job.meta or {}).get("goal_action")
     with db.session() as s:
         a = s.get(WorkItem, action_id) if action_id else None
         if a is None or a.job_id not in (job.id, PENDING):
             return
         a.status, a.job_id, a.started_at = WorkStatus.backlog, None, None
+        a.assignee_agent_id = None
         s.add(a)
         _log(s, a.parent_id, "action", f"Stopped: {a.title} (back to do)", "runner", a.id)
         s.commit()
@@ -683,9 +712,17 @@ def card(g: WorkItem, *, log_lines: int = LOG_IN_PROMPT) -> dict[str, Any]:
     lim = limits_of(g)
     with db.session() as s:
         agent = s.get(AgentDef, g.owner_agent_id) if g.owner_agent_id else None
-        names = {x.id: x.name for x in s.exec(select(AgentDef).where(col(AgentDef.id).in_(
+        who = {x.id: x for x in s.exec(select(AgentDef).where(col(AgentDef.id).in_(
             [a.assignee_agent_id for a in acts if a.assignee_agent_id]))).all()} if acts else {}
+    names = {k: v.name for k, v in who.items()}
     size = team_size(agent)
+    from . import subagents
+    mates = [x.name for x in team_agents(agent)] if size > 1 else []
+    subs = size > 1 and agent is not None and subagents.mode_of(agent) != SubagentMode.off
+
+    def kind(a: WorkItem) -> str:
+        m = who.get(a.assignee_agent_id)
+        return "agent" if m is not None and not m.is_subagent else "sub-agent"
 
     def one(a: WorkItem) -> dict[str, Any]:
         out: dict[str, Any] = {"id": a.id, "title": a.title, "status": LABELS[a.status]}
@@ -697,8 +734,10 @@ def card(g: WorkItem, *, log_lines: int = LOG_IN_PROMPT) -> dict[str, Any]:
                 out["waiting_for"] = [d.id for d in unmet(a, acts)]
         if on_team(a):
             out["worked_by"] = names.get(a.assignee_agent_id, "a sub-agent (starting)")
+            out["member"] = kind(a)
         elif a.assignee_agent_id and a.status in (WorkStatus.done, WorkStatus.blocked):
             out["by"] = names.get(a.assignee_agent_id, "a sub-agent")
+            out["member"] = kind(a)
         if a.result:
             out["result"] = a.result
         return out
@@ -711,7 +750,8 @@ def card(g: WorkItem, *, log_lines: int = LOG_IN_PROMPT) -> dict[str, Any]:
         "current_action": next((a.id for a in acts if a.status == WorkStatus.in_progress
                                 and not a.job_id), None),
         **({"team": {"size": size, "working": sum(1 for a in acts if on_team(a)),
-                     "free_slots": max(0, size - 1 - sum(1 for a in acts if on_team(a)))}}
+                     "free_slots": max(0, size - 1 - sum(1 for a in acts if on_team(a))),
+                     "agents": mates, "sub_agents": subs}}
            if size > 1 else {}),
         "log": [f"{_ago(e.at)} · {e.actor}: {e.text}" for e in events(g.id, log_lines)],
         "turn": g.turns, "turn_limit": lim["max_turns"],
@@ -724,7 +764,7 @@ def card_prompt(g: WorkItem) -> str:
     def line(a: dict) -> str:
         tag = a["status"]
         if a.get("worked_by"):
-            tag += f" · {a['worked_by']} (sub-agent)"
+            tag += f" · {a['worked_by']} ({'your agent' if a.get('member') == 'agent' else 'sub-agent'})"
         elif a.get("waiting_for"):
             tag += " · waiting for " + ", ".join(a["waiting_for"])
         elif a.get("by"):
@@ -760,14 +800,25 @@ def card_prompt(g: WorkItem) -> str:
 
 def team_text(team: dict) -> str:
     free = team["free_slots"]
-    return (
-        f"2b. Your team: up to {team['size'] - 1} sub-agent(s) can work other startable actions "
-        f"in parallel while you work yours ({team['working']} working, {free} free). Hand one "
-        "over with assign_action: only actions with nothing unfinished in their after list, "
-        "never two at once that change the same system, and never work an existing agent "
-        "should do (delegate that to it instead). Pick a cloud model for them if the "
-        "local GPU is busy. Their results land on the board by themselves; a blocked one needs "
-        "you to re-plan it. Sub-agents have no desktop: keep visual browsing for yourself.\n")
+    agents, subs = team.get("agents") or [], team.get("sub_agents", True)
+    parts = [f"2b. Your team: up to {team['size'] - 1} member(s) can work other startable actions "
+             f"in parallel while you work yours ({team['working']} working, {free} free)."]
+    if agents:
+        parts.append(f"Your agents come first: when an action fits what one of them does "
+                     f"({', '.join(agents)}), hand it over with delegate_action. They work it "
+                     "with their own tools, memory, skills and desktop, one action each per "
+                     "goal. Use delegate_action rather than delegate for a whole action: you "
+                     "keep working while they do, and their result lands on the action.")
+    if subs:
+        parts.append(("For an action none of them fits, " if agents else "Hand one over to ")
+                     + "a new sub-agent with assign_action, never for work an existing agent "
+                     "should do. Pick a cloud model for sub-agents if the local GPU is busy. "
+                     "Sub-agents have no desktop: keep visual browsing for yourself"
+                     + (" or an agent with one." if agents else "."))
+    parts.append("Only hand over actions with nothing unfinished in their after list, and "
+                 "never two at once that change the same system. Results land on the board by "
+                 "themselves; a blocked one needs you to re-plan it.")
+    return " ".join(parts) + "\n"
 
 
 GOAL_RULES = (
@@ -984,7 +1035,7 @@ async def advance(rt, g: WorkItem) -> str:
         return "busy"
     if team_jobs and not lead_has_work(g):
         set_status(g.id, WorkStatus.waiting, actor="runner", progress=False,
-                   why=f"{len(team_jobs)} sub-agent(s) on its team are working",
+                   why=f"{len(team_jobs)} member(s) of its team are working",
                    waiting_on={"kind": "team", "job_ids": [j.id for j in team_jobs]})
         return "waiting: team"
     # (Team members still working while the lead has work of its own: the lead gets turns.)
@@ -1104,9 +1155,11 @@ def _mine(ctx: RunContext) -> tuple[WorkItem | None, AgentDef | None, dict | Non
     return g, me, None
 
 
-def goal_toolset(rt, team: bool = False) -> FunctionToolset:
+def goal_toolset(rt, team: bool = False, *, sub_agents: bool = True,
+                 agents: bool = False) -> FunctionToolset:
     """Tools for the agent working a goal (only in that goal's conversation). With a team,
-    also assign_action."""
+    also delegate_action (when it has agents to delegate to) and assign_action (when it may
+    create sub-agents)."""
 
     def _err(e: Exception) -> dict:
         return {"error": str(e)}
@@ -1271,7 +1324,8 @@ def goal_toolset(rt, team: bool = False) -> FunctionToolset:
                             model: str | None = None, tools: list[str] | None = None) -> dict:
         """Hand a startable next action to a new sub-agent on your team. It works the action
         in parallel while you carry on with yours, and its result lands on the action by
-        itself (done, or blocked for you to re-plan).
+        itself (done, or blocked for you to re-plan). When one of your agents fits the
+        action, use delegate_action instead.
 
         Args:
             action_id: A to-do action with nothing unfinished in its after list.
@@ -1305,15 +1359,66 @@ def goal_toolset(rt, team: bool = False) -> FunctionToolset:
             raise
         if got["status"] != "queued":
             release_team(g.id, a.id)
+            if agents and "would duplicate" in got.get("summary", ""):
+                got = {**got, "summary": got["summary"] + " On a goal, hand the action to that "
+                       "agent with delegate_action: it works it in parallel and its result "
+                       "lands on the action."}
             return got
         assigned(g.id, a.id, got["sub"], got["job"].id, actor=me.name)
         return {"ok": True, "action_id": a.id, "subagent": got["sub"].name,
                 "summary": f"{got['sub'].name} is working on it in parallel. Its result will be "
                 "on the board. Carry on with your own action, or end the turn."}
 
+    async def delegate_action(ctx: RunContext, action_id: str, agent_name: str,
+                              instructions: str = "") -> dict:
+        """Hand a startable next action to one of your agents (from the team list in your
+        instructions). It works the action in parallel while you carry on with yours, with
+        its own tools, memory, skills and desktop, and its result lands on the action by
+        itself (done, or blocked for you to re-plan). Prefer this to assign_action whenever
+        one of your agents fits the action.
+
+        Args:
+            action_id: A to-do action with nothing unfinished in its after list.
+            agent_name: Which of your agents should do it.
+            instructions: How to do it, what to check, what to bring back.
+        """
+        from .runtime import find_delegate
+
+        g, me, err = _mine(ctx)
+        if err:
+            return err
+        target = find_delegate(me, agent_name)
+        if target is None:
+            names = ", ".join(x.name for x in team_agents(me)) or "nobody"
+            return {"status": "refused", "summary": f"'{agent_name}' isn't one of your agents. "
+                    f"You can hand actions to: {names}."}
+        if target.id in (getattr(ctx.deps, "chain", None) or []):
+            return {"status": "refused", "summary": f"{target.name} is already working on this "
+                    "chain; handing it back would loop."}
+        if getattr(ctx.deps, "depth", 0) + 1 > settings.max_delegation_depth:
+            return {"status": "refused", "summary": "Delegation chain is too deep."}
+        try:
+            a = reserve_for_team(g.id, action_id, actor=me.name, member_id=target.id)
+        except WorkError as e:
+            return {"status": "refused", "summary": str(e)}
+        shown = a.title + (f"\n\n{instructions.strip()}" if instructions.strip() else "")
+        try:
+            job = await rt.delegate_action(ctx.deps, me, target, task=team_task(g, a, me, instructions),
+                                           shown=shown,
+                                           extra_meta={"goal_action": a.id, "goal_id": g.id})
+        except Exception:
+            release_team(g.id, a.id)
+            raise
+        assigned(g.id, a.id, target, job.id, actor=me.name)
+        return {"ok": True, "action_id": a.id, "agent": target.name,
+                "summary": f"{target.name} is working on it in parallel. The result will be on "
+                "the board. Carry on with your own action, or end the turn."}
+
     tools = [board_view, add_action, start_action, complete_action, block_action,
              drop_action, log_note, wait_for, claim_done]
-    if team:
+    if team and agents:
+        tools.append(delegate_action)
+    if team and sub_agents:
         tools.append(assign_action)
     return FunctionToolset(tools, id="goal")
 
