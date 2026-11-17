@@ -30,6 +30,15 @@ class ResourceUpdate(BaseModel):
     scope: str | None = None
     description: str | None = None
     network_access: bool | None = None
+    egress_rules: list[str] | None = None  # workbench: what it may reach besides the defaults
+
+
+class EgressDefaultsIn(BaseModel):
+    defaults: list[str]
+
+
+class AllowIn(BaseModel):
+    rule: str
 
 
 class AssignIn(BaseModel):
@@ -57,7 +66,9 @@ async def _view(s: Session, res: Resource, request: Request | None = None) -> di
             lease = await rs.lease_holder(request.app.state.broker.r, res.id)
         except Exception:  # Valkey down: the page still works
             lease = None
-    return {**res.model_dump(),
+    return {**res.model_dump(exclude={"egress_token"}),
+            "egress_rules": list(res.egress_rules or []),
+            "proxy_current": rs.proxy_current(res),
             "viewer_url": rs.viewer_url(res),
             "servers": [{"id": t.id, "name": t.name, "url": t.url, "desktop": t.desktop}
                         for t in rs.servers_of(s, res.id)],
@@ -77,9 +88,26 @@ async def list_resources(request: Request, s: Session = Depends(get_session)) ->
         await rs.refresh(res, d)
         s.add(res)
     s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)
     return {"docker": d.enabled,
             "resources": [await _view(s, r, request) for r in rows],
-            "adoptable": await rs.adoptable(s, d)}
+            "adoptable": await rs.adoptable(s, d),
+            "egress_defaults": rs.egress_defaults(s)}
+
+
+@router.get("/network")
+async def network(request: Request, s: Session = Depends(get_session)) -> dict[str, Any]:
+    """The rules every workbench gets through the egress proxy, and what it refused lately."""
+    return {"defaults": rs.egress_defaults(s),
+            "blocked": await rs.blocked_requests(request.app.state.broker.r)}
+
+
+@router.put("/network")
+async def set_network(body: EgressDefaultsIn, request: Request, s: Session = Depends(get_session)):
+    rules = rs.set_egress_defaults(s, body.defaults)
+    s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)
+    return {"defaults": rules, "blocked": await rs.blocked_requests(request.app.state.broker.r)}
 
 
 @router.post("", status_code=201)
@@ -111,6 +139,7 @@ async def create_resource(body: ResourceIn, request: Request, s: Session = Depen
     s.add(res)
     s.commit()
     s.refresh(res)
+    await rs.publish_egress(request.app.state.broker.r, s)
     return await _view(s, res, request)
 
 
@@ -131,9 +160,14 @@ async def update_resource(res_id: str, body: ResourceUpdate, request: Request,
         except rs.DockerError as e:
             raise _fail(e) from e
         res.network_access = body.network_access
+    if body.egress_rules is not None:
+        if res.kind != "workbench":
+            raise HTTPException(422, "only workbenches have egress rules")
+        res.egress_rules = rs.check_rules(body.egress_rules)
     res.updated_at = _now()
     s.add(res)
     s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)
     return await _view(s, res, request)
 
 
@@ -177,6 +211,28 @@ async def _container_action(res_id: str, action: str, request: Request, s: Sessi
     res.updated_at = _now()
     s.add(res)
     s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)  # a new container may have a new token
+    return await _view(s, res, request)
+
+
+@router.get("/{res_id}/blocked")
+async def blocked(res_id: str, request: Request, s: Session = Depends(get_session)):
+    """What the egress proxy refused this workbench lately (newest first)."""
+    res = _get(s, res_id)
+    return await rs.blocked_requests(request.app.state.broker.r, res.name)
+
+
+@router.post("/{res_id}/allow")
+async def allow(res_id: str, body: AllowIn, request: Request, s: Session = Depends(get_session)):
+    """Add one rule to a workbench (the Allow button next to a blocked request)."""
+    res = _get(s, res_id)
+    if res.kind != "workbench":
+        raise HTTPException(422, "only workbenches have egress rules")
+    res.egress_rules = rs.check_rules(list(res.egress_rules or []) + [body.rule])
+    res.updated_at = _now()
+    s.add(res)
+    s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)
     return await _view(s, res, request)
 
 
@@ -211,7 +267,8 @@ async def adopt(request: Request, s: Session = Depends(get_session)):
 
 
 @router.delete("/{res_id}", status_code=204)
-async def delete_resource(res_id: str, remove_data: bool = False, s: Session = Depends(get_session)):
+async def delete_resource(res_id: str, request: Request, remove_data: bool = False,
+                          s: Session = Depends(get_session)):
     """Take it from every agent and delete its tool servers. A managed resource's container
     goes too (its data volume only with remove_data). An adopted one's container is left
     to docker compose."""
@@ -225,3 +282,4 @@ async def delete_resource(res_id: str, remove_data: bool = False, s: Session = D
         s.delete(t)
     s.delete(res)
     s.commit()
+    await rs.publish_egress(request.app.state.broker.r, s)

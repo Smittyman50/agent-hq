@@ -1,14 +1,15 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { AgentDef, Adoptable, Api, Resource, ResourceAction, ResourceKind, ResourceScope } from './api.service';
+import { DatePipe } from '@angular/common';
+import { AgentDef, Adoptable, Api, BlockedRequest, Resource, ResourceAction, ResourceKind, ResourceScope } from './api.service';
 
 interface NewResource { kind: ResourceKind; scope: ResourceScope; description: string; network_access: boolean; agent_ids: string[]; }
 
 /** Desktops and workbenches: create them, give them to agents, run their containers. */
 @Component({
   selector: 'hq-resources',
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, DatePipe],
   template: `
   <div class="split">
     <aside class="list">
@@ -16,6 +17,8 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         <span class="inline">
           <button (click)="startNew('desktop')" title="A desktop with Chromium, driven by its MCP servers">+ Desktop</button>
           <button (click)="startNew('workbench')" title="A Python venv, files and shell">+ Workbench</button>
+          <button class="ghost" [class.active]="network()" (click)="openNetwork()"
+                  title="What every workbench may reach, and what was blocked">Network</button>
         </span></div>
       @if (!docker()) {
         <p class="hint">Agent HQ has no Docker access, so it can register a resource's tool servers but not
@@ -41,7 +44,35 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
       }
     </aside>
 
-    @if (creating(); as n) {
+    @if (network()) {
+      <form class="editor" (ngSubmit)="saveDefaults()">
+        <h2>Workbench network</h2>
+        <p class="hint inline-hint">Workbenches reach the network only through the egress proxy. Each one may reach the
+          hosts below, plus its own extra rules (on its page). Ticking <b>Internet and LAN access</b> on a workbench
+          lets it reach everything. Changes apply within seconds, without a restart.</p>
+        <label>Every workbench may reach <small>one rule per line</small>
+          <textarea name="defaults" rows="6" [(ngModel)]="defaultsText"></textarea></label>
+        <p class="hint inline-hint">{{ RULES_HELP }}</p>
+        @if (error()) { <p class="error">{{ error() }}</p> }
+        <div class="actions save-row">
+          <button type="submit" [disabled]="busy() || defaultsText === savedDefaults">Save</button>
+          <button type="button" class="ghost" (click)="defaultsText = savedDefaults" [disabled]="defaultsText === savedDefaults">Discard changes</button>
+        </div>
+        <fieldset><legend>Blocked lately <button type="button" class="ghost small-btn" (click)="openNetwork()">Refresh</button></legend>
+          @for (b of allBlocked(); track b.workbench + b.host + b.port) {
+            <div class="blocked">
+              <span><code>{{ b.host }}:{{ b.port }}</code> <span class="muted small">{{ b.workbench }} · {{ b.at * 1000 | date:'MMM d, h:mm a' }}</span></span>
+              <span class="inline">
+                @if (byName(b.workbench); as w) {
+                  <button type="button" class="ghost" (click)="allow(w, b)">Allow for {{ w.name }}</button>
+                }
+                <button type="button" class="ghost" (click)="allowForAll(b)">Allow for all</button>
+              </span>
+            </div>
+          } @empty { <p class="hint inline-hint">Nothing blocked lately.</p> }
+        </fieldset>
+      </form>
+    } @else if (creating(); as n) {
       <form class="editor" (ngSubmit)="create()">
         <h2>New {{ n.kind }}</h2>
         <p class="hint inline-hint">
@@ -90,11 +121,6 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
             <option value="dedicated">Dedicated: one agent's own</option>
             <option value="shared">Shared: several agents{{ r.kind === 'desktop' ? ', one conversation at a time' : '' }}</option>
           </select></label>
-        @if (r.kind === 'workbench') {
-          <label class="check" title="Off: only PyPI, through the egress proxy">
-            <input type="checkbox" name="net" [(ngModel)]="edit.network_access"> Internet and LAN access</label>
-        }
-
         <fieldset><legend>Agents</legend>
           @if (edit.scope === 'dedicated') {
             <select name="owner" [ngModel]="edit.agent_ids[0] ?? ''" (ngModelChange)="edit.agent_ids = $event ? [$event] : []">
@@ -115,6 +141,35 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
             <p class="hint inline-hint">Agents with this desktop need a vision model (Settings → Agents).</p>
           }
         </fieldset>
+
+        @if (r.kind === 'workbench') {
+          <fieldset><legend>Network</legend>
+            <label class="check" title="Everything, not only what the rules allow">
+              <input type="checkbox" name="net" [(ngModel)]="edit.network_access"> Internet and LAN access</label>
+            @if (edit.network_access) {
+              <p class="hint inline-hint">It reaches everything directly; the rules below don't apply.</p>
+            } @else {
+              <p class="hint inline-hint">Every workbench may reach <code>{{ defaults().join(', ') || 'nothing' }}</code>
+                (<a href="" (click)="$event.preventDefault(); openNetwork()">change</a>).</p>
+              <label>This one may also reach <small>one rule per line</small>
+                <textarea name="rules" rows="4" [(ngModel)]="edit.egress_text"
+                  placeholder="gitgard.home.arpa:3000&#10;*.github.com&#10;192.168.10.0/24:443"></textarea></label>
+              <p class="hint inline-hint">{{ RULES_HELP }}</p>
+            }
+            @if (r.proxy_current === false) {
+              <p class="error">Its container was made before it had its own rules, so it gets only the defaults.
+                <b>Recreate</b> it (below) to apply them; its files are kept.</p>
+            }
+            <div class="blocked-head"><b>Blocked lately</b>
+              <button type="button" class="ghost small-btn" (click)="loadBlocked(r)">Refresh</button></div>
+            @for (b of blocked(); track b.host + b.port) {
+              <div class="blocked">
+                <span><code>{{ b.host }}:{{ b.port }}</code> <span class="muted small">{{ b.at * 1000 | date:'MMM d, h:mm a' }}</span></span>
+                <button type="button" class="ghost" (click)="allow(r, b)" [disabled]="busy()">Allow</button>
+              </div>
+            } @empty { <p class="hint inline-hint">Nothing blocked lately.</p> }
+          </fieldset>
+        }
 
         <div class="actions save-row">
           <button type="submit" [disabled]="!dirty(r) || busy()">{{ busy() ? 'Saving…' : 'Save' }}</button>
@@ -173,6 +228,11 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
             .list-head .inline { display: flex; gap: 6px; flex-wrap: nowrap; }
             .list-head button { white-space: nowrap; }
             .save-row { margin-bottom: 20px; }
+            .blocked { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 0; }
+            .blocked .inline { display: flex; gap: 6px; }
+            .blocked-head { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; }
+            .small-btn { padding: 2px 8px; font-size: 12px; }
+            button.active { border-color: var(--accent, #4a9eff); }
             .servers { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
             .servers li { display: flex; flex-direction: column; gap: 2px; }
             fieldset .inline-hint { margin-top: 8px; }
@@ -191,9 +251,18 @@ export class ResourcesPage implements OnInit {
   busy = signal(false);
   error = signal('');
   /** The form: nothing changes until Save. */
-  edit: { description: string; scope: ResourceScope; network_access: boolean; agent_ids: string[] } =
-    { description: '', scope: 'dedicated', network_access: false, agent_ids: [] };
+  edit: { description: string; scope: ResourceScope; network_access: boolean; agent_ids: string[]; egress_text: string } =
+    { description: '', scope: 'dedicated', network_access: false, agent_ids: [], egress_text: '' };
   saved = signal(false);
+  readonly RULES_HELP = 'A host (pypi.org: ports 80 and 443), *.domain (it and its subdomains), host:port '
+    + '(or host:* for any port), an address (192.168.10.5) or a network (192.168.10.0/24:443; names that '
+    + 'resolve into it count too).';
+  network = signal(false);
+  defaults = signal<string[]>([]);
+  defaultsText = '';
+  savedDefaults = '';
+  allBlocked = signal<BlockedRequest[]>([]);
+  blocked = signal<BlockedRequest[]>([]);
 
   selected = computed(() => this.list().find(r => r.id === this.selectedId()) ?? null);
   groups = computed(() => [
@@ -209,7 +278,8 @@ export class ResourcesPage implements OnInit {
 
   load(then?: () => void) {
     this.api.resources().subscribe({
-      next: l => { this.list.set(l.resources); this.adoptable.set(l.adoptable); this.docker.set(l.docker); then?.(); },
+      next: l => { this.list.set(l.resources); this.adoptable.set(l.adoptable); this.docker.set(l.docker);
+                   this.defaults.set(l.egress_defaults ?? []); then?.(); },
       error: e => this.error.set(e.error?.detail ?? 'Could not load resources'),
     });
   }
@@ -221,26 +291,88 @@ export class ResourcesPage implements OnInit {
   select(r: Resource) {
     const cur = this.selected();
     if (cur && cur.id !== r.id && this.dirty(cur) && !confirm(`Discard your unsaved changes to ${cur.name}?`)) return;
-    this.creating.set(null); this.error.set(''); this.saved.set(false);
+    this.creating.set(null); this.network.set(false); this.error.set(''); this.saved.set(false);
     this.selectedId.set(r.id);
     this.revert(r);
+    this.blocked.set([]);
+    if (r.kind === 'workbench') this.loadBlocked(r);
+  }
+
+  private lines(text: string) { return text.split('\n').map(x => x.trim()).filter(Boolean); }
+  private sameRules(a: string[], b: string[]) { return a.length === b.length && a.every((x, i) => x === b[i]); }
+
+  loadBlocked(r: Resource) {
+    this.api.blockedRequests(r.id).subscribe({ next: b => this.blocked.set(b), error: () => {} });
+  }
+
+  /** Allow a blocked request: stored at once, and kept in the form you're editing. */
+  allow(r: Resource, b: BlockedRequest) {
+    const rule = `${b.host}:${b.port}`;
+    this.busy.set(true); this.error.set('');
+    this.api.allowEgress(r.id, rule).subscribe({
+      next: x => {
+        this.busy.set(false); this.put(x);
+        if (this.selectedId() === x.id && !this.lines(this.edit.egress_text).includes(rule)) {
+          this.edit.egress_text = [...this.lines(this.edit.egress_text), rule].join('\n');
+        }
+        this.blocked.update(l => l.filter(y => !(y.host === b.host && y.port === b.port)));
+        this.allBlocked.update(l => l.filter(y => !(y.workbench === b.workbench && y.host === b.host && y.port === b.port)));
+      },
+      error: this.fail,
+    });
+  }
+
+  byName(name: string) { return this.list().find(r => r.name === name && r.kind === 'workbench') ?? null; }
+
+  openNetwork() {
+    const cur = this.selected();
+    if (cur && this.dirty(cur) && !confirm(`Discard your unsaved changes to ${cur.name}?`)) return;
+    this.selectedId.set(null); this.creating.set(null); this.error.set('');
+    this.network.set(true);
+    this.api.egressNetwork().subscribe({
+      next: n => { this.applyNetwork(n.defaults); this.allBlocked.set(n.blocked); }, error: this.fail,
+    });
+  }
+
+  private applyNetwork(defaults: string[]) {
+    this.defaults.set(defaults);
+    this.defaultsText = this.savedDefaults = defaults.join('\n');
+  }
+
+  saveDefaults() {
+    this.busy.set(true); this.error.set('');
+    this.api.setEgressDefaults(this.lines(this.defaultsText)).subscribe({
+      next: n => { this.busy.set(false); this.applyNetwork(n.defaults); this.allBlocked.set(n.blocked); },
+      error: this.fail,
+    });
+  }
+
+  allowForAll(b: BlockedRequest) {
+    const rule = `${b.host}:${b.port}`;
+    const rules = [...this.lines(this.savedDefaults), rule];
+    this.api.setEgressDefaults(rules).subscribe({
+      next: n => { this.applyNetwork(n.defaults);
+                   this.allBlocked.set(n.blocked.filter(y => !(y.host === b.host && y.port === b.port))); },
+      error: this.fail,
+    });
   }
 
   revert(r: Resource) {
     this.edit = { description: r.description, scope: r.scope, network_access: r.network_access,
-                  agent_ids: r.agents.map(a => a.id) };
+                  agent_ids: r.agents.map(a => a.id), egress_text: (r.egress_rules ?? []).join('\n') };
   }
 
   dirty(r: Resource) {
     const e = this.edit, ids = r.agents.map(a => a.id);
     return e.description !== r.description || e.scope !== r.scope || e.network_access !== r.network_access
-      || e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i));
+      || e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i))
+      || (r.kind === 'workbench' && !this.sameRules(this.lines(e.egress_text), r.egress_rules ?? []));
   }
 
   startNew(kind: ResourceKind) {
     const cur = this.selected();
     if (cur && this.dirty(cur) && !confirm(`Discard your unsaved changes to ${cur.name}?`)) return;
-    this.error.set(''); this.selectedId.set(null);
+    this.error.set(''); this.selectedId.set(null); this.network.set(false);
     this.creating.set({ kind, scope: 'dedicated', description: '', network_access: false, agent_ids: [] });
   }
 
@@ -264,7 +396,8 @@ export class ResourcesPage implements OnInit {
    *  dedicated, the extra agents are taken off first. */
   save(r: Resource) {
     const e = { ...this.edit, agent_ids: [...this.edit.agent_ids] };
-    const details = { description: e.description, scope: e.scope, network_access: e.network_access };
+    const details = { description: e.description, scope: e.scope, network_access: e.network_access,
+                      ...(r.kind === 'workbench' ? { egress_rules: this.lines(e.egress_text) } : {}) };
     const ids = r.agents.map(a => a.id);
     const agentsChanged = e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i));
     const update = () => this.api.updateResource(r.id, details);

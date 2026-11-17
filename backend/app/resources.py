@@ -20,9 +20,12 @@ existing tool servers, and compose keeps running the container until you take it
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
 import json
 import logging
 import re
+import secrets
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -188,10 +191,11 @@ def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
             "NetworkingConfig": {"EndpointsConfig": {net: {"Aliases": [res.name]}}},
         }
     net = settings.workbench_network
+    proxy = proxy_url(res)
     return {
         "Image": image,
-        "Env": ["HTTPS_PROXY=http://egress:8888", "HTTP_PROXY=http://egress:8888",
-                "NO_PROXY=localhost,127.0.0.1"],
+        "Env": [f"HTTPS_PROXY={proxy}", f"HTTP_PROXY={proxy}", f"https_proxy={proxy}",
+                f"http_proxy={proxy}", "NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1"],
         "Labels": _labels(res),
         "HostConfig": {"RestartPolicy": restart, "Mounts": mounts, "NetworkMode": net,
                        "ReadonlyRootfs": True, "Tmpfs": {"/tmp": ""}, "CapDrop": ["ALL"],
@@ -199,6 +203,22 @@ def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
                        "Memory": 2 * 1024 ** 3, "PidsLimit": 512},
         "NetworkingConfig": {"EndpointsConfig": {net: {"Aliases": [res.name]}}},
     }
+
+
+def proxy_url(res: Resource) -> str:
+    """The egress proxy, signed in as this workbench (its own rules apply)."""
+    if res.egress_token:
+        return f"http://{res.name}:{res.egress_token}@egress:8888"
+    return "http://egress:8888"
+
+
+# Whether each workbench's container signs in to the egress proxy with its current token
+# (one made before per-workbench rules, or before a token change, gets the defaults only).
+_proxy_current: dict[str, bool] = {}
+
+
+def proxy_current(res: Resource) -> bool | None:
+    return _proxy_current.get(res.id) if res.kind == "workbench" else None
 
 
 def _mounts_from(info: dict) -> list[dict]:
@@ -233,7 +253,11 @@ async def refresh(res: Resource, d: Docker | None = None) -> Resource:
             res.status = "unknown"  # no Docker access, or no container found for it
         return res
     try:
-        res.status = _status_of(await d.inspect(res.container))
+        info = await d.inspect(res.container)
+        res.status = _status_of(info)
+        if info is not None and res.kind == "workbench":
+            env = (info.get("Config") or {}).get("Env") or []
+            _proxy_current[res.id] = bool(res.egress_token) and f"HTTPS_PROXY={proxy_url(res)}" in env
         if res.status != "error":
             res.error = None
     except DockerError as e:
@@ -250,12 +274,15 @@ async def provision(res: Resource, d: Docker | None = None, *, mounts: list[dict
         raise DockerError(f"image {image} isn't on this host yet: run `docker compose --profile images "
                           "build`, then Recreate")
     name = res.container or container_name(res)
+    if res.kind == "workbench" and not res.egress_token:
+        res.egress_token = secrets.token_urlsafe(24)
     await d.create(name, spec(res, image, mounts))
     res.container = name
     if res.kind == "workbench" and res.network_access:
         await d.connect(settings.resource_network, name, [res.name])
     await d.start(name)
     res.status, res.error = "running", None
+    _proxy_current[res.id] = True
     return res
 
 
@@ -581,3 +608,107 @@ async def release_lease(r, res_id: str, job_id: str | None) -> None:
 async def lease_holder(r, res_id: str) -> dict | None:
     raw = await r.get(_lease_key(res_id))
     return json.loads(raw) if raw else None
+
+
+# --------------------------------------------------------------------------- egress rules
+
+EGRESS_KEY = "ahq:egress:config"         # read by the egress proxy every few seconds
+EGRESS_BLOCKED = "ahq:egress:blocked"    # what it refused (a stream)
+EGRESS_SETTING = "egress"                # SystemSetting: {"defaults": [...]}
+DEFAULT_EGRESS = ["pypi.org:443", "files.pythonhosted.org:443"]
+_LABEL = re.compile(r"^[a-z0-9-]{1,63}$")
+
+
+def check_rule(text: str) -> str:
+    """A rule as the proxy reads it (see deploy/egress/egress_proxy.py), tidied, or 422."""
+    raw = text.strip()
+    hostpart, port = raw, ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        hostpart, port = (raw[1:end], raw[end + 2:]) if end > 0 and raw[end + 1:end + 2] in (":", "") else ("", "")
+    elif raw.count(":") == 1:
+        hostpart, port = raw.split(":")
+    host = hostpart.strip().lower().rstrip(".")
+    ok_port = port == "" or port == "*" or (port.isdigit() and 0 < int(port) < 65536)
+    ok_host = host == "*"
+    if not ok_host and "/" in host:
+        try:
+            ipaddress.ip_network(host, strict=False)
+            ok_host = True
+        except ValueError:
+            pass
+    if not ok_host:
+        try:
+            ipaddress.ip_address(host)
+            ok_host = True
+        except ValueError:
+            name = host[2:] if host.startswith("*.") else host
+            ok_host = bool(name) and all(_LABEL.match(lab) for lab in name.split("."))
+    if not raw or not ok_host or not ok_port:
+        raise HTTPException(422, f"{text!r} isn't a rule: use a host (pypi.org), *.domain, host:port "
+                                 "(port or *), an address or a network (192.168.10.0/24:443)")
+    return raw.lower()
+
+
+def check_rules(rules: list[str]) -> list[str]:
+    return list(dict.fromkeys(check_rule(r) for r in rules if r.strip()))
+
+
+def egress_defaults(s: Session) -> list[str]:
+    from .models import SystemSetting
+
+    row = s.get(SystemSetting, EGRESS_SETTING)
+    return list((row.value or {}).get("defaults", DEFAULT_EGRESS)) if row else list(DEFAULT_EGRESS)
+
+
+def set_egress_defaults(s: Session, rules: list[str]) -> list[str]:
+    from .models import SystemSetting
+
+    rules = check_rules(rules)
+    row = s.get(SystemSetting, EGRESS_SETTING) or SystemSetting(key=EGRESS_SETTING)
+    row.value = {**(row.value or {}), "defaults": rules}
+    s.add(row)
+    return rules
+
+
+def egress_config(s: Session) -> dict[str, Any]:
+    """What the egress proxy needs: the defaults, and each workbench's rules and token hash."""
+    wbs = {}
+    for res in s.exec(select(Resource).where(Resource.kind == "workbench")).all():
+        if res.egress_token:
+            wbs[res.name] = {"token_sha256": hashlib.sha256(res.egress_token.encode()).hexdigest(),
+                             "rules": list(res.egress_rules or []), "open": bool(res.network_access)}
+    return {"defaults": egress_defaults(s), "workbenches": wbs, "updated": time.time()}
+
+
+async def publish_egress(r, s: Session) -> None:
+    """Hand the current rules to the egress proxy (through Valkey). Never fails the caller."""
+    try:
+        await r.set(EGRESS_KEY, json.dumps(egress_config(s)))
+    except Exception as e:
+        log.warning("couldn't publish the egress rules: %s", e)
+
+
+async def blocked_requests(r, workbench: str | None = None, limit: int = 50) -> list[dict]:
+    """Recent requests the proxy refused, newest first; for one workbench, or all."""
+    try:
+        rows = await r.xrevrange(EGRESS_BLOCKED, count=2000)
+    except Exception as e:
+        log.warning("couldn't read blocked requests: %s", e)
+        return []
+    out, seen = [], set()
+    for _, f in rows:
+        f = {(k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
+             for k, v in f.items()}
+        if workbench and f.get("workbench") != workbench:
+            continue
+        key = (f.get("workbench"), f.get("host"), f.get("port"))
+        if key in seen:  # one row per workbench, host and port: the latest
+            continue
+        seen.add(key)
+        out.append({"workbench": f.get("workbench"), "host": f.get("host"),
+                    "port": int(f.get("port") or 0), "reason": f.get("reason", ""),
+                    "at": float(f.get("at") or 0)})
+        if len(out) >= limit:
+            break
+    return out

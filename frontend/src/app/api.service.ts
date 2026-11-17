@@ -152,9 +152,13 @@ export interface Resource {
   servers: { id: string; name: string; url: string | null; desktop: boolean }[];
   agents: { id: string; name: string }[];
   in_use_by: { agent: string; thread_id: string } | null;  // shared desktop's lease
+  egress_rules: string[];      // workbench: what it may reach besides the defaults
+  proxy_current: boolean | null;  // workbench: its container signs in to the egress proxy
 }
+export interface BlockedRequest { workbench: string; host: string; port: number; reason: string; at: number; }
+export interface EgressNetwork { defaults: string[]; blocked: BlockedRequest[]; }
 export interface Adoptable { name: string; kind: ResourceKind; servers: string[]; agents: string[]; }
-export interface ResourceList { docker: boolean; resources: Resource[]; adoptable: Adoptable[]; }
+export interface ResourceList { docker: boolean; resources: Resource[]; adoptable: Adoptable[]; egress_defaults: string[]; }
 export type ResourceAction = 'start' | 'stop' | 'restart' | 'recreate' | 'take-over';
 
 export type ApprovalMode = 'allow' | 'ask' | 'block';
@@ -612,7 +616,8 @@ export class Api {
                          network_access?: boolean; agent_ids?: string[] }) {
     return this.http.post<Resource>('/api/resources', body);
   }
-  updateResource(id: string, body: { scope?: ResourceScope; description?: string; network_access?: boolean }) {
+  updateResource(id: string, body: { scope?: ResourceScope; description?: string; network_access?: boolean;
+                                      egress_rules?: string[] }) {
     return this.http.put<Resource>(`/api/resources/${id}`, body);
   }
   assignResource(id: string, agentIds: string[]) {
@@ -625,6 +630,10 @@ export class Api {
     return this.http.delete(`/api/resources/${id}`, { params: { remove_data: removeData } });
   }
   detachResource(id: string) { return this.http.post(`/api/resources/${id}/detach`, {}); }
+  egressNetwork() { return this.http.get<EgressNetwork>('/api/resources/network'); }
+  setEgressDefaults(defaults: string[]) { return this.http.put<EgressNetwork>('/api/resources/network', { defaults }); }
+  blockedRequests(id: string) { return this.http.get<BlockedRequest[]>(`/api/resources/${id}/blocked`); }
+  allowEgress(id: string, rule: string) { return this.http.post<Resource>(`/api/resources/${id}/allow`, { rule }); }
   adoptResources() { return this.http.post<Resource[]>('/api/resources/adopt', {}); }
   probeServer(id: string) {
     return this.http.get<ProbedTool[]>(`/api/tool-servers/${id}/tools`);

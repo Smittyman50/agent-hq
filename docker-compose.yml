@@ -133,7 +133,7 @@ services:
   #   docker compose --profile images build
   # then click Recreate on each desktop / workbench to move it to the new image.
   # Desktops: no published ports; you reach a viewer only through caddy, signed in.
-  # Workbenches: no network but the egress proxy (PyPI), unless you allow more there.
+  # Workbenches: no network but the egress proxy, which applies their rules from the UI.
   desktop-image:
     build: ./desktop
     image: agent-hq/desktop:latest
@@ -144,15 +144,15 @@ services:
     image: agent-hq/workbench:latest
     profiles: [images]
 
-  # The workbenches' only way out: an allowlisting proxy (PyPI by default). Edit
-  # deploy/egress/allowlist and `docker compose restart egress` to allow other hosts.
+  # The workbenches' only way out: a proxy that checks each workbench's rules (PyPI for
+  # all of them by default). Edit the rules under Settings -> Desktops & workbenches
+  # (Network, and each workbench's page); they apply within seconds, from Valkey.
   egress:
     build: ./deploy/egress
     restart: unless-stopped
+    env_file: [.env]          # AHQ_REDIS_URL: where it reads the rules and logs what it blocks
     networks: [default, workbench]
-    volumes: ["./deploy/egress/allowlist:/etc/tinyproxy/allowlist:ro"]
     read_only: true
-    tmpfs: ["/tmp", "/run", "/var/log/tinyproxy"]
 
 volumes:
   hq-data:

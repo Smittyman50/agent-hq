@@ -167,7 +167,7 @@ async def test_workbench_is_locked_down_and_network_access_can_change(hq, docker
     c = docker.containers["ahq-workbench-1"]
     hc = c["body"]["HostConfig"]
     assert hc["ReadonlyRootfs"] and hc["CapDrop"] == ["ALL"] and hc["NetworkMode"] == "agent-hq_workbench"
-    assert "HTTPS_PROXY=http://egress:8888" in c["body"]["Env"]
+    assert any(e.startswith("HTTPS_PROXY=http://workbench-1:") for e in c["body"]["Env"])
     assert "agent-hq_default" not in c["NetworkSettings"]["Networks"]
     assert _agent(a["id"]).desktop_url is None
 
@@ -319,3 +319,68 @@ async def test_shared_desktop_tools_take_the_lease(hq, docker):
     by_server = {t.desktop_server_id: t.lease_resource_id for t in built.toolsets
                  if isinstance(t, ObservedToolset) and t.desktop_server_id}
     assert sorted(by_server.values(), key=str) == sorted([shared["id"]] * 2 + [None] * 2, key=str)
+
+
+async def _egress(hq) -> dict:
+    return json.loads(await hq.broker.r.get(resources.EGRESS_KEY))
+
+
+async def test_workbench_signs_in_to_the_egress_proxy_with_its_own_rules(hq, docker):
+    import hashlib
+
+    res = (await hq.http.post("/api/resources", json={"kind": "workbench"})).json()
+    assert "egress_token" not in res and res["egress_rules"] == [] and res["proxy_current"] is True
+    env = docker.containers["ahq-workbench-1"]["body"]["Env"]
+    proxy = next(e.split("=", 1)[1] for e in env if e.startswith("HTTPS_PROXY="))
+    assert proxy.startswith("http://workbench-1:") and proxy.endswith("@egress:8888")
+    assert f"http_proxy={proxy}" in env and f"https_proxy={proxy}" in env
+    token = proxy.split(":")[2].split("@")[0]
+    cfg = await _egress(hq)
+    assert cfg["defaults"] == ["pypi.org:443", "files.pythonhosted.org:443"]
+    assert cfg["workbenches"]["workbench-1"] == {"token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+                                                 "rules": [], "open": False}
+
+    r = await hq.http.put(f"/api/resources/{res['id']}", json={"egress_rules": [
+        "GitGard.home.arpa:3000", " *.github.com ", "192.168.10.0/24:443", "", "*.github.com"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["egress_rules"] == ["gitgard.home.arpa:3000", "*.github.com", "192.168.10.0/24:443"]
+    assert (await _egress(hq))["workbenches"]["workbench-1"]["rules"] == r.json()["egress_rules"]
+    for bad in ("bad host!", "pypi.org:99999", "10.0.0.0/33"):
+        r = await hq.http.put(f"/api/resources/{res['id']}", json={"egress_rules": [bad]})
+        assert r.status_code == 422, bad
+    await hq.http.put(f"/api/resources/{res['id']}", json={"network_access": True})
+    assert (await _egress(hq))["workbenches"]["workbench-1"]["open"] is True
+
+    # Recreate keeps the token: same proxy sign-in.
+    await hq.http.post(f"/api/resources/{res['id']}/recreate")
+    assert f"HTTPS_PROXY={proxy}" in docker.containers["ahq-workbench-1"]["body"]["Env"]
+
+    desk = (await hq.http.post("/api/resources", json={"kind": "desktop"})).json()
+    assert (await hq.http.put(f"/api/resources/{desk['id']}", json={"egress_rules": ["x.org"]})).status_code == 422
+    assert desk["proxy_current"] is None
+
+    await hq.http.delete(f"/api/resources/{res['id']}")
+    assert (await _egress(hq))["workbenches"] == {}
+
+
+async def test_egress_defaults_and_blocked_requests(hq, docker):
+    res = (await hq.http.post("/api/resources", json={"kind": "workbench"})).json()
+    r = await hq.http.put("/api/resources/network", json={"defaults": ["pypi.org:443", "files.pythonhosted.org:443",
+                                                                        "deb.debian.org"]})
+    assert r.status_code == 200 and r.json()["defaults"][-1] == "deb.debian.org"
+    assert (await _egress(hq))["defaults"][-1] == "deb.debian.org"
+    assert (await hq.http.get("/api/resources")).json()["egress_defaults"][-1] == "deb.debian.org"
+    assert (await hq.http.put("/api/resources/network", json={"defaults": ["no way"]})).status_code == 422
+
+    for who, host, port in (("workbench-1", "api.github.com", 443), ("workbench-1", "api.github.com", 443),
+                            ("workbench-9", "example.com", 443), ("workbench-1", "gitgard.home.arpa", 3000)):
+        await hq.broker.r.xadd(resources.EGRESS_BLOCKED, {"workbench": who, "host": host, "port": str(port),
+                                                          "reason": "not allowed", "at": "1"})
+    mine = (await hq.http.get(f"/api/resources/{res['id']}/blocked")).json()
+    assert [(b["host"], b["port"]) for b in mine] == [("gitgard.home.arpa", 3000), ("api.github.com", 443)]
+    everyone = (await hq.http.get("/api/resources/network")).json()["blocked"]
+    assert {b["workbench"] for b in everyone} == {"workbench-1", "workbench-9"}
+
+    r = await hq.http.post(f"/api/resources/{res['id']}/allow", json={"rule": "gitgard.home.arpa:3000"})
+    assert r.json()["egress_rules"] == ["gitgard.home.arpa:3000"]
+    assert (await _egress(hq))["workbenches"]["workbench-1"]["rules"] == ["gitgard.home.arpa:3000"]

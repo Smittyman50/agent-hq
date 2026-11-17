@@ -48,6 +48,11 @@ async def lifespan(app: FastAPI):
     ensure_setup_code()  # with no account yet, log a one-time code for creating yours
     broker = Broker(settings.redis_url)
     app.state.broker = broker
+    # The egress proxy reads the workbenches' rules from Valkey: make sure they're there.
+    from . import db as _db, resources as _resources
+
+    with _db.session() as s:
+        await _resources.publish_egress(broker.r, s)
     async with contextlib.AsyncExitStack() as stack:
         saver = await stack.enter_async_context(open_checkpointer()) if settings.embed_worker else None
         rt = Runtime(broker, saver)

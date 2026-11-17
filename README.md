@@ -341,7 +341,7 @@ The tests use scripted fake models (no LLM needed), a real `valkey-server` or `r
    - `worker`: pool `default`
    - `worker-desktop`: pool `desktop`, for agents that drive desktops
    - `docker-proxy`: the Docker API `hq` uses to run desktops and workbenches, which you create under **Settings → Desktops & workbenches** (see [Desktops and workbenches](#desktops-and-workbenches))
-   - `egress`: the workbenches' allowlisting proxy (see Workbenches)
+   - `egress`: the workbenches' proxy, which applies each one's network rules (see Workbenches)
 3. **More machines:** copy `docker-compose.yml` and `.env` to another host and keep only the worker services you want there, with `--pools` set to whatever runs on that machine (`gpu`, `desktop`, `lab-east`…). Workers show up on the **Settings → System** page with their pools and load, and each pool's queue depth appears next to them.
 4. **More workers on one host:** `docker compose up -d --scale worker=3`.
 
@@ -411,9 +411,16 @@ A workbench is a small container per agent that gives it somewhere to write and 
 - **Runs:** each run has a timeout (default 120 seconds), and the run and any processes it started are killed when it's reached. Output is capped at 20,000 characters.
 - **Container:** it runs as an unprivileged user with a read-only root filesystem and no Linux capabilities, capped at 2 CPUs, 2 GB of memory and 512 processes.
 
-**The network is off by default.** The workbench is only on the internal `workbench` network, which has no route to the internet or your LAN. Its one way out is the `egress` proxy, which allows only the hosts in `deploy/egress/allowlist`. That's PyPI by default, so `pip_install` works.
-- **Allow another host:** add it to the allowlist, then run `docker compose restart egress`.
-- **Full network access for one workbench (internet and LAN):** tick **Internet and LAN access** on it under **Settings → Desktops & workbenches**.
+**The network is off by default.** A workbench is only on the internal `workbench` network, which has no route to the internet or your LAN. Its one way out is the `egress` proxy (`deploy/egress/egress_proxy.py`). Each workbench signs in to it with its own name and token (its `HTTPS_PROXY`), so the proxy knows whose rules apply:
+- **Every workbench** may reach the defaults: PyPI out of the box, so `pip_install` works. Change them under **Settings → Desktops & workbenches → Network**.
+- **One workbench** may also reach its own rules, under **Network** on its page.
+- **Internet and LAN access**, ticked on a workbench, lets it reach everything directly.
+
+A rule is one of: a host (`pypi.org`, ports 80 and 443), `*.github.com` (the domain and its subdomains), `host:port` (`gitgard.home.arpa:3000`, or `host:*` for any port), an address (`192.168.10.5`), or a network (`192.168.10.0/24:443`; host names that resolve into it count too, and the proxy connects only to those addresses). Rules apply within seconds, without restarting anything: the proxy reads them from Valkey (`AHQ_REDIS_URL`), where `hq` writes them.
+
+**Blocked requests.** The proxy logs what it refuses. Each workbench's page lists its recent ones with an **Allow** button, and the Network page lists all of them with **Allow for <workbench>** and **Allow for all**. So you can let an agent try something, see what it needed, and allow just that.
+
+The proxy carries HTTPS (CONNECT) and plain HTTP, which covers tools that use `HTTPS_PROXY`/`HTTP_PROXY`: pip, git over HTTPS, curl, requests, httpx. Other connections (SSH, database clients, raw TCP) have no way out except **Internet and LAN access**. A workbench whose container predates its token signs in as nobody and gets only the defaults; its page says so, and **Recreate** fixes it (its files are kept).
 
 **Set one up:**
 1. Build the image and start the proxy: `docker compose --profile images build` and `docker compose up -d egress`.
@@ -1227,7 +1234,7 @@ deploy/lab/          compose overlay example, inventory and per-instance credent
 mqttpublisher/       outbound MQTT as an MCP server (:8810): agent status and allow-listed publishes
 deploy/infra/        Postgres + Valkey compose file (Mosquitto optional, "mqtt" profile)
 deploy/caddy/        HTTPS (step-ca ACME) and sign-in-protected desktop viewers
-deploy/egress/       the workbenches' allowlisting egress proxy (PyPI by default)
+deploy/egress/       the workbenches' egress proxy: per-workbench rules from Valkey, blocked-request log
 workbench/           an agent's workbench: Python venv, files, shell, saved scripts (MCP)
 deploy/searxng/      a private SearXNG for the web reader's search (JSON on, limiter off)
 deploy/autodeploy/   deploy.sh (pull, build, back up, restart, health check), the runner's config and

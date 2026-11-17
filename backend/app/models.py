@@ -234,6 +234,11 @@ class Resource(SQLModel, table=True):
     container: str = ""          # Docker container name
     # Workbench only: reach the internet and LAN directly, not just PyPI via the egress proxy.
     network_access: bool = False
+    # Workbench only: what it may reach through the egress proxy besides the defaults
+    # (deploy/egress/egress_proxy.py: "host", "*.domain", "host:port", "10.0.0.0/24:443"),
+    # and the token it signs in to the proxy with.
+    egress_rules: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    egress_token: str = ""
     status: str = "new"          # new | running | stopped | missing | error
     error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=_now)
