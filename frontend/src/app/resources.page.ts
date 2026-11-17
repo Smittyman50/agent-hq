@@ -158,7 +158,12 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         dedicated to one agent or shared by several.</div>
     }
   </div>`,
-  styles: [`.adopt { display: flex; gap: 8px; align-items: center; margin: 6px 0 10px; }
+  styles: [`/* The list is as wide as its contents need (header buttons, pills), within limits. */
+            .split { grid-template-columns: max-content minmax(0, 1fr); }
+            .list { min-width: 280px; max-width: 460px; overflow-x: hidden; }
+            .list-head .inline { display: flex; gap: 6px; flex-wrap: nowrap; }
+            .list-head button { white-space: nowrap; }
+            .adopt { display: flex; gap: 8px; align-items: center; margin: 6px 0 10px; }
             .adopt .hint { margin: 0; flex: 1; }
             a.button { text-decoration: none; display: inline-block; }`],
 })
