@@ -45,10 +45,12 @@ from pydantic_ai import (
     PrefixedToolset,
     RunContext,
     WrapperToolset,
+    ModelRetry,
+    capture_run_messages,
 )
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolReturnPart, UserPromptPart
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
@@ -357,6 +359,45 @@ mention it."""
 ESCALATE_RULES = """\
 If the task is beyond you (you keep failing, or it needs stronger reasoning), call
 `escalate` with a short reason instead of guessing. A stronger model will take over."""
+
+
+WORK_RULES = """\
+Your turn ends the moment you reply without calling a tool, and nothing more happens until
+the user writes again. So never end a reply with a plan or a promise ("I'll now build...",
+"Next I'll...", "I'm starting with..."): make those tool calls now, in this same turn. Reply
+in text only when the work is done, you are blocked, or you need the user to answer a
+question; if you ask one, end your reply with it."""
+
+# A text-only reply whose last paragraph announces work ("I'll now build ...") but asks
+# nothing: the model meant to keep going and stopped. Offers ("if you want, I'll ...",
+# "let me know") are fine endings and are not caught.
+_PROMISE = re.compile(
+    r"\b(i'?ll|i will|i'?m going to|i am going to|let me|i'?m (?:now )?(?:starting|beginning|about to)"
+    r"|i am (?:now )?(?:starting|beginning)|next,? i|now i'?ll|starting with)\b", re.I)
+_OFFER = re.compile(r"\b(if you(?:'d)? (?:like|want|prefer)|let me know|want me to|shall i|should i)\b", re.I)
+CONTINUE_NUDGE = (
+    "You said what you are going to do but made no tool call, so none of it has happened and "
+    "the turn would end here. Do the work now by calling your tools. Reply in text only when "
+    "it is finished, you are blocked, or you need the user to answer a question.")
+MAX_CONTINUE_NUDGES = 2  # under the agent's output retries (3), so a stubborn model still answers
+
+
+def announces_unstarted_work(text: str) -> bool:
+    """True when a final reply promises work it didn't do (see _PROMISE)."""
+    body = (text or "").strip()
+    if not body or body.endswith("?"):
+        return False
+    last = re.split(r"\n\s*\n", body)[-1]
+    return bool(_PROMISE.search(last)) and not _OFFER.search(last)
+
+
+def _resume_point(messages: list) -> list:
+    """The messages of a failed run, cut back to the last complete exchange so another
+    model can carry on: drop a trailing response whose tool calls never got results."""
+    msgs = list(messages)
+    while msgs and isinstance(msgs[-1], ModelResponse):
+        msgs.pop()
+    return msgs
 
 
 class Escalation(Exception):
@@ -1104,6 +1145,7 @@ class Runtime:
         workbench = any(not desk for _, desk in toolsets[:mcp_count])
         on_desktop = any(desk for _, desk in toolsets[:mcp_count])
         instructions.append(att.rules(files_here, workbench, on_desktop))
+        instructions.append(WORK_RULES)
         toolsets.append((self._attachments_toolset(files_here, workbench, on_desktop), None))
         mode = subagents.mode_of(agent)
         if mode != SubagentMode.off:
@@ -1150,6 +1192,16 @@ class Runtime:
                       for i, (t, desk) in enumerate(toolsets)],
         )
         built.ahq_instruction_tokens = used  # for fitting the history around them
+
+        @built.output_validator
+        def keep_working(ctx: RunContext[RunDeps], output):
+            # Small models often narrate the next step and stop. Push back a couple of times
+            # so the turn carries on instead of ending on a promise.
+            if (isinstance(output, str) and ctx.retry < MAX_CONTINUE_NUDGES
+                    and announces_unstarted_work(output)):
+                raise ModelRetry(CONTINUE_NUDGE)
+            return output
+
         return built
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
@@ -1191,7 +1243,9 @@ class Runtime:
             run_kw["usage_limits"] = UsageLimits(request_limit=int(caps.get("max_requests") or 25))
             minutes = float(caps.get("max_minutes") or 10)
 
-        async def attempt(on_fallback: bool, text: str):
+        progress: list = []  # what the main model did before it failed, for the fallback
+
+        async def attempt(on_fallback: bool, text: str | None, resume: list | None = None):
             nonlocal history
             pid, model = ((agent.fallback_provider_id, agent.fallback_model) if on_fallback
                           else (agent.provider_id, agent.model))
@@ -1205,14 +1259,22 @@ class Runtime:
                                             thread_id=deps.thread_id,
                                             model_settings=await thinking.settings_for(
                                                 agent, on_fallback=on_fallback))
-                history = await self._fit_history(agent, pa_agent, history, window, text, deps)
-                coro = pa_agent.run(self._user_input(agent, text, deps), deps=deps,
-                                    message_history=history,
+                start = resume if resume is not None else history
+                start = await self._fit_history(agent, pa_agent, start, window, text or "", deps)
+                if resume is None:
+                    history = start
+                coro = pa_agent.run(self._user_input(agent, text, deps) if text is not None else None,
+                                    deps=deps, message_history=start,
                                     conversation_id=deps.thread_id, **run_kw)
-                try:
-                    result = await (asyncio.wait_for(coro, minutes * 60) if minutes else coro)
-                except asyncio.TimeoutError:
-                    raise RuntimeError(f"stopped at its {minutes:g}-minute limit") from None
+                with capture_run_messages() as captured:
+                    try:
+                        result = await (asyncio.wait_for(coro, minutes * 60) if minutes else coro)
+                    except asyncio.TimeoutError:
+                        progress[:] = captured
+                        raise RuntimeError(f"stopped at its {minutes:g}-minute limit") from None
+                    except Exception:
+                        progress[:] = captured
+                        raise
                 usage, ok = result.usage, True
                 # Images were for this run; the saved history keeps a placeholder instead.
                 return result.output, att.strip_images(result.all_messages())
@@ -1244,9 +1306,16 @@ class Runtime:
             await self.save_message(deps.thread_id, Role.event,
                                     f"{agent.name} switched to its fallback model {target} ({reason[:300]})",
                                     agent_id=agent.id, kind="model_fallback")
-            note = (f"\n\n[A smaller model attempted this first and stopped: {reason[:500]}. "
-                    "Take over and complete it.]")
-            return await attempt(True, prompt + note)
+            note = (f"[A smaller model attempted this first and stopped: {reason[:500]}. "
+                    "Its work so far is above, and any files it wrote are still there. "
+                    "Take over from where it stopped and complete the task.]")
+            resume = _resume_point(att.strip_images(progress))
+            if resume and isinstance(resume[-1], ModelRequest):
+                # Carry on from the main model's last step, with the note added to it.
+                last = resume[-1]
+                resume[-1] = dataclasses.replace(last, parts=[*last.parts, UserPromptPart(note)])
+                return await attempt(True, None, resume)
+            return await attempt(True, f"{prompt}\n\n{note}")
 
     @staticmethod
     def _user_input(agent: AgentDef, text: str, deps: RunDeps):
