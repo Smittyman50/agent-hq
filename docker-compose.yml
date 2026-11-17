@@ -147,7 +147,7 @@ services:
     mem_limit: 2g
     pids_limit: 512
 
-    workbench-2:
+  workbench-2:
     build: ./workbench
     restart: unless-stopped
     networks: [workbench]
