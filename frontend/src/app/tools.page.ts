@@ -2,7 +2,10 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SlicePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { Api, ApprovalMode, CatalogRemote, CatalogServer, ProbedTool, ToolServer, blankServer } from './api.service';
+import { Api, ApprovalMode, CatalogPackage, CatalogRemote, CatalogServer, ProbedTool, ToolServer, blankServer } from './api.service';
+
+interface Install { entry: CatalogServer; index: number; pkg: CatalogPackage; name: string;
+  env: Record<string, string>; argsText: string; egressText: string; }
 
 const SEALED = 'enc:v1:';
 const KEPT = '(saved, encrypted)';
@@ -39,6 +42,35 @@ const KEPT = '(saved, encrypted)';
           <button type="submit">Search</button>
         </form>
         @if (catalogError()) { <p class="error">{{ catalogError() }}</p> }
+        @if (installing(); as n) {
+          <form class="install" (ngSubmit)="install(n)">
+            <h3>Install {{ n.entry.title || n.entry.name }}</h3>
+            <p class="hint inline-hint">Runs <code>{{ n.pkg.registry === 'npm' ? 'npx' : 'uvx' }} {{ n.pkg.identifier }}{{ n.pkg.version ? (n.pkg.registry === 'npm' ? '@' : '==') + n.pkg.version : '' }}</code>
+              in a container of its own (like a workbench: locked down, online only through the egress proxy).
+              @if (n.entry.repository) { Check the <a [href]="n.entry.repository" target="_blank" rel="noopener">repository</a> first. }</p>
+            <label>Name <small>its tool server, container and network name</small>
+              <input name="iname" [(ngModel)]="n.name" required></label>
+            @for (e of n.pkg.env; track e.name) {
+              <label>{{ e.name }} @if (e.required) { <small>required</small> } @if (e.secret) { <small>secret, stored encrypted</small> }
+                @if (e.description) { <small>{{ e.description }}</small> }
+                <input [name]="'env_' + e.name" [type]="e.secret ? 'password' : 'text'" [(ngModel)]="n.env[e.name]"
+                  autocomplete="off"></label>
+            }
+            <label>Arguments <small>one per line; replace anything in &lt;angle brackets&gt;</small>
+              <textarea name="iargs" rows="3" [(ngModel)]="n.argsText"></textarea></label>
+            @for (a of n.pkg.arg_inputs; track a.name) {
+              <p class="hint inline-hint"><b>{{ a.name }}</b>{{ a.required ? ' (required)' : '' }}: {{ a.description || 'see the repository' }}</p>
+            }
+            <label>It may also reach <small>one rule per line, besides PyPI{{ n.pkg.registry === 'npm' ? ' and the npm registry' : '' }}; e.g. the API it talks to</small>
+              <textarea name="iegress" rows="2" [(ngModel)]="n.egressText" placeholder="api.example.com&#10;gitgard.home.arpa:3000"></textarea></label>
+            <p class="hint inline-hint">Every tool starts on <b>Ask me</b> and no agent has it until you tick it. If it needs a
+              host you didn't list, its page under Desktops &amp; workbenches shows the blocked request with an Allow button.</p>
+            <div class="actions">
+              <button type="submit" [disabled]="busy()">{{ busy() ? 'Installing…' : 'Install' }}</button>
+              <button type="button" class="ghost" (click)="installing.set(null)">Cancel</button>
+            </div>
+          </form>
+        }
         @if (searching() && !results().length) { <p class="hint">Searching…</p> }
         @for (c of results(); track c.name) {
           <div class="catalog-entry">
@@ -57,9 +89,10 @@ const KEPT = '(saved, encrypted)';
                   <button type="button" (click)="addFromCatalog(c, $index)" [title]="r.url">Add {{ r.type }} remote</button>
                 } @else { <span class="muted small">{{ r.note }}</span> }
               }
-              @if (c.needs_runner) {
-                <span class="muted small">Runs as a package ({{ packageList(c) }}). Adding these needs the package
-                  runner, which runs each one in its own container; it's the next step.</span>
+              @for (p of c.packages; track $index) {
+                @if (p.supported) {
+                  <button type="button" (click)="startInstall(c, $index)" [title]="p.identifier">Install {{ p.registry }} package</button>
+                } @else { <span class="muted small">{{ p.identifier }}: {{ p.note }}</span> }
               }
             </div>
           </div>
@@ -74,8 +107,9 @@ const KEPT = '(saved, encrypted)';
       <form class="editor" (ngSubmit)="save()">
         <h2>{{ d.id ? 'Edit ' + d.name : 'New tool server' }}</h2>
         @if (d.resource_id) {
-          <p class="hint inline-hint">This server belongs to a desktop or workbench. Give it to agents, and delete it,
-            on <a routerLink="/settings/resources">Desktops &amp; workbenches</a>. Set its approvals here.</p>
+          <p class="hint inline-hint">This server belongs to a desktop, workbench or package server. Give it to agents
+            (or tick it on an agent), run its container and delete it on
+            <a routerLink="/settings/resources">Desktops &amp; workbenches</a>. Set its approvals here.</p>
         }
         @if (picked(); as p) {
           <p class="hint inline-hint">From the catalog: <code>{{ p.entry.name }}</code> v{{ p.entry.version }}
@@ -195,12 +229,14 @@ export class ToolsPage implements OnInit {
   searched = signal(false);
   catalogError = signal('');
   picked = signal<{ entry: CatalogServer; remote: CatalogRemote } | null>(null);
+  installing = signal<Install | null>(null);
+  busy = signal(false);
   private sealed: Record<string, string> = {};
 
   ngOnInit() { this.load(); }
 
   browse() {
-    this.browsing.set(true); this.draft.set(null);
+    this.browsing.set(true); this.draft.set(null); this.installing.set(null);
     if (!this.searched()) this.search();
   }
   search(cursor: string | null = null) {
@@ -216,7 +252,23 @@ export class ToolsPage implements OnInit {
     });
   }
   more() { this.search(this.nextCursor()); }
-  packageList(c: CatalogServer) { return c.packages.map(p => `${p.registry} ${p.identifier}`).join(', '); }
+  startInstall(entry: CatalogServer, index: number) {
+    const pkg = entry.packages[index];
+    this.catalogError.set('');
+    this.installing.set({ entry, index, pkg, name: entry.suggested_name,
+      env: Object.fromEntries(pkg.env.map(e => [e.name, e.value])), argsText: pkg.args.join('\n'), egressText: '' });
+  }
+  install(n: Install) {
+    this.busy.set(true); this.catalogError.set('');
+    this.api.installPackage({ entry: n.entry, package: n.index, name: n.name, env: n.env,
+                              args: this.splitLines(n.argsText), egress_rules: this.splitLines(n.egressText) }).subscribe({
+      next: r => {
+        this.busy.set(false); this.installing.set(null); this.load(); this.edit(r.server);
+        if (r.resource.error) this.error.set(`Installed, but its container didn't start: ${r.resource.error}`);
+      },
+      error: e => { this.busy.set(false); this.catalogError.set(e.error?.detail ?? 'Install failed'); },
+    });
+  }
   addFromCatalog(entry: CatalogServer, i: number) {
     this.catalogError.set('');
     this.api.catalogDraft(entry, i).subscribe({

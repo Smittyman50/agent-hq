@@ -110,8 +110,19 @@ def seal_existing() -> int:
                 h.secret = seal(h.secret)
                 s.add(h)
                 n += 1
-        from .models import ToolServer
+        from .models import Resource, ToolServer
 
+        for res in s.exec(select(Resource).where(Resource.kind == "package")).all():
+            pkg = dict(res.package or {})
+            env = pkg.get("env") or {}
+            plain = {i["name"] for i in pkg.get("inputs") or [] if not i.get("secret")}
+            secret = [v for k, v in env.items() if k not in plain] + [pkg.get("token") or ""]
+            if any(v and not v.startswith(SEALED) for v in secret):
+                pkg["env"] = {k: v if k in plain else seal(v) for k, v in env.items()}
+                pkg["token"] = seal(pkg.get("token") or "")
+                res.package = pkg
+                s.add(res)
+                n += 1
         for t in s.exec(select(ToolServer)).all():
             if any(v and not v.startswith(SEALED) for v in (t.headers or {}).values()):
                 t.headers = {k: seal(v) for k, v in t.headers.items()}

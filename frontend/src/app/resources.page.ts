@@ -4,9 +4,12 @@ import { RouterLink } from '@angular/router';
 import { DatePipe } from '@angular/common';
 import { AgentDef, Adoptable, Api, BlockedRequest, Resource, ResourceAction, ResourceKind, ResourceScope } from './api.service';
 
+const SEALED = 'enc:v1:';
+const KEPT = '(saved, encrypted)';
+
 interface NewResource { kind: ResourceKind; scope: ResourceScope; description: string; network_access: boolean; agent_ids: string[]; }
 
-/** Desktops and workbenches: create them, give them to agents, run their containers. */
+/** Desktops, workbenches and package servers: create them, give them to agents, run their containers. */
 @Component({
   selector: 'hq-resources',
   imports: [FormsModule, RouterLink, DatePipe],
@@ -40,17 +43,17 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
               @if (!r.managed) { <span class="pill">compose</span> }</span>
             <span class="sub">{{ agentNames(r) || 'no agent yet' }}@if (r.description) { · {{ r.description }} }</span>
           </button>
-        } @empty { <p class="hint">None yet.</p> }
+        } @empty { <p class="hint">{{ group.kind === 'package' ? 'Install one from Tools → Catalog.' : 'None yet.' }}</p> }
       }
     </aside>
 
     @if (network()) {
       <form class="editor" (ngSubmit)="saveDefaults()">
         <h2>Workbench network</h2>
-        <p class="hint inline-hint">Workbenches reach the network only through the egress proxy. Each one may reach the
+        <p class="hint inline-hint">Workbenches and package servers reach the network only through the egress proxy. Each one may reach the
           hosts below, plus its own extra rules (on its page). Ticking <b>Internet and LAN access</b> on a workbench
           lets it reach everything. Changes apply within seconds, without a restart.</p>
-        <label>Every workbench may reach <small>one rule per line</small>
+        <label>Every workbench and package server may reach <small>one rule per line</small>
           <textarea name="defaults" rows="6" [(ngModel)]="defaultsText"></textarea></label>
         <p class="hint inline-hint">{{ RULES_HELP }}</p>
         @if (error()) { <p class="error">{{ error() }}</p> }
@@ -116,6 +119,20 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         @if (error()) { <p class="error">{{ error() }}</p> }
 
         <label>Description<input name="desc" [(ngModel)]="edit.description"></label>
+        @if (r.package; as p) {
+          <fieldset><legend>Package</legend>
+            <p class="hint inline-hint">Runs <code>{{ p.command.join(' ') }}</code>
+              @if (p.catalog_name) { (from the catalog: <code>{{ p.catalog_name }}</code>) }
+              @if (p.repository) { · <a [href]="p.repository" target="_blank" rel="noopener">repository</a> }</p>
+            <label>Environment <small>NAME=value, one per line; values are stored encrypted. Saving a change recreates the container.</small>
+              <textarea name="penv" rows="3" [(ngModel)]="edit.env_text"></textarea></label>
+            <label>Arguments <small>one per line</small>
+              <textarea name="pargs" rows="2" [(ngModel)]="edit.args_text"></textarea></label>
+            @for (i of p.inputs; track i.name) {
+              <p class="hint inline-hint"><b>{{ i.name }}</b>{{ i.required ? ' (required)' : '' }}: {{ i.description || 'see the repository' }}</p>
+            }
+          </fieldset>
+        }
         <label>Scope
           <select name="scope" [(ngModel)]="edit.scope" (ngModelChange)="edit.scope === 'dedicated' && (edit.agent_ids = edit.agent_ids.slice(0, 1))">
             <option value="dedicated">Dedicated: one agent's own</option>
@@ -142,14 +159,14 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
           }
         </fieldset>
 
-        @if (r.kind === 'workbench') {
+        @if (hasEgress(r)) {
           <fieldset><legend>Network</legend>
             <label class="check" title="Everything, not only what the rules allow">
               <input type="checkbox" name="net" [(ngModel)]="edit.network_access"> Internet and LAN access</label>
             @if (edit.network_access) {
               <p class="hint inline-hint">It reaches everything directly; the rules below don't apply.</p>
             } @else {
-              <p class="hint inline-hint">Every workbench may reach <code>{{ defaults().join(', ') || 'nothing' }}</code>
+              <p class="hint inline-hint">Every {{ r.kind === 'package' ? 'package server' : 'workbench' }} may reach <code>{{ defaults().join(', ') || 'nothing' }}</code>
                 (<a href="" (click)="$event.preventDefault(); openNetwork()">change</a>).</p>
               <label>This one may also reach <small>one rule per line</small>
                 <textarea name="rules" rows="4" [(ngModel)]="edit.egress_text"
@@ -180,7 +197,9 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         <fieldset><legend>Container</legend>
           <p class="hint inline-hint">
             @if (r.managed) { Agent HQ runs <code>{{ r.container || 'no container yet' }}</code>. <b>Recreate</b> makes a new
-              container from the current image (after <code>docker compose --profile images build</code>) and keeps its data. }
+              container from the current image (after <code>docker compose --profile images build</code>) and keeps its data.
+              @if (r.kind === 'package') { The first start downloads the package, which can take a minute before
+                <b>Test connection</b> on Tools lists its tools. }}
             @else { docker compose runs <code>{{ r.container || r.name + ' (not found)' }}</code>. To manage it here, click
               <b>Take over</b>: Agent HQ replaces it with its own container on the same data. Then delete its block from
               docker-compose.yml before your next <code>docker compose up</code>. }
@@ -218,8 +237,8 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
         </div>
       </form>
     } @else {
-      <div class="empty">Select a desktop or workbench, or create one. Each is a container of its own,
-        dedicated to one agent or shared by several.</div>
+      <div class="empty">Select a desktop, workbench or package server, or create one. Each is a container of its own,
+        dedicated to one agent or shared by several. Package servers come from Tools → Catalog.</div>
     }
   </div>`,
   styles: [`/* The list is as wide as its contents need (header buttons, pills), within limits. */
@@ -251,8 +270,9 @@ export class ResourcesPage implements OnInit {
   busy = signal(false);
   error = signal('');
   /** The form: nothing changes until Save. */
-  edit: { description: string; scope: ResourceScope; network_access: boolean; agent_ids: string[]; egress_text: string } =
-    { description: '', scope: 'dedicated', network_access: false, agent_ids: [], egress_text: '' };
+  edit: { description: string; scope: ResourceScope; network_access: boolean; agent_ids: string[]; egress_text: string;
+          env_text: string; args_text: string } =
+    { description: '', scope: 'dedicated', network_access: false, agent_ids: [], egress_text: '', env_text: '', args_text: '' };
   saved = signal(false);
   readonly RULES_HELP = 'A host (pypi.org: ports 80 and 443), *.domain (it and its subdomains), host:port '
     + '(or host:* for any port), an address (192.168.10.5) or a network (192.168.10.0/24:443; names that '
@@ -268,6 +288,7 @@ export class ResourcesPage implements OnInit {
   groups = computed(() => [
     { kind: 'desktop', label: 'Desktops', items: this.list().filter(r => r.kind === 'desktop') },
     { kind: 'workbench', label: 'Workbenches', items: this.list().filter(r => r.kind === 'workbench') },
+    { kind: 'package', label: 'Package servers', items: this.list().filter(r => r.kind === 'package') },
   ]);
   adoptNames = computed(() => this.adoptable().map(a => a.name).join(', '));
 
@@ -295,7 +316,7 @@ export class ResourcesPage implements OnInit {
     this.selectedId.set(r.id);
     this.revert(r);
     this.blocked.set([]);
-    if (r.kind === 'workbench') this.loadBlocked(r);
+    if (this.hasEgress(r)) this.loadBlocked(r);
   }
 
   private lines(text: string) { return text.split('\n').map(x => x.trim()).filter(Boolean); }
@@ -322,7 +343,25 @@ export class ResourcesPage implements OnInit {
     });
   }
 
-  byName(name: string) { return this.list().find(r => r.name === name && r.kind === 'workbench') ?? null; }
+  byName(name: string) { return this.list().find(r => r.name === name && this.hasEgress(r)) ?? null; }
+  hasEgress(r: Resource) { return r.kind === 'workbench' || r.kind === 'package'; }
+
+  private envText(env: Record<string, string>) {
+    return Object.entries(env).map(([k, v]) => `${k}=${v.startsWith(SEALED) ? KEPT : v}`).join('\n');
+  }
+  private envFrom(text: string, r: Resource): Record<string, string> {
+    const saved = r.package?.env ?? {};
+    return Object.fromEntries(this.lines(text).map(l => {
+      const i = l.indexOf('='); const k = (i < 0 ? l : l.slice(0, i)).trim(), v = i < 0 ? '' : l.slice(i + 1);
+      return [k, v === KEPT ? (saved[k] ?? '') : v];
+    }).filter(([k]) => k));
+  }
+  private packageDirty(r: Resource) {
+    if (!r.package) return false;
+    const env = this.envFrom(this.edit.env_text, r), saved = r.package.env;
+    return !this.sameRules(this.lines(this.edit.args_text), r.package.args)
+      || Object.keys(env).length !== Object.keys(saved).length || Object.entries(env).some(([k, v]) => saved[k] !== v);
+  }
 
   openNetwork() {
     const cur = this.selected();
@@ -359,14 +398,16 @@ export class ResourcesPage implements OnInit {
 
   revert(r: Resource) {
     this.edit = { description: r.description, scope: r.scope, network_access: r.network_access,
-                  agent_ids: r.agents.map(a => a.id), egress_text: (r.egress_rules ?? []).join('\n') };
+                  agent_ids: r.agents.map(a => a.id), egress_text: (r.egress_rules ?? []).join('\n'),
+                  env_text: this.envText(r.package?.env ?? {}), args_text: (r.package?.args ?? []).join('\n') };
   }
 
   dirty(r: Resource) {
     const e = this.edit, ids = r.agents.map(a => a.id);
     return e.description !== r.description || e.scope !== r.scope || e.network_access !== r.network_access
       || e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i))
-      || (r.kind === 'workbench' && !this.sameRules(this.lines(e.egress_text), r.egress_rules ?? []));
+      || (this.hasEgress(r) && !this.sameRules(this.lines(e.egress_text), r.egress_rules ?? []))
+      || this.packageDirty(r);
   }
 
   startNew(kind: ResourceKind) {
@@ -397,7 +438,9 @@ export class ResourcesPage implements OnInit {
   save(r: Resource) {
     const e = { ...this.edit, agent_ids: [...this.edit.agent_ids] };
     const details = { description: e.description, scope: e.scope, network_access: e.network_access,
-                      ...(r.kind === 'workbench' ? { egress_rules: this.lines(e.egress_text) } : {}) };
+                      ...(this.hasEgress(r) ? { egress_rules: this.lines(e.egress_text) } : {}),
+                      ...(this.packageDirty(r) ? { package_env: this.envFrom(e.env_text, r),
+                                                   package_args: this.lines(e.args_text) } : {}) };
     const ids = r.agents.map(a => a.id);
     const agentsChanged = e.agent_ids.length !== ids.length || e.agent_ids.some(i => !ids.includes(i));
     const update = () => this.api.updateResource(r.id, details);

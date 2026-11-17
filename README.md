@@ -506,7 +506,7 @@ The same table has a **Safe in tests** column. It decides which tools may run fo
 
 ### Desktops and workbenches
 
-Desktops and workbenches are **resources**: one container each, plus the tool servers it serves. You create them in the UI and give them to agents. Tools that aren't anyone's in particular, like MQTT or the web reader, stay plain tool servers. Tick **All agents** on one under **Settings → Tools** and every agent gets it without you ticking it on each.
+Desktops and workbenches are **resources**: one container each, plus the tool servers it serves. Package servers from the MCP server catalog are resources too (see [Package servers](#package-servers)). You create them in the UI and give them to agents. Tools that aren't anyone's in particular, like MQTT or the web reader, stay plain tool servers. Tick **All agents** on one under **Settings → Tools** and every agent gets it without you ticking it on each.
 
 **Create one.** Under **Settings → Desktops & workbenches**, click **+ Desktop** or **+ Workbench**. Or, on an agent's page, click **+ Its own desktop** / **+ Its own workbench**. Agent HQ then:
 1. picks the next free name (`desktop-2`, `workbench-3`…);
@@ -574,7 +574,7 @@ Register MCP servers on the **Settings → Tools** page:
 
 Click **Test connection** to list the server's tools (this connects from the API host), then tick the server on any agent, or tick **All agents** on the server to give it to every agent (sub-agents included). Desktops and workbenches aren't registered here: create them under **Settings → Desktops & workbenches** (see [Desktops and workbenches](#desktops-and-workbenches)). Tool names are prefixed with the server name by default (`proxmox_list_vms`) so they never collide.
 
-The worker image is a slim Python image without `npx` or `uvx`, so published servers you'd normally start with those commands are easier to run as their own container and register over HTTP, the way the web reader below does.
+The worker image is a slim Python image without `npx` or `uvx`, so a stdio server you'd normally start with those commands won't run there. Install it from the catalog as a [package server](#package-servers) instead (its own container, served over HTTP), or run it as a container yourself and register it over HTTP, the way the web reader below does.
 
 **Headers.** An HTTP server can get headers, one `Name: value` per line, for example `Authorization: Bearer …` for a hosted server that wants an API key. With `AHQ_SECRET_KEY` set they are encrypted in the database (existing ones at the next start), and the form shows a saved value as `(saved, encrypted)`: leave that line as it is to keep it.
 
@@ -583,11 +583,32 @@ The worker image is a slim Python image without `npx` or `uvx`, so published ser
 Instead of writing a tool server yourself, look for one someone has already published. **Settings → Tools → Catalog** searches the [official MCP Registry](https://registry.modelcontextprotocol.io), the open, community-run list of MCP servers. Each entry shows its publisher (a GitHub account, or a domain they proved they own), version, repository and how it runs.
 
 - **Remote servers** (hosted at a URL) have an **Add** button. It opens the usual form, filled in: name, description, URL and any headers the server asks for (an API key, say), with what each header is for. Fill in the values and save.
-- **Package servers** (an npm or PyPI package, or a Docker image) are listed but can't be added yet. They will run in a container of their own through the package runner, the next step on the roadmap.
+- **Package servers** (an npm or PyPI package) have an **Install** button. See [Package servers](#package-servers) below. Servers published only as a Docker image are listed but can't be installed yet.
 
 **Nothing is trusted by default.** A listing is the publisher's own description, not a review. A server added from the catalog starts with every tool set to **Ask me** and isn't given to any agent, so it does nothing until you've looked at it: save it, click **Test connection** to see its tools, relax the approvals for the ones you trust, then tick it on the agents that need it. Check the repository first, and remember that whatever the server is sent (your agents' tool arguments) goes to whoever hosts it. The Tools list shows which servers came from the catalog, and the catalog shows which entries you've already added.
 
 The search runs on the API host, which needs to reach the registry. `AHQ_MCP_REGISTRY_URL` points it at another registry that speaks the same API (a sub-registry, or one you host yourself); set it empty to turn the catalog off.
+
+### Package servers
+
+Most published MCP servers are npm or PyPI packages that talk over stdio. Agent HQ runs each one you install in a **container of its own**, from the `agent-hq/mcp-runner` image (`mcp-runner/`), and agents reach it over HTTP like any other tool server. Build the image once (and again after pulling changes to `mcp-runner/`):
+
+```bash
+docker compose --profile images build
+```
+
+**Installing.** In **Settings → Tools → Catalog**, click **Install npm package** (or **pypi**) on an entry. The form shows what it will run (`npx -y <package>@<version>` or `uvx <package>==<version>`) and asks for what the package needs: its settings (environment variables; required and secret ones are marked), its arguments (anything in `<angle brackets>` must be replaced, e.g. a directory or a URL), and the hosts it may reach. Install creates:
+
+- a **resource** of kind *package server* under **Settings → Desktops & workbenches**, where you start, stop, restart, recreate and delete its container, change its settings and arguments (saving recreates the container) and see what it was refused;
+- a **tool server** with the same name at `http://<name>:8790/mcp`, every tool on **Ask me**, given to no agent. Its first start downloads the package, so give it a minute, then **Test connection** on the Tools page, set its approvals and tick it on the agents that need it.
+
+**How it is contained.** Each package server runs like a workbench: an unprivileged user, a read-only root filesystem (the package and its caches live in its own volume, `/work`), no capabilities, 1 CPU, 1 GB of memory, and only the `workbench` network. It reaches the outside only through the egress proxy, signed in with its own token: PyPI for every one (the workbench defaults), the npm registry for npm packages, plus the hosts you list. When the server needs a host you didn't list (the API it talks to, say), the request is refused and shows under **Blocked lately** on its page with an **Allow** button. Node servers go through the proxy too (`NODE_USE_ENV_PROXY=1`).
+
+`mcp-proxy` turns the package's stdio into streamable HTTP and only answers requests that carry the server's own bearer token (generated at install, sent by Agent HQ as an encrypted header) and are addressed to its name. That matters because workbenches share its network: code an agent runs in a workbench can't call a package server directly and get around your approvals.
+
+**Secrets.** With `AHQ_SECRET_KEY` set, settings marked secret (and any the catalog doesn't describe) are encrypted in the database and shown as `(saved, encrypted)`; leave that line as it is to keep the value. The container gets the real values in its environment, so anyone who can inspect containers on the host can read them.
+
+**Versions.** A package server runs the version it was installed with. To move to a newer one, delete it and install it again from the catalog (its approvals start over).
 
 ### Web reader: feeds, pages and search
 

@@ -222,7 +222,8 @@ class ToolServer(SQLModel, table=True):
 
 
 class Resource(SQLModel, table=True):
-    """A desktop or workbench: a container per resource, with the tool servers it serves.
+    """A desktop, workbench or package server: a container per resource, with the tool
+    servers it serves.
 
     Dedicated: one agent's own. Shared: several agents use it (a shared desktop is used
     by one conversation at a time, see app/resources.py). Who has it is the agents whose
@@ -231,20 +232,25 @@ class Resource(SQLModel, table=True):
 
     id: str = Field(default_factory=_id, primary_key=True)
     name: str = Field(index=True, unique=True)  # desktop-2, workbench-3: its network name
-    kind: str = "desktop"        # desktop | workbench
+    kind: str = "desktop"        # desktop | workbench | package
     scope: str = "dedicated"     # dedicated | shared
     description: str = ""
     # Created by Agent HQ (it can start, stop, delete and recreate the container), or
     # adopted from docker-compose.yml (compose owns the container until you take it over).
     managed: bool = True
     container: str = ""          # Docker container name
-    # Workbench only: reach the internet and LAN directly, not just PyPI via the egress proxy.
+    # Workbench and package server: reach the internet and LAN directly, not just PyPI via
+    # the egress proxy.
     network_access: bool = False
-    # Workbench only: what it may reach through the egress proxy besides the defaults
+    # Workbench and package server: what it may reach through the egress proxy besides the defaults
     # (deploy/egress/egress_proxy.py: "host", "*.domain", "host:port", "10.0.0.0/24:443"),
     # and the token it signs in to the proxy with.
     egress_rules: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     egress_token: str = ""
+    # Package server only (from the MCP server catalog): what it runs and with what.
+    # {"registry": "npm"|"pypi", "identifier", "version", "args": [...], "env": {name: value
+    # (encrypted)}, "token": bearer token (encrypted), "catalog_name", "catalog_version"}
+    package: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = "new"          # new | running | stopped | missing | error
     error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=_now)

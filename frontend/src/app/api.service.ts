@@ -144,7 +144,7 @@ export interface ToolServer {
   resource_id?: string | null;               // belongs to a desktop/workbench resource
 }
 
-export type ResourceKind = 'desktop' | 'workbench';
+export type ResourceKind = 'desktop' | 'workbench' | 'package';
 export type ResourceScope = 'dedicated' | 'shared';
 export interface Resource {
   id: string; name: string; kind: ResourceKind; scope: ResourceScope; description: string;
@@ -157,6 +157,12 @@ export interface Resource {
   in_use_by: { agent: string; thread_id: string } | null;  // shared desktop's lease
   egress_rules: string[];      // workbench: what it may reach besides the defaults
   proxy_current: boolean | null;  // workbench: its container signs in to the egress proxy
+  package: PackageInfo | null;    // package server: what it runs
+}
+export interface PackageInfo {
+  registry: string; identifier: string; version: string; catalog_name: string | null; catalog_version: string | null;
+  args: string[]; env: Record<string, string>;   // secret values come back encrypted
+  command: string[]; repository: string; inputs: CatalogInput[];
 }
 export interface BlockedRequest { workbench: string; host: string; port: number; reason: string; at: number; }
 export interface EgressNetwork { defaults: string[]; blocked: BlockedRequest[]; }
@@ -168,13 +174,16 @@ export type ApprovalMode = 'allow' | 'ask' | 'block';
 export interface CatalogInput { name: string; description: string; required: boolean; secret: boolean; value: string; }
 export interface CatalogRemote { type: string; url: string; headers: CatalogInput[]; variables: string[];
   supported: boolean; note: string; templated: boolean; }
-export interface CatalogPackage { registry: string; identifier: string; version: string; transport: string; env: CatalogInput[]; }
+export interface CatalogPackage { registry: string; identifier: string; version: string; transport: string; env: CatalogInput[];
+  args: string[]; arg_inputs: CatalogInput[]; supported: boolean; note: string; }
+export interface InstallIn { entry: CatalogServer; package: number; name: string; env: Record<string, string>;
+  args: string[]; egress_rules: string[]; }
 export interface CatalogServer {
   name: string; title: string; description: string; version: string; website: string; repository: string;
   publisher: { namespace: string; kind: 'github' | 'domain'; who: string };
   status: string; published_at: string | null; updated_at: string | null; latest: boolean;
   remotes: CatalogRemote[]; packages: CatalogPackage[];
-  can_add: boolean; needs_runner: boolean; added_as: string | null; suggested_name: string;
+  can_add: boolean; can_install: boolean; added_as: string | null; suggested_name: string;
 }
 export interface CatalogPage { registry: string; servers: CatalogServer[]; next_cursor: string | null; }
 
@@ -631,6 +640,9 @@ export class Api {
     if (cursor) params['cursor'] = cursor;
     return this.http.get<CatalogPage>('/api/catalog', { params });
   }
+  installPackage(body: InstallIn) {
+    return this.http.post<{ resource: Resource; server: ToolServer }>('/api/catalog/install', body);
+  }
   catalogDraft(entry: CatalogServer, remote = 0) {
     return this.http.post<ToolServer>('/api/catalog/draft', entry, { params: { remote } });
   }
@@ -641,7 +653,8 @@ export class Api {
     return this.http.post<Resource>('/api/resources', body);
   }
   updateResource(id: string, body: { scope?: ResourceScope; description?: string; network_access?: boolean;
-                                      egress_rules?: string[] }) {
+                                      egress_rules?: string[]; package_env?: Record<string, string>;
+                                      package_args?: string[] }) {
     return this.http.put<Resource>(`/api/resources/${id}`, body);
   }
   assignResource(id: string, agentIds: string[]) {

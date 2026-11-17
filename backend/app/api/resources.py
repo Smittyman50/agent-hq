@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from .. import resources as rs
 from ..db import get_session
 from ..models import Resource, ToolServer, _now
+from ..webhooks import SEALED, seal
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
 
@@ -30,7 +31,29 @@ class ResourceUpdate(BaseModel):
     scope: str | None = None
     description: str | None = None
     network_access: bool | None = None
-    egress_rules: list[str] | None = None  # workbench: what it may reach besides the defaults
+    egress_rules: list[str] | None = None  # workbench, package: what it may reach besides the defaults
+    # Package server: its environment ({name: value}; send an encrypted value back as is to
+    # keep it) and arguments. Changing either recreates its container.
+    package_env: dict[str, str] | None = None
+    package_args: list[str] | None = None
+
+
+def plain_names(inputs: list[dict] | None) -> set[str]:
+    """Settings the catalog says aren't secret: stored as they are, so the page shows them.
+    Everything else (secrets, and anything the catalog doesn't describe) is encrypted."""
+    return {i["name"] for i in inputs or [] if isinstance(i, dict) and i.get("name") and not i.get("secret")}
+
+
+def seal_env(env: dict[str, str], plain: set[str] = frozenset()) -> dict[str, str]:
+    out = {}
+    for k, v in (env or {}).items():
+        k = k.strip()
+        if not k:
+            continue
+        if not k.replace("_", "").isalnum() or k[0].isdigit():
+            raise HTTPException(422, f"{k!r} isn't an environment variable name")
+        out[k] = v if k in plain and not v.startswith(SEALED) else seal(v)
+    return out
 
 
 class EgressDefaultsIn(BaseModel):
@@ -66,7 +89,8 @@ async def _view(s: Session, res: Resource, request: Request | None = None) -> di
             lease = await rs.lease_holder(request.app.state.broker.r, res.id)
         except Exception:  # Valkey down: the page still works
             lease = None
-    return {**res.model_dump(exclude={"egress_token"}),
+    return {**res.model_dump(exclude={"egress_token", "package"}),
+            "package": package_view(res),
             "egress_rules": list(res.egress_rules or []),
             "proxy_current": rs.proxy_current(res),
             "viewer_url": rs.viewer_url(res),
@@ -74,6 +98,20 @@ async def _view(s: Session, res: Resource, request: Request | None = None) -> di
                         for t in rs.servers_of(s, res.id)],
             "agents": [{"id": a.id, "name": a.name} for a in rs.holders(s, res.id)],
             "in_use_by": lease}
+
+
+def package_view(res: Resource) -> dict[str, Any] | None:
+    """What the page shows of a package server: never its token; secrets stay encrypted."""
+    if res.kind != rs.PACKAGE:
+        return None
+    pkg = res.package or {}
+    try:
+        command = rs.package_command(pkg)
+    except (KeyError, ValueError):
+        command = []
+    return {k: pkg.get(k) for k in ("registry", "identifier", "version", "catalog_name", "catalog_version")} | {
+        "args": list(pkg.get("args") or []), "env": dict(pkg.get("env") or {}), "command": command,
+        "repository": pkg.get("repository") or "", "inputs": list(pkg.get("inputs") or [])}
 
 
 def _fail(e: rs.DockerError) -> HTTPException:
@@ -154,16 +192,31 @@ async def update_resource(res_id: str, body: ResourceUpdate, request: Request,
         res.scope = body.scope
     if body.description is not None:
         res.description = body.description
-    if body.network_access is not None and res.kind == "workbench" and body.network_access != res.network_access:
+    if body.network_access is not None and res.kind in rs.EGRESS_KINDS and body.network_access != res.network_access:
         try:
             await rs.set_network_access(res, body.network_access)
         except rs.DockerError as e:
             raise _fail(e) from e
         res.network_access = body.network_access
     if body.egress_rules is not None:
-        if res.kind != "workbench":
-            raise HTTPException(422, "only workbenches have egress rules")
+        if res.kind not in rs.EGRESS_KINDS:
+            raise HTTPException(422, "only workbenches and package servers have egress rules")
         res.egress_rules = rs.check_rules(body.egress_rules)
+    if body.package_env is not None or body.package_args is not None:
+        if res.kind != rs.PACKAGE:
+            raise HTTPException(422, "only package servers have a package environment and arguments")
+        pkg = dict(res.package or {})
+        before = (pkg.get("env"), pkg.get("args"))
+        if body.package_env is not None:
+            pkg["env"] = seal_env(body.package_env, plain_names(pkg.get("inputs")))
+        if body.package_args is not None:
+            pkg["args"] = [a for a in body.package_args if a.strip()]
+        res.package = pkg
+        if (pkg.get("env"), pkg.get("args")) != before and res.managed and res.container:
+            try:
+                await rs.recreate(res, rs.docker())
+            except rs.DockerError as e:
+                res.status, res.error = "error", str(e)
     res.updated_at = _now()
     s.add(res)
     s.commit()
@@ -224,10 +277,10 @@ async def blocked(res_id: str, request: Request, s: Session = Depends(get_sessio
 
 @router.post("/{res_id}/allow")
 async def allow(res_id: str, body: AllowIn, request: Request, s: Session = Depends(get_session)):
-    """Add one rule to a workbench (the Allow button next to a blocked request)."""
+    """Add one rule to a workbench or package server (the Allow button next to a blocked request)."""
     res = _get(s, res_id)
-    if res.kind != "workbench":
-        raise HTTPException(422, "only workbenches have egress rules")
+    if res.kind not in rs.EGRESS_KINDS:
+        raise HTTPException(422, "only workbenches and package servers have egress rules")
     res.egress_rules = rs.check_rules(list(res.egress_rules or []) + [body.rule])
     res.updated_at = _now()
     s.add(res)

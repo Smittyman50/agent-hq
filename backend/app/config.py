@@ -128,6 +128,8 @@ class Settings:
     docker_url: str = field(default_factory=lambda: _env("DOCKER_URL", "").rstrip("/"))
     desktop_image: str = field(default_factory=lambda: _env("DESKTOP_IMAGE", "agent-hq/desktop:latest"))
     workbench_image: str = field(default_factory=lambda: _env("WORKBENCH_IMAGE", "agent-hq/workbench:latest"))
+    # Package servers from the MCP server catalog (mcp-runner/).
+    mcp_runner_image: str = field(default_factory=lambda: _env("MCP_RUNNER_IMAGE", "agent-hq/mcp-runner:latest"))
     resource_network: str = field(default_factory=lambda: _env("RESOURCE_NETWORK", "agent-hq_default"))
     workbench_network: str = field(default_factory=lambda: _env("WORKBENCH_NETWORK", "agent-hq_workbench"))
     compose_project: str = field(default_factory=lambda: _env("COMPOSE_PROJECT", "agent-hq"))

@@ -644,3 +644,5 @@ label.inline-num input { max-width: 90px; }
 .catalog-entry .pill:first-of-type { margin-left: 6px; }
 .list-head .inline { gap: 6px; }
 .catalog-entry .inline { gap: 8px; align-items: center; flex-wrap: wrap; }
+.install { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.install h3 { margin-top: 0; }

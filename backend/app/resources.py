@@ -1,4 +1,10 @@
-"""Resources: desktops and workbenches you create from the UI and give to agents.
+"""Resources: desktops, workbenches and package servers you create from the UI and give
+to agents.
+
+A package server is an MCP server from the catalog (app/api/catalog.py) published as an
+npm or PyPI package. It runs in a container of its own (mcp-runner/), locked down and
+networked like a workbench, and serves the package over HTTP with a bearer token of its
+own, so nothing else on the workbench network can call it.
 
 A resource is one container (an agent desktop, or a workbench) plus the tool servers it
 serves. Agent HQ creates the container through the Docker API (the docker-proxy service
@@ -39,7 +45,10 @@ from .models import AgentDef, Resource, ToolServer, _now
 
 log = logging.getLogger("agent_hq.resources")
 
-KINDS = ("desktop", "workbench")
+KINDS = ("desktop", "workbench")  # made on the resources page
+PACKAGE = "package"                # made by installing from the MCP server catalog
+# Kinds that go out only through the egress proxy, with rules of their own.
+EGRESS_KINDS = ("workbench", PACKAGE)
 SCOPES = ("dedicated", "shared")
 NAME_RE = re.compile(r"^(desktop|workbench)-(\d+)$")
 LABEL = "agent-hq.resource"
@@ -48,6 +57,25 @@ LABEL = "agent-hq.resource"
 DESKTOP_MCP_PORT = 8765
 BROWSER_MCP_PORT = 8931
 WORKBENCH_MCP_PORT = 8770
+PACKAGE_MCP_PORT = 8790
+# What a package server may reach besides the defaults (PyPI), to download itself.
+PACKAGE_EGRESS = {"npm": ["registry.npmjs.org:443"], "pypi": []}
+
+
+def package_command(pkg: dict[str, Any]) -> list[str]:
+    """The stdio command the runner wraps: npx for npm, uvx for PyPI."""
+    ident, version, args = pkg["identifier"], pkg.get("version") or "", list(pkg.get("args") or [])
+    if pkg["registry"] == "npm":
+        return ["npx", "-y", f"{ident}@{version}" if version else ident, *args]
+    if pkg["registry"] == "pypi":
+        return ["uvx", f"{ident}=={version}" if version else ident, *args]
+    raise ValueError(f"can't run a {pkg['registry']} package")
+
+
+def package_env(pkg: dict[str, Any]) -> list[str]:
+    from .webhooks import unseal
+
+    return [f"{k}={unseal(v)}" for k, v in (pkg.get("env") or {}).items()]
 
 
 def viewer_url(res: Resource) -> str | None:
@@ -176,7 +204,8 @@ def _data_mount(res: Resource) -> dict:
 
 
 def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
-    """The container: a desktop as linuxserver/webtop wants it, a workbench locked down."""
+    """The container: a desktop as linuxserver/webtop wants it, a workbench or package
+    server locked down."""
     mounts = mounts or [_data_mount(res)]
     restart = {"Name": "unless-stopped"}
     if res.kind == "desktop":
@@ -192,7 +221,7 @@ def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
         }
     net = settings.workbench_network
     proxy = proxy_url(res)
-    return {
+    body = {
         "Image": image,
         "Env": [f"HTTPS_PROXY={proxy}", f"HTTP_PROXY={proxy}", f"https_proxy={proxy}",
                 f"http_proxy={proxy}", "NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1"],
@@ -203,6 +232,15 @@ def spec(res: Resource, image: str, mounts: list[dict] | None = None) -> dict:
                        "Memory": 2 * 1024 ** 3, "PidsLimit": 512},
         "NetworkingConfig": {"EndpointsConfig": {net: {"Aliases": [res.name]}}},
     }
+    if res.kind == PACKAGE:
+        from .webhooks import unseal
+
+        pkg = res.package or {}
+        body["Env"] += [f"MCP_RUNNER_NAME={res.name}",
+                        f"MCP_RUNNER_TOKEN={unseal(pkg.get('token') or '')}", *package_env(pkg)]
+        body["Cmd"] = package_command(pkg)
+        body["HostConfig"].update({"NanoCpus": 1_000_000_000, "Memory": 1024 ** 3, "PidsLimit": 256})
+    return body
 
 
 def proxy_url(res: Resource) -> str:
@@ -218,7 +256,7 @@ _proxy_current: dict[str, bool] = {}
 
 
 def proxy_current(res: Resource) -> bool | None:
-    return _proxy_current.get(res.id) if res.kind == "workbench" else None
+    return _proxy_current.get(res.id) if res.kind in EGRESS_KINDS else None
 
 
 def _mounts_from(info: dict) -> list[dict]:
@@ -235,6 +273,8 @@ def _mounts_from(info: dict) -> list[dict]:
 
 
 def _image_for(res: Resource) -> str:
+    if res.kind == PACKAGE:
+        return settings.mcp_runner_image
     return settings.desktop_image if res.kind == "desktop" else settings.workbench_image
 
 
@@ -255,7 +295,7 @@ async def refresh(res: Resource, d: Docker | None = None) -> Resource:
     try:
         info = await d.inspect(res.container)
         res.status = _status_of(info)
-        if info is not None and res.kind == "workbench":
+        if info is not None and res.kind in EGRESS_KINDS:
             env = (info.get("Config") or {}).get("Env") or []
             _proxy_current[res.id] = bool(res.egress_token) and f"HTTPS_PROXY={proxy_url(res)}" in env
         if res.status != "error":
@@ -274,11 +314,11 @@ async def provision(res: Resource, d: Docker | None = None, *, mounts: list[dict
         raise DockerError(f"image {image} isn't on this host yet: run `docker compose --profile images "
                           "build`, then Recreate")
     name = res.container or container_name(res)
-    if res.kind == "workbench" and not res.egress_token:
+    if res.kind in EGRESS_KINDS and not res.egress_token:
         res.egress_token = secrets.token_urlsafe(24)
     await d.create(name, spec(res, image, mounts))
     res.container = name
-    if res.kind == "workbench" and res.network_access:
+    if res.kind in EGRESS_KINDS and res.network_access:
         await d.connect(settings.resource_network, name, [res.name])
     await d.start(name)
     res.status, res.error = "running", None
@@ -321,7 +361,7 @@ async def take_over(res: Resource, d: Docker | None = None) -> Resource:
 
 async def set_network_access(res: Resource, on: bool, d: Docker | None = None) -> None:
     d = d or docker()
-    if res.kind != "workbench" or not res.container or not d.enabled:
+    if res.kind not in EGRESS_KINDS or not res.container or not d.enabled:
         return
     if on:
         await d.connect(settings.resource_network, res.container, [res.name])
@@ -672,9 +712,10 @@ def set_egress_defaults(s: Session, rules: list[str]) -> list[str]:
 
 
 def egress_config(s: Session) -> dict[str, Any]:
-    """What the egress proxy needs: the defaults, and each workbench's rules and token hash."""
+    """What the egress proxy needs: the defaults, and the rules and token hash of each
+    workbench and package server (the proxy calls them all workbenches)."""
     wbs = {}
-    for res in s.exec(select(Resource).where(Resource.kind == "workbench")).all():
+    for res in s.exec(select(Resource).where(Resource.kind.in_(EGRESS_KINDS))).all():
         if res.egress_token:
             wbs[res.name] = {"token_sha256": hashlib.sha256(res.egress_token.encode()).hexdigest(),
                              "rules": list(res.egress_rules or []), "open": bool(res.network_access)}
