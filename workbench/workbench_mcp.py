@@ -32,28 +32,61 @@ MAX_OUTPUT = int(os.environ.get("WORKBENCH_MAX_OUTPUT", "20000"))
 DEFAULT_TIMEOUT = int(os.environ.get("WORKBENCH_TIMEOUT", "120"))
 MAX_TIMEOUT = int(os.environ.get("WORKBENCH_MAX_TIMEOUT", "1800"))
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+# Agent HQ names the chat each call belongs to in this header; each chat gets its own
+# folder (chats/<id>), so a new chat starts empty instead of finding the last one's files.
+# The venv and saved scripts stay shared: those are meant to carry over.
+CHAT_HEADER = "x-agenthq-chat"
+CHATS = WORK / "chats"
+CHAT_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 ASK = {"agent_hq/approval": "ask"}
 ALLOW = {"agent_hq/approval": "allow"}
 
 mcp = FastMCP("workbench", instructions=(
-    "Your own Linux workbench with a persistent Python environment. Paths are relative to "
-    "your workspace. Write code to files, run it, and read the output. Packages you install "
+    "Your own Linux workbench with a persistent Python environment. Each chat has its own "
+    "workspace folder, empty when the chat starts; paths are relative to it. Write code to files, run it, and read the output. Packages you install "
     "with pip_install stay installed. Save scripts you'll want again with save_script. "
     "There is no internet access unless the user has turned it on; PyPI works for installs."))
 
 
+def _chat() -> str | None:
+    """The chat this call is for, from Agent HQ's header (None outside a request)."""
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+
+        chat = (get_http_headers(include={CHAT_HEADER}) or {}).get(CHAT_HEADER, "").strip()
+    except Exception:
+        return None
+    return chat if CHAT_RE.match(chat) else None
+
+
+def _root() -> Path:
+    """This call's workspace: the chat's own folder, or the whole workbench when the
+    caller names no chat (an older Agent HQ, or a client of your own)."""
+    chat = _chat()
+    if not chat:
+        return WORK
+    root = CHATS / chat
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _path(p: str) -> Path:
     """A path inside the workspace (relative paths are relative to it)."""
-    full = (WORK / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
-    if full != WORK and WORK not in full.parents:
+    root = _root()
+    full = (root / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
+    if full != root and root not in full.parents:
         raise ValueError(f"{p} is outside your workspace")
     return full
 
 
+def _rel(p: Path) -> str:
+    return str(p.relative_to(_root()))
+
+
 def _env() -> dict[str, str]:
     env = dict(os.environ)
-    env.update(HOME=str(WORK), VIRTUAL_ENV=str(VENV), PYTHONUNBUFFERED="1",
+    env.update(HOME=str(_root()), VIRTUAL_ENV=str(VENV), PYTHONUNBUFFERED="1",
                PATH=f"{VENV / 'bin'}:{env.get('PATH', '/usr/bin:/bin')}")
     return env
 
@@ -70,7 +103,7 @@ async def _run(argv: list[str], timeout: int, stdin: str | None = None,
     timeout = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=WORK, env={**_env(), **(extra_env or {})}, start_new_session=True,
+        *argv, cwd=_root(), env={**_env(), **(extra_env or {})}, start_new_session=True,
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     timed_out = False
@@ -97,7 +130,7 @@ async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     The working directory is your workspace, so files you write stay there. Print what you
     want to see. timeout is in seconds (the process and its children are killed after it).
     """
-    runs = WORK / ".runs"
+    runs = WORK / ".runs"  # outside every chat's folder; the file is deleted afterwards
     runs.mkdir(exist_ok=True)
     f = runs / f"run_{int(time.time() * 1000)}.py"
     f.write_text(code)
@@ -151,7 +184,7 @@ def write_file(path: str, content: str, append: bool = False) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a" if append else "w") as fh:
         fh.write(content)
-    return f"{'appended' if append else 'wrote'} {len(content)} characters to {p.relative_to(WORK)}"
+    return f"{'appended' if append else 'wrote'} {len(content)} characters to {_rel(p)}"
 
 
 def _near(text: str, old: str) -> str:
@@ -198,20 +231,20 @@ def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False
     last = min(len(lines), first + new_text.count("\n"))
     shown = "\n".join(f"{i:>5}  {lines[i - 1]}" for i in range(max(1, first - 1), min(len(lines), last + 1) + 1))
     what = f"{count} occurrences" if replace_all and count > 1 else "1 occurrence"
-    return f"replaced {what} in {p.relative_to(WORK)}. Now around line {first}:\n{shown}"
+    return f"replaced {what} in {_rel(p)}. Now around line {first}:\n{shown}"
 
 
 @mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})
 def list_files(path: str = ".", depth: int = 2) -> list[str]:
     """List files in your workspace (folders end with /). Hidden folders are skipped."""
-    root = _path(path)
+    root, top = _path(path), _root()
     out: list[str] = []
 
     def walk(d: Path, level: int) -> None:
         for child in sorted(d.iterdir()):
             if child.name.startswith(".") or len(out) >= 500:
                 continue
-            rel = str(child.relative_to(WORK))
+            rel = str(child.relative_to(top))
             if child.is_dir():
                 out.append(rel + "/")
                 if level < depth:
@@ -240,7 +273,7 @@ def ahq_put_file(path: str, data_b64: str) -> str:
     p = _path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(data)
-    return json.dumps({"path": str(p.relative_to(WORK)), "bytes": len(data)})
+    return json.dumps({"path": _rel(p), "bytes": len(data)})
 
 
 @mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})

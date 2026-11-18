@@ -407,10 +407,10 @@ async def _transfer_server(agent, *, desktop: bool) -> Any:
     return None
 
 
-async def _call(srv, tool: str, args: dict) -> dict:
+async def _call(srv, tool: str, args: dict, chat: str | None = None) -> dict:
     from .runtime import mcp_toolset
 
-    ts = mcp_toolset(srv)
+    ts = mcp_toolset(srv, chat)
     async with ts:
         result = await ts.client.call_tool(tool, args)
     if getattr(result, "isError", False) or getattr(result, "is_error", False):
@@ -420,9 +420,10 @@ async def _call(srv, tool: str, args: dict) -> dict:
     return json.loads(text) if text else {}
 
 
-async def to_workbench(srv, a: Attachment, path: str) -> dict:
+async def to_workbench(srv, a: Attachment, path: str, chat: str | None = None) -> dict:
+    """Copy an attachment into the workbench: into that chat's folder when chat is given."""
     return await _call(srv, "ahq_put_file", {"path": path,
-                                             "data_b64": base64.b64encode(a.data).decode()})
+                                             "data_b64": base64.b64encode(a.data).decode()}, chat)
 
 
 async def to_desktop(srv, a: Attachment) -> dict:
@@ -434,9 +435,9 @@ async def list_desktop(srv, folder: str = "") -> list[dict]:
     return await _call(srv, "ahq_list_files", {"folder": folder})
 
 
-async def fetch_file(srv, path: str) -> tuple[str, bytes]:
-    """A file from a workbench or desktop: (name, bytes)."""
-    r = await _call(srv, "ahq_get_file", {"path": path, "max_bytes": settings.attachment_max_bytes})
+async def fetch_file(srv, path: str, chat: str | None = None) -> tuple[str, bytes]:
+    """A file from a workbench (that chat's folder, when chat is given) or desktop: (name, bytes)."""
+    r = await _call(srv, "ahq_get_file", {"path": path, "max_bytes": settings.attachment_max_bytes}, chat)
     if r.get("error"):
         raise AttachmentError(r["error"])
     return r.get("name") or PurePosixPath(path).name, base64.b64decode(r["data_b64"])

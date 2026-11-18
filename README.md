@@ -334,7 +334,7 @@ docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test
 - the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
 - your profile: in every agent's instructions (or not, per agent), the word cap, and suggestions you approve
 - the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources and NAS shares (SMB and mounted folders) that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
-- long conversations: cutting only between turns, summarising older turns (and folding an old summary into a new one), dropping them when the summary fails, compaction in a real conversation, trimming tool results within a turn, the warning when instructions don't fit, and reading the window from Ollama (loaded model, Modelfile, or the default)
+- long conversations: cutting only between turns, summarising older turns (and folding an old summary into a new one), dropping them when the summary fails, compaction in a real conversation, trimming tool results within a turn (calibrated against the token counts the model reports), the warning when instructions don't fit, and reading the window from Ollama (loaded model, Modelfile, or the default)
 - evals: cases from replies and feedback, replaying recorded tool calls, read-only tools running for real only when allowed, Ask/Block tools never running, the judge, and skill changes tested without and with (Auto-mode changes held when they make things worse)
 
 ## Deploy (Docker)
@@ -409,9 +409,11 @@ A workbench is a small container per agent that gives it somewhere to write and 
 | `edit_file` | replaces one exact piece of a file (or every copy of it), so a small change doesn't mean writing the whole file again | allow |
 
 **Storage.** Everything lives in the workbench's volume (`ahq-<name>`), mounted at `/work`:
-- the agent's files
+- the agent's files, **one folder per chat** at `/work/chats/<chat id>`
 - the venv at `/work/.venv`, so installed packages survive restarts and rebuilds
 - saved scripts in `/work/scripts`
+
+**Each chat starts with an empty workspace.** Agent HQ names the chat on every workbench call (the `X-AgentHQ-Chat` header), and the workbench makes that chat's folder the workspace: the working directory for code and shell, the root for file paths, and where attachments go in and `send_from_workbench` takes files out. A new chat can't stumble on the last one's project and spend its turn going over that instead of the new task. Files stay with their chat, so coming back to a chat finds its work where it was left, and agents sharing a workbench share a chat's folder when they work in the same chat (a delegated task, say). The venv and saved scripts are shared across chats on purpose: those are meant to carry over. This is about focus, not security: `run_shell` can still `cd` anywhere in the volume. A client that names no chat (your own, or an older Agent HQ) gets all of `/work`, as before. Files from before this change are still at the top of `/work`, out of every chat's sight; delete them from the workbench's shell when you no longer need them.
 
 **Limits.**
 - **Runs:** each run has a timeout (default 120 seconds), and the run and any processes it started are killed when it's reached. Output is capped at 20,000 characters.
@@ -797,7 +799,7 @@ The agent editor shows the window it's using, where the number came from, how ma
   - **Contents:** what you want, decisions and results, open work, and facts found with tools, with exact hostnames, IDs and paths.
   - **In the conversation:** a note says what was summarised, with the summary itself one click away.
   - **If the summary can't be written,** the older turns are dropped instead, and the agent is told.
-- **Trimming, within a turn.** During a long run of tool calls, older tool results are shortened, harder as the run nears the window.
+- **Trimming, within a turn.** During a long run of tool calls, older tool results are shortened, harder as the run nears the window. The size estimate is self-correcting: each model response reports how many tokens its request really took (tool definitions included, and models such as Qwen count code and JSON at about 3 characters a token, not 3.5), so the trimmer compares that with its own estimate and trims to the real figure. Without this, a long coding run could look 24k tokens to Agent HQ while the model received 32k, and the next tool call came back cut off.
 - **A warning,** once a day per conversation, when an agent's instructions alone don't fit its window. The instructions include its prompt, your profile, skills, memories, knowledge excerpts and tools. When that happens, Ollama is already cutting them.
 
 The thresholds, the summary length, the room kept for tools and the reply, and the default windows are under **Settings → System → Long conversations**.

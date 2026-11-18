@@ -254,16 +254,23 @@ def find_delegate(agent: AgentDef, name: str) -> AgentDef | None:
     return None
 
 
-def mcp_toolset(srv: ToolServer) -> MCPToolset:
+# Names the chat a call belongs to. A workbench gives each chat its own folder with it,
+# so a new chat starts with an empty workspace (see workbench/workbench_mcp.py).
+CHAT_HEADER = "X-AgentHQ-Chat"
+
+
+def mcp_toolset(srv: ToolServer, chat: str | None = None) -> MCPToolset:
     if srv.transport == Transport.http:
         if not srv.url:
             raise ValueError(f"tool server {srv.name} has no URL")
+        headers = {}
         if srv.headers:
             from .webhooks import unseal
 
-            return MCPToolset(srv.url, id=srv.name,
-                              headers={k: unseal(v) for k, v in srv.headers.items()})
-        return MCPToolset(srv.url, id=srv.name)
+            headers = {k: unseal(v) for k, v in srv.headers.items()}
+        if chat and not srv.desktop:
+            headers[CHAT_HEADER] = chat
+        return MCPToolset(srv.url, id=srv.name, headers=headers) if headers else MCPToolset(srv.url, id=srv.name)
     if not srv.command:
         raise ValueError(f"tool server {srv.name} has no command")
     config = {"mcpServers": {srv.name: {"command": srv.command, "args": srv.args, "env": srv.env}}}
@@ -320,15 +327,16 @@ class ReachableToolset(WrapperToolset):
             raise ToolServerUnreachable(self.server_name, self.where, _root_reason(e)) from e
 
 
-def build_tool_toolsets(agent: AgentDef, wrap=None) -> list[tuple[Any, str | None]]:
-    """[(toolset, desktop server id or None)] for the agent's MCP servers.
+def build_tool_toolsets(agent: AgentDef, wrap=None, chat: str | None = None) -> list[tuple[Any, str | None]]:
+    """[(toolset, desktop server id or None)] for the agent's MCP servers; chat is the
+    conversation the run belongs to (workbenches keep a folder per chat).
 
     `wrap(toolset, server)` is applied to each server's toolset before its tool names are
     prefixed (the approval check uses it, so it sees the server's own tool names).
     """
     out = []
     for srv in agent_tool_servers(agent):
-        ts = ReachableToolset(mcp_toolset(srv), server_name=srv.name,
+        ts = ReachableToolset(mcp_toolset(srv, chat), server_name=srv.name,
                               where=srv.url or srv.command or "no address")
         if wrap is not None:
             ts = wrap(ts, srv)
@@ -1301,7 +1309,7 @@ class Runtime:
                 "You are working on a task delegated by another agent. Do the work, then "
                 "return a WorkResult. If you cannot finish, return status 'failed' or "
                 "'partial' and explain why in the summary.")
-        toolsets = build_tool_toolsets(agent, wrap=self._with_approvals)
+        toolsets = build_tool_toolsets(agent, wrap=self._with_approvals, chat=thread_id)
         mcp_count = len(toolsets)  # the first ones are your tool servers; the rest are Agent HQ's
         if toolsets:
             instructions.append(APPROVAL_NOTE)
@@ -1902,7 +1910,7 @@ class Runtime:
             if srv is None:
                 return {"error": "you have no workbench that can receive files (or it is not reachable)"}
             try:
-                r = await att.to_workbench(srv, a, path or f"inbox/{a.name}")
+                r = await att.to_workbench(srv, a, path or f"inbox/{a.name}", chat=ctx.deps.thread_id)
             except Exception as e:
                 return {"error": f"copy failed: {e}"}
             return {"copied": True, **r}
@@ -1935,7 +1943,7 @@ class Runtime:
             if srv is None:
                 return {"error": f"you have no {where} that can send files (or it is not reachable)"}
             try:
-                fname, data = await att.fetch_file(srv, path)
+                fname, data = await att.fetch_file(srv, path, chat=ctx.deps.thread_id)
                 # off the event loop: a scanned PDF is OCR'd while it's stored
                 a = await asyncio.get_running_loop().run_in_executor(None, lambda: att.store(
                     ctx.deps.thread_id, name or fname, data, source=where,
