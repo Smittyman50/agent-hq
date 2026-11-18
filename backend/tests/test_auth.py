@@ -4,7 +4,7 @@ import httpx
 from sqlmodel import select
 
 from app import auth, db
-from app.models import AuthEvent, User
+from app.models import ApiToken, AuthEvent, AuthSession, User
 
 PW = "correct horse battery"
 
@@ -34,9 +34,13 @@ async def test_unknown_api_paths_are_404_not_the_web_app(hq):
 
 
 async def test_first_account_needs_the_setup_code(hq):
+    # A fresh install: no accounts. Sessions and API tokens go first, since they belong to
+    # an account (Postgres enforces those foreign keys; SQLite by default doesn't).
     with db.session() as s:
-        for u in s.exec(select(User)).all():
-            s.delete(u)
+        for model in (AuthSession, ApiToken, User):
+            for row in s.exec(select(model)).all():
+                s.delete(row)
+            s.flush()
         s.commit()
     code = auth.ensure_setup_code()
     assert (await hq.anon.get("/api/auth/status")).json()["setup_required"] is True
