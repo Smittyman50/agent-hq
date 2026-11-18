@@ -40,6 +40,16 @@ async def test_first_reply_names_the_chat_and_updates_it(hq):
     assert t["title"] == "Chat with Scarlett" and t["updated_at"] is None
     await hq.say(t["id"], "find wedding venues")
     await hq.wait_agent_replies(t["id"], 1)
+    # The first reply names the chat in the background; let that finish first, or it can
+    # rename the chat after the reset below and the direct call finds it already named.
+    import asyncio
+    for _ in range(200):
+        with db.session() as s:
+            if s.get(Thread, t["id"]).title != "Chat with Scarlett":
+                break
+        await asyncio.sleep(0.05)
+    with db.session() as s:
+        assert s.get(Thread, t["id"]).title == "Test chat"  # what the fake models answer
     with db.session() as s:
         row = s.get(Thread, t["id"])
         assert row.updated_at is not None
