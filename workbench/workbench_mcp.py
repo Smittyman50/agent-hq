@@ -124,20 +124,81 @@ async def pip_install(packages: list[str], upgrade: bool = False) -> dict:
 
 
 @mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})
-def read_file(path: str, max_chars: int = MAX_OUTPUT) -> str:
-    """Read a text file from your workspace."""
+def read_file(path: str, max_chars: int = MAX_OUTPUT, start_line: int = 0, end_line: int = 0) -> str:
+    """Read a text file from your workspace.
+
+    To read part of a long file, give start_line and end_line (1-based, inclusive); those
+    lines come back numbered, which helps you pick the exact text for edit_file.
+    """
     text = _path(path).read_text(errors="replace")
+    if start_line or end_line:
+        lines = text.splitlines()
+        first = max(1, start_line or 1)
+        last = min(len(lines), end_line or len(lines))
+        text = "\n".join(f"{n:>5}  {lines[n - 1]}" for n in range(first, last + 1))
+        text += f"\n[lines {first}-{last} of {len(lines)}]"
     return text if len(text) <= max_chars else text[:max_chars] + f"\n… [{len(text) - max_chars} more characters]"
 
 
 @mcp.tool(meta=ALLOW)
 def write_file(path: str, content: str, append: bool = False) -> str:
-    """Write (or append to) a text file in your workspace, creating folders as needed."""
+    """Write (or append to) a text file in your workspace, creating folders as needed.
+
+    To change part of a file that already exists, use edit_file instead of writing the
+    whole file again. Write a big new file in parts: the first part, then append the rest.
+    """
     p = _path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a" if append else "w") as fh:
         fh.write(content)
     return f"{'appended' if append else 'wrote'} {len(content)} characters to {p.relative_to(WORK)}"
+
+
+def _near(text: str, old: str) -> str:
+    """Where text most like `old` is, for an edit that didn't match exactly."""
+    import difflib
+
+    lines = text.splitlines()
+    want = next((l.strip() for l in old.splitlines() if l.strip()), "")
+    if not want or not lines:
+        return ""
+    best = difflib.get_close_matches(want, [l.strip() for l in lines], n=1, cutoff=0.6)
+    if not best:
+        return ""
+    n = [l.strip() for l in lines].index(best[0]) + 1
+    shown = "\n".join(f"{i:>5}  {lines[i - 1]}" for i in range(max(1, n - 2), min(len(lines), n + 2) + 1))
+    return f" The closest text is around line {n}:\n{shown}\nCopy the text exactly, spaces and indentation included."
+
+
+@mcp.tool(meta=ALLOW)
+def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
+    """Change part of a text file: replace old_text with new_text.
+
+    old_text must match the file exactly (spaces, indentation and line breaks included) and,
+    unless replace_all is true, occur exactly once: include a few lines around the change
+    to make it unique. An empty new_text deletes old_text. Much cheaper than rewriting the
+    whole file with write_file.
+    """
+    p = _path(path)
+    if not p.is_file():
+        raise ValueError(f"{path} doesn't exist; create it with write_file")
+    if not old_text:
+        raise ValueError("old_text is empty; to add to the end of a file, use write_file with append")
+    text = p.read_text(errors="replace")
+    count = text.count(old_text)
+    if count == 0:
+        raise ValueError(f"old_text isn't in {path}." + _near(text, old_text))
+    if count > 1 and not replace_all:
+        raise ValueError(f"old_text occurs {count} times in {path}; add surrounding lines to make it "
+                         "unique, or set replace_all to change every one")
+    start = text.index(old_text)
+    p.write_text(text.replace(old_text, new_text) if replace_all else text.replace(old_text, new_text, 1))
+    first = text.count("\n", 0, start) + 1
+    lines = p.read_text(errors="replace").splitlines()
+    last = min(len(lines), first + new_text.count("\n"))
+    shown = "\n".join(f"{i:>5}  {lines[i - 1]}" for i in range(max(1, first - 1), min(len(lines), last + 1) + 1))
+    what = f"{count} occurrences" if replace_all and count > 1 else "1 occurrence"
+    return f"replaced {what} in {p.relative_to(WORK)}. Now around line {first}:\n{shown}"
 
 
 @mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})

@@ -56,6 +56,8 @@ def test_files_stay_inside_the_workspace(wb):
             wb.read_file(bad)
         with pytest.raises(ValueError):
             wb.write_file(bad, "x")
+        with pytest.raises(ValueError):
+            wb.edit_file(bad, "a", "b")
 
 
 async def test_saved_scripts_are_reusable_tools(wb):
@@ -81,4 +83,4 @@ async def test_code_tools_ask_for_approval_by_default(wb):
     async with Client(wb.mcp) as c:
         tools = {t.name: (t.meta or {}).get("agent_hq/approval") for t in await c.list_tools()}
     assert tools["run_python"] == tools["run_shell"] == tools["pip_install"] == tools["run_script"] == "ask"
-    assert tools["read_file"] == tools["write_file"] == tools["list_files"] == "allow"
+    assert tools["read_file"] == tools["write_file"] == tools["edit_file"] == tools["list_files"] == "allow"

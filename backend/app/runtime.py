@@ -398,6 +398,45 @@ FILE_LINK_NUDGE = (
     "reply again without links to file paths; name the files instead.")
 
 
+# Tools that change code, and tools that run it, by name (workbench tools come prefixed
+# with their server's name, e.g. workbench-2_edit_file).
+_CHANGES_CODE = ("write_file", "edit_file", "save_script")
+_RUNS_CODE = ("run_python", "run_shell", "run_script")
+# Changes to these don't need a run to prove them.
+_NOT_CODE = (".md", ".txt", ".rst", ".csv", ".log")
+# A reply may say plainly that it couldn't test; then it isn't sent back.
+_SAYS_UNTESTED = re.compile(r"not testable|untested|(?:can'?t|cannot|couldn'?t|could not) (?:be )?(?:test|run)",
+                            re.I)
+UNTESTED_NUDGE = (
+    "You changed {files} since you last ran anything, so this reply would report work you "
+    "haven't checked. Run the code or its tests now (run_shell or run_python), read the "
+    "result and fix what fails. If it can't run in the workbench, say so plainly in your "
+    "reply and tell the user how to test it.")
+
+
+def untested_changes(messages: list[ModelMessage]) -> list[str]:
+    """Code files this turn changed after the last time it ran anything (empty: none)."""
+    since = 0
+    for i, m in enumerate(messages):
+        if isinstance(m, ModelRequest) and any(isinstance(p, UserPromptPart) for p in m.parts):
+            since = i
+    changed: list[str] = []
+    for m in messages[since:]:
+        if not isinstance(m, ModelResponse):
+            continue
+        for p in m.parts:
+            if not isinstance(p, ToolCallPart):
+                continue
+            if p.tool_name.endswith(_RUNS_CODE):
+                changed = []
+            elif p.tool_name.endswith(_CHANGES_CODE):
+                args = p.args_as_dict() if hasattr(p, "args_as_dict") else (p.args or {})
+                path = str(args.get("path") or args.get("name") or "a file")
+                if not path.lower().endswith(_NOT_CODE) and path not in changed:
+                    changed.append(path)
+    return changed
+
+
 def dead_file_links(text: str) -> list[str]:
     """Links in a reply that point at files instead of web pages."""
     return _DEAD_LINK.findall(text or "")
@@ -1292,6 +1331,8 @@ class Runtime:
                     raise ModelRetry(CONTINUE_NUDGE)
                 if links := dead_file_links(output):
                     raise ModelRetry(FILE_LINK_NUDGE.format(links=", ".join(links[:5])))
+                if (files := untested_changes(ctx.messages)) and not _SAYS_UNTESTED.search(output):
+                    raise ModelRetry(UNTESTED_NUDGE.format(files=", ".join(files[:5])))
             return output
 
         return built

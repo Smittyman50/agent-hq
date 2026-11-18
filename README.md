@@ -400,7 +400,8 @@ A workbench is a small container per agent that gives it somewhere to write and 
 | `pip_install` | installs packages into the venv (they persist) | ask |
 | `run_script` | runs a saved script by name, with JSON arguments | ask |
 | `save_script`, `list_scripts` | saves a working script as a named, reusable tool | allow |
-| `read_file`, `write_file`, `list_files` | files in the workspace | allow |
+| `read_file`, `write_file`, `list_files` | files in the workspace; `read_file` can return a numbered range of lines | allow |
+| `edit_file` | replaces one exact piece of a file (or every copy of it), so a small change doesn't mean writing the whole file again | allow |
 
 **Storage.** Everything lives in the workbench's volume (`ahq-<name>`), mounted at `/work`:
 - the agent's files
@@ -1197,7 +1198,7 @@ The switch shows up in the conversation and the live activity panel. The fallbac
 
 When the main model hits either one, it gets one more try on the same model with less thinking (low effort, or thinking off for Ollama models that only have on/off), carrying on from where it stopped. If that fails too, the fallback takes over. The guardrails don't apply to the fallback.
 
-**Keeping a turn going.** Small models often say what they'll do next ("I'll now write the world files…") and stop. A reply whose last paragraph only announces work is sent back with a nudge to do it with tool calls, at most twice per reply. Replies that were cut off at the output limit, and replies that link to files by path (`sandbox:/…`, `/work/…`) instead of sending them, are sent back the same way.
+**Keeping a turn going.** Small models often say what they'll do next ("I'll now write the world files…") and stop. A reply whose last paragraph only announces work is sent back with a nudge to do it with tool calls, at most twice per reply. Replies that were cut off at the output limit, and replies that link to files by path (`sandbox:/…`, `/work/…`) instead of sending them, are sent back the same way. So is a reply after the agent changed code (`write_file`, `edit_file`, `save_script`) without running anything since: it's told to run the code or its tests first, unless the reply says plainly that it couldn't test.
 
 ## Observability
 
