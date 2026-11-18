@@ -237,7 +237,7 @@ async def test_models_and_an_agent_turn_on_the_plan(hq, openai_fake):
     await hq.say(t["id"], "status?")
     replies = await hq.wait_agent_replies(t["id"], 1)
     assert replies == ["Hello from your ChatGPT plan."]
-    body = openai_fake.responses[-1]
+    body = next(b for b in openai_fake.responses if "Name this conversation" not in json.dumps(b))
     assert body["store"] is False and body["stream"] is True and body["model"] == "gpt-6.1-sol"
     assert "You lead the team." in json.dumps(body)
     for unsupported in ("temperature", "max_output_tokens", "top_p", "previous_response_id"):

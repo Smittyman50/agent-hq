@@ -76,3 +76,16 @@ def test_a_reply_may_say_it_could_not_test():
     assert _SAYS_UNTESTED.search("Tested: not testable here: needs the LAN")
     assert _SAYS_UNTESTED.search("I couldn't run it in the workbench.")
     assert not _SAYS_UNTESTED.search("Tested: python -m unittest, 4 passed")
+
+
+def test_tool_traces_with_pydantic_arguments_are_json_safe():
+    from pydantic import BaseModel
+
+    from app.runtime import _json_safe
+
+    class Planned(BaseModel):
+        role: str
+        est_minutes: int
+
+    assert _json_safe([{"tool": "request_subagents", "args": {"subagents": [Planned(role="Feed reader", est_minutes=5)]}}]) == \
+        [{"tool": "request_subagents", "args": {"subagents": [{"role": "Feed reader", "est_minutes": 5}]}}]

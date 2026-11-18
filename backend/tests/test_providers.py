@@ -3,6 +3,7 @@ Ollama models running end to end through a worker against a fake Ollama server."
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -139,7 +140,8 @@ async def test_two_agents_on_two_ollama_models_end_to_end(hq, fake_server):
         await hq.say(t["id"], "hello")
         replies[model] = (await hq.wait_agent_replies(t["id"], 1))[0]
     assert replies == {"qwen3:14b": "answered by qwen3:14b", "gpt-oss:20b": "answered by gpt-oss:20b"}
-    assert sorted(r["model"] for r in CHAT_REQUESTS) == ["gpt-oss:20b", "qwen3:14b"]
+    turns = [r for r in CHAT_REQUESTS if "Name this conversation" not in json.dumps(r)]  # not the chat naming
+    assert sorted(r["model"] for r in turns) == ["gpt-oss:20b", "qwen3:14b"]
 
 
 async def test_provider_in_use_cannot_be_deleted(hq):

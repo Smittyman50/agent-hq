@@ -151,15 +151,22 @@ def _brief(value: Any, n: int = 300) -> str:
     return text if len(text) <= n else text[:n] + "…"
 
 
+def _json_safe(value: Any) -> Any:
+    """Plain JSON for the database: pydantic models as dicts, anything else odd as text."""
+    def default(o: Any) -> Any:
+        return o.model_dump(mode="json") if hasattr(o, "model_dump") else str(o)
+    return json.loads(json.dumps(value, default=default))
+
+
 def save_trace(job_id: str | None, trace: list[dict]) -> None:
     """Keep a job's tool calls with the job (the last 60, abbreviated) and in full in a
     JobTrace (for a couple of weeks) so the reply can become a test case."""
     if not job_id or not trace:
         return
     try:
-        brief = [{k: v for k, v in t.items() if not k.endswith("_full")} for t in trace[-60:]]
-        full = [{"tool": t["tool"], "args": t.get("args_full", {}), "result": t.get("result_full"),
-                 "error": t.get("error")} for t in trace[-100:]]
+        brief = _json_safe([{k: v for k, v in t.items() if not k.endswith("_full")} for t in trace[-60:]])
+        full = _json_safe([{"tool": t["tool"], "args": t.get("args_full", {}), "result": t.get("result_full"),
+                            "error": t.get("error")} for t in trace[-100:]])
         with db.session() as s:
             job = s.get(Job, job_id)
             if job is not None:

@@ -66,7 +66,7 @@ def _opening(thread_id: str) -> tuple[str, str]:
     return user, agent
 
 
-async def _ask_model(agent: AgentDef, user: str, reply: str) -> str:
+async def _ask_model(agent: AgentDef, user: str, reply: str, thread_id: str | None = None) -> str:
     from pydantic_ai import Agent
 
     from .context import get_settings
@@ -79,7 +79,8 @@ async def _ask_model(agent: AgentDef, user: str, reply: str) -> str:
     prompt = f"The user said:\n{user[:1500]}"
     if reply:
         prompt += f"\n\n{agent.name} replied:\n{reply[:1500]}"
-    result = await asyncio.wait_for(namer.run(prompt), timeout=90)
+    # conversation_id: its spans belong to the chat's session in Phoenix, like the turn's.
+    result = await asyncio.wait_for(namer.run(prompt, conversation_id=thread_id), timeout=90)
     return clean(str(result.output))
 
 
@@ -94,7 +95,7 @@ async def title_thread(thread_id: str, broker=None) -> str | None:
     if not user:
         return None
     try:
-        title = await _ask_model(agent, user, reply)
+        title = await _ask_model(agent, user, reply, thread_id)
     except Exception as e:  # noqa: BLE001  (a title is never worth failing over)
         log.warning("couldn't name chat %s with a model: %s", thread_id, e)
         title = ""

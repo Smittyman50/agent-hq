@@ -15,7 +15,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from app import db, thinking
 from app.config import reload_settings
 from app.llm import register_model_factory
-from app.models import AgentDef, ModelProvider, ProviderKind
+from app.models import AgentDef, ModelProvider, ProviderKind, Role
 
 from .conftest import _last_prompt
 
@@ -149,7 +149,7 @@ async def test_agent_runs_with_its_thinking_level(hq):
     t = await hq.thread(a["id"])
     await hq.say(t["id"], "hello")
     for _ in range(100):
-        replies = [m for m in hq.messages(t["id"]) if m.role == "assistant"]
+        replies = [m for m in hq.messages(t["id"]) if m.role == Role.agent]
         if replies:
             break
         await asyncio.sleep(0.05)

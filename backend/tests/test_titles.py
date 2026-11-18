@@ -29,6 +29,7 @@ def test_only_default_names_are_replaced():
 
 
 SCRIPTS["namer"] = lambda messages, info: ModelResponse(parts=[TextPart('"May 2028 wedding venues."')])
+SCRIPTS["namer"].names_chats = True
 SCRIPTS["title-worker"] = worker_fn
 
 

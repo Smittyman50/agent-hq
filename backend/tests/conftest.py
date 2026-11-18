@@ -40,6 +40,35 @@ from app.worker import Worker
 # --------------------------------------------------------------------------- fake models
 
 
+def _naming_the_chat(messages: list[ModelMessage]) -> bool:
+    from app.titles import RULES
+
+    return _instructions(messages).startswith(RULES[:40])
+
+
+def _titled(name: str):
+    """SCRIPTS[name], except that the chat-naming request after a first reply gets a fixed
+    title, so it can't overwrite what a test recorded about the turn itself. A script that
+    sets names_chats = True answers it itself (test_titles does)."""
+    import inspect
+
+    script = SCRIPTS[name]
+    if getattr(script, "names_chats", False):
+        return script
+    if inspect.iscoroutinefunction(script):
+        async def afn(messages, info):
+            if _naming_the_chat(messages):
+                return ModelResponse(parts=[TextPart("Test chat")])
+            return await script(messages, info)
+        return afn
+
+    def fn(messages, info):
+        if _naming_the_chat(messages):
+            return ModelResponse(parts=[TextPart("Test chat")])
+        return script(messages, info)
+    return fn
+
+
 def _instructions(messages: list[ModelMessage]) -> str:
     for m in reversed(messages):
         if getattr(m, "instructions", None):
@@ -92,6 +121,8 @@ def worker_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
     if "demo_add" in tools and not returns:
         return ModelResponse(parts=[ToolCallPart("demo_add", {"a": 2, "b": 3})])
     extra = f" (tool said {returns[-1].content})" if returns else ""
+    if not info.output_tools:  # a top-level agent: it answers in text, there's no WorkResult tool
+        return ModelResponse(parts=[TextPart(f"Worker finished{extra}")])
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
         "status": "done", "summary": f"Worker finished{extra}", "details": _last_prompt(messages)})])
 
@@ -341,7 +372,7 @@ SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "bro
 @pytest.fixture(autouse=True)
 def fake_models():
     HANG["calls"] = 0
-    register_model_factory("fake", lambda name: FunctionModel(SCRIPTS[name], model_name=name))
+    register_model_factory("fake", lambda name: FunctionModel(_titled(name), model_name=name))
 
 
 # --------------------------------------------------------------------------- services
