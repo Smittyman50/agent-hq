@@ -33,6 +33,7 @@ import logging
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -403,6 +404,49 @@ FILE_LINK_NUDGE = (
     "Your reply links to files by path ({links}). The user can't open those: they only get files "
     "you send. Send each one with send_from_workbench (or create_file for text you write), then "
     "reply again without links to file paths; name the files instead.")
+SENT_LINK_NUDGE = (
+    "Your reply links to files you already sent ({links}). They already appear with your reply, "
+    "so don't send them again: reply once more without those links, and name the files instead.")
+_SENDS_FILES = ("send_from_workbench", "send_from_desktop", "create_file")
+
+
+def _sent_files(messages: list[ModelMessage]) -> set[str]:
+    """What this turn already sent the user: attachment IDs, file names and paths."""
+    since = 0
+    for i, m in enumerate(messages):
+        if isinstance(m, ModelRequest) and any(isinstance(p, UserPromptPart) for p in m.parts):
+            since = i
+    sent: set[str] = set()
+    for m in messages[since:]:
+        for p in m.parts:
+            if isinstance(p, ToolCallPart) and p.tool_name.endswith(_SENDS_FILES):
+                args = p.args_as_dict() if hasattr(p, "args_as_dict") else (p.args or {})
+                for v in (args.get("path"), args.get("name")):
+                    if v:
+                        sent |= {str(v), PurePosixPath(str(v)).name}
+            elif isinstance(p, ToolReturnPart) and p.tool_name.endswith(_SENDS_FILES) \
+                    and isinstance(p.content, dict):
+                sent |= {str(p.content[k]) for k in ("attachment", "name") if p.content.get(k)}
+    return sent
+
+
+def file_link_nudge(output: str, messages: list[ModelMessage]) -> str | None:
+    """The nudge for a reply that links to files, or None when it doesn't. A link to a file
+    this turn already sent (attachment:att_..., or its path) only needs taking out; telling
+    the model to send it would make it send the file a second time."""
+    links = dead_file_links(output)
+    if not links:
+        return None
+    sent = _sent_files(messages)
+
+    def already(link: str) -> bool:
+        ref = link.split(":", 1)[1] if link.startswith(("attachment:", "sandbox:", "file:")) else link
+        ref = ref.removeprefix("//")
+        return ref in sent or PurePosixPath(ref).name in sent
+    unsent = [l for l in links if not already(l)]
+    if not unsent:
+        return SENT_LINK_NUDGE.format(links=", ".join(links[:5]))
+    return FILE_LINK_NUDGE.format(links=", ".join(unsent[:5]))
 
 
 # Tools that change code, and tools that run it, by name (workbench tools come prefixed
@@ -514,6 +558,9 @@ Long-term memory:
   Never use it for notes about the task you're doing now or how you plan to answer.
 - Use `forget` when you find a memory is wrong or outdated, `confirm` when you verify one,
   and `recall` to search for more."""
+
+
+DEFAULT_REQUEST_LIMIT = 50  # PydanticAI's own default, kept for agents that don't set one
 
 
 def has_fallback(agent: AgentDef) -> bool:
@@ -1016,7 +1063,15 @@ class Runtime:
             return False
 
     async def _stopped(self, job: Job | None) -> None:
-        """Record a job you stopped. Safe to call twice; the second call does nothing."""
+        """Record a job you stopped. Safe to call twice; the second call does nothing.
+
+        Shielded: a delegated task can run inside its delegator's own asyncio task (a
+        single-slot worker), so the stop that cancels the delegator can land while this is
+        half done: the job marked failed, but its card left on "working" and the waiting
+        delegator never told. The bookkeeping finishes either way."""
+        await asyncio.shield(self._record_stopped(job))
+
+    async def _record_stopped(self, job: Job | None) -> None:
         if job is None or job.status in (JobStatus.done, JobStatus.failed):
             return
         result = WorkResult(status="failed", summary=self.STOPPED)
@@ -1349,8 +1404,8 @@ class Runtime:
                     raise ModelRetry(TRUNCATED_NUDGE)
                 if announces_unstarted_work(output):
                     raise ModelRetry(CONTINUE_NUDGE)
-                if links := dead_file_links(output):
-                    raise ModelRetry(FILE_LINK_NUDGE.format(links=", ".join(links[:5])))
+                if nudge := file_link_nudge(output, ctx.messages):
+                    raise ModelRetry(nudge)
                 if (files := untested_changes(ctx.messages)) and not _SAYS_UNTESTED.search(output):
                     raise ModelRetry(UNTESTED_NUDGE.format(files=", ".join(files[:5])))
             return output
@@ -1389,7 +1444,10 @@ class Runtime:
         await self.broker.publish(deps.thread_id, "agent_tools", agent=agent.name, agent_id=agent.id,
                                   servers=[s.name for s in servers], depth=deps.depth,
                                   subagent=agent.is_subagent)
-        run_kw: dict[str, Any] = {}
+        # A run's model requests: the agent's own limit, else PydanticAI's default. The retry
+        # with less thinking and the fallback each get the same budget again.
+        run_kw: dict[str, Any] = {"usage_limits": UsageLimits(
+            request_limit=int(agent.max_requests or DEFAULT_REQUEST_LIMIT))}
         minutes = None
         if agent.is_subagent:
             caps = agent.subagent_limits or {}

@@ -108,8 +108,12 @@ async def test_stop_ends_the_turn_and_its_delegated_task(hq, monkeypatch):
 
     msgs = hq.messages(t["id"])
     assert not [m for m in msgs if m.role == Role.agent]  # no reply, no report turn
-    deleg = next(m for m in msgs if (m.meta or {}).get("kind") == "delegation_result")
-    assert deleg.meta["status"] == "stopped"
+    # The card is updated just after the job is marked failed: wait for it rather than look
+    # in between (and it must get there: runtime._stopped is shielded from the cancellation).
+    def card():
+        return next(m for m in hq.messages(t["id"]) if (m.meta or {}).get("kind") == "delegation_result")
+    await _wait(lambda: card().meta["status"] == "stopped")
+    deleg = card()
     assert [m.content for m in msgs if (m.meta or {}).get("kind") == "stopped"] == ["Stopped by you."]
 
     # The worker is free and the conversation isn't locked: the next message runs.

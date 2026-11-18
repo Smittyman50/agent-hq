@@ -113,3 +113,59 @@ def test_less_thinking_means_off_for_on_off_ollama_models(monkeypatch):
     oss = AgentDef(name="g", provider_id="p", model="gpt-oss:20b")
     assert asyncio.run(thinking.settings_for(qwen, override="less")) == {"extra_body": {"reasoning_effort": "none"}}
     assert asyncio.run(thinking.settings_for(oss, override="less")) == {"extra_body": {"reasoning_effort": "low"}}
+
+
+# -- links to files the turn already sent --------------------------------------------------
+
+def _sent_turn():
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
+
+    return [ModelRequest(parts=[UserPromptPart("build the game")]),
+            ModelResponse(parts=[ToolCallPart("send_from_workbench",
+                                              {"path": "/work/deepdelving-game.zip"}, tool_call_id="s1")]),
+            ModelRequest(parts=[ToolReturnPart("send_from_workbench",
+                                               {"attached": True, "attachment": "att_d4a0f9172c9f",
+                                                "name": "deepdelving-game.zip"}, tool_call_id="s1")])]
+
+
+def test_a_link_to_a_file_already_sent_says_not_to_send_it_again():
+    # Regression (2026-11-18): the fallback sent the zip, linked to it as attachment:att_...,
+    # was told to send it, and sent it a second time.
+    from app.runtime import file_link_nudge
+
+    for link in ("attachment:att_d4a0f9172c9f", "sandbox:/work/deepdelving-game.zip", "/work/deepdelving-game.zip"):
+        nudge = file_link_nudge(f"**Files:** [the game]({link})", _sent_turn())
+        assert nudge and "don't send them again" in nudge, link
+
+
+def test_a_link_to_a_file_never_sent_still_asks_for_it():
+    from app.runtime import file_link_nudge
+
+    nudge = file_link_nudge("[tests](sandbox:/work/test_game.py)", _sent_turn())
+    assert "Send each one with send_from_workbench" in nudge and "test_game.py" in nudge
+    assert file_link_nudge("Sent deepdelving-game.zip.", _sent_turn()) is None
+
+
+# -- model requests per run ------------------------------------------------------------------
+
+def tool_looper(messages, info: AgentInfo) -> ModelResponse:
+    # A model that keeps calling tools (here: a job that isn't there).
+    return ModelResponse(parts=[ToolCallPart("job_status", {"job_id": "nope"})])
+
+
+SCRIPTS.update({"tool-looper": tool_looper})
+# test_fallback.py defines this too; set it here as well so this file runs on its own.
+SCRIPTS.setdefault("strong", lambda m, i: ModelResponse(parts=[TextPart("answered by the fallback model")]))
+
+
+async def test_an_agents_request_limit_replaces_the_default(hq):
+    await hq.start_worker()
+    w = await hq.agent(name="Helper", description="x", model="fake:worker")
+    a = await hq.agent(name="Local", model="fake:tool-looper", fallback_model="fake:strong",
+                       delegates=[w["id"]], max_requests=7)
+    assert a["max_requests"] == 7
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "go")
+    assert await hq.wait_agent_replies(t["id"], 1, timeout=30) == ["answered by the fallback model"]
+    switched = [m.content for m in hq.messages(t["id"]) if (m.meta or {}).get("kind") == "model_fallback"]
+    assert switched and "request_limit of 7" in switched[0]

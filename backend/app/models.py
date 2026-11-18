@@ -138,6 +138,9 @@ class AgentDef(SQLModel, table=True):
     # model request, every SDK retry included (None = the client's default).
     max_output_tokens: int | None = None
     request_timeout_s: int | None = None
+    # The most model requests one run may make (None = PydanticAI's default, 50). A coding
+    # agent working through a big task makes many small ones (write, run, read, edit).
+    max_requests: int | None = None
     # Skills: whether this agent may propose new skills or improvements (see app/skills.py).
     learning_mode: LearningMode = LearningMode.propose
     # Sub-agents: off (default), ask (needs your approval), allowed (within limits).

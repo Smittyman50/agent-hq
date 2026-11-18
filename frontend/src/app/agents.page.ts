@@ -99,11 +99,16 @@ import { Avatar } from './avatar';
         <label class="narrow">Request time limit <small>seconds per model request; blank = no limit</small>
           <input name="reqtimeout" type="number" min="10" step="30" [(ngModel)]="d.request_timeout_s"
             placeholder="No limit"></label>
+        <label class="narrow">Model requests per run <small>blank = 50</small>
+          <input name="maxreq" type="number" min="5" max="1000" step="10" [(ngModel)]="d.max_requests"
+            placeholder="50"></label>
         <p class="hint inline-hint">
           Guardrails for its main model, so a local model that keeps thinking fails in minutes instead
           of running on. If it hits one, it tries once more with less thinking, then hands over to its
           fallback model. They don't apply to the fallback. Leave room for big files: one response can
-          hold a whole file the agent writes.
+          hold a whole file the agent writes. Model requests per run stops a model that loops on tool
+          calls; a coding agent on a big task needs more than 50 (try 150). The retry and the
+          fallback each get that many again.
         </p>
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
