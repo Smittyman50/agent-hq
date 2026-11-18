@@ -316,59 +316,91 @@ async def compact(agent: AgentDef, messages: list[ModelMessage], *, budget: int,
                            method=method, model=model)
 
 
-def make_trimmer(budget_tokens: int):
+def calibration(messages: list[ModelMessage], fixed_tokens: int) -> float:
+    """How much bigger the model says its prompts were than this module's estimate.
+
+    tokens() guesses 3.5 characters a token and the fixed part is the instructions alone,
+    but a model can count more (Qwen reads code and JSON at about 3) and every request also
+    carries the tool definitions (27 tools: some 3,600 tokens). Each response reports the
+    tokens its request really took, so compare the latest one with the estimate for what
+    was sent then. 1.0 when there is nothing to compare yet; never below 1, never above 2."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        real = getattr(getattr(m, "usage", None), "input_tokens", 0) or 0
+        if isinstance(m, ModelResponse) and real > 0:
+            estimate = fixed_tokens + history_tokens(messages[:i])
+            return min(2.0, max(1.0, real / max(estimate, 1)))
+    return 1.0
+
+
+def make_trimmer(budget_tokens: int, fixed_tokens: int = 0):
     """A history processor for one run: the usual trim of old tool results, then harder
-    trimming when the run is about to outgrow the window."""
+    trimming when the run is about to outgrow the window.
+
+    budget_tokens is what the history may take by this module's estimate, after
+    fixed_tokens (the instructions). The estimate is scaled by calibration(), so the real
+    prompt (tool definitions and the model's own token counts included) stays inside."""
     from .runtime import trim_old_tool_results
 
     def trim(messages: list[ModelMessage]) -> list[ModelMessage]:
         out = list(trim_old_tool_results(messages))
-        if budget_tokens <= 0 or history_tokens(out) <= budget_tokens:
+        if budget_tokens <= 0:
             return out
-        returns = [(i, j) for i, m in enumerate(out) if isinstance(m, ModelRequest)
-                   for j, p in enumerate(m.parts) if isinstance(p, ToolReturnPart)]
-        for limit, keep in ((400, 2), (120, 1)):
-            for i, j in returns[:-keep] if keep else returns:
-                p = out[i].parts[j]
-                text = _part_text(p)
-                if len(text) > limit:
-                    parts = list(out[i].parts)
-                    parts[j] = dataclasses.replace(p, content=text[:limit] + f"… [shortened to fit the context window; "
-                                                                             f"call {p.tool_name} again if you need it]")
-                    out[i] = dataclasses.replace(out[i], parts=parts)
-            if history_tokens(out) <= budget_tokens:
-                break
-        if history_tokens(out) > budget_tokens:
-            # Long tool-call arguments (whole files sent to write_file) count too: keep only
-            # the latest call whole.
-            from .runtime import shorten_old_tool_calls
-            out = shorten_old_tool_calls(out, keep=1)
-        # Still too big: the newest results themselves don't fit (a full page snapshot of a
-        # long web page can be 100k+ tokens). Sent whole, the model server would cut the
-        # start of the prompt (instructions and the user's request) to make room, and the
-        # model would answer the tool output instead of the user. Keep what fits.
-        for i, j in reversed(returns[-2:]):
-            over = history_tokens(out) - budget_tokens
-            if over <= 0:
-                break
-            p = out[i].parts[j]
-            if _has_binary(p.content):
-                continue
-            text = _part_text(p)
-            room = max(tokens(text) - over, 250)  # tokens this result may keep
-            keep = int(room * 3.5 * 0.9)
-            if keep >= len(text):
-                continue
-            parts = list(out[i].parts)
-            parts[j] = dataclasses.replace(p, content=text[:keep] + (
-                f"\n… [cut: this {p.tool_name} result was about {tokens(text):,} tokens, more than "
-                "your context window has room for; only the start is shown. Ask for less: a "
-                "narrower tool or query, or for a web page, a screenshot or a specific element "
-                "instead of the whole page]"))
-            out[i] = dataclasses.replace(out[i], parts=parts)
-        return out
+        budget = budget_tokens
+        scale = calibration(out, fixed_tokens)
+        if scale > 1.0:  # what fits once the estimate is corrected: scale * (fixed + history) <= total
+            budget = int((budget_tokens + fixed_tokens) / scale) - fixed_tokens
+        return _trim_to(out, max(budget, 1))
 
     return trim
+
+
+def _trim_to(out: list[ModelMessage], budget_tokens: int) -> list[ModelMessage]:
+    """Trim the newest results harder until the history fits budget_tokens (by the estimate)."""
+    if history_tokens(out) <= budget_tokens:
+        return out
+    returns = [(i, j) for i, m in enumerate(out) if isinstance(m, ModelRequest)
+               for j, p in enumerate(m.parts) if isinstance(p, ToolReturnPart)]
+    for limit, keep in ((400, 2), (120, 1)):
+        for i, j in returns[:-keep] if keep else returns:
+            p = out[i].parts[j]
+            text = _part_text(p)
+            if len(text) > limit:
+                parts = list(out[i].parts)
+                parts[j] = dataclasses.replace(p, content=text[:limit] + f"… [shortened to fit the context window; "
+                                                                         f"call {p.tool_name} again if you need it]")
+                out[i] = dataclasses.replace(out[i], parts=parts)
+        if history_tokens(out) <= budget_tokens:
+            break
+    if history_tokens(out) > budget_tokens:
+        # Long tool-call arguments (whole files sent to write_file) count too: keep only
+        # the latest call whole.
+        from .runtime import shorten_old_tool_calls
+        out = shorten_old_tool_calls(out, keep=1)
+    # Still too big: the newest results themselves don't fit (a full page snapshot of a
+    # long web page can be 100k+ tokens). Sent whole, the model server would cut the
+    # start of the prompt (instructions and the user's request) to make room, and the
+    # model would answer the tool output instead of the user. Keep what fits.
+    for i, j in reversed(returns[-2:]):
+        over = history_tokens(out) - budget_tokens
+        if over <= 0:
+            break
+        p = out[i].parts[j]
+        if _has_binary(p.content):
+            continue
+        text = _part_text(p)
+        room = max(tokens(text) - over, 250)  # tokens this result may keep
+        keep = int(room * 3.5 * 0.9)
+        if keep >= len(text):
+            continue
+        parts = list(out[i].parts)
+        parts[j] = dataclasses.replace(p, content=text[:keep] + (
+            f"\n… [cut: this {p.tool_name} result was about {tokens(text):,} tokens, more than "
+            "your context window has room for; only the start is shown. Ask for less: a "
+            "narrower tool or query, or for a web page, a screenshot or a specific element "
+            "instead of the whole page]"))
+        out[i] = dataclasses.replace(out[i], parts=parts)
+    return out
 
 
 def _has_binary(content: Any) -> bool:

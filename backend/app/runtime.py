@@ -1373,7 +1373,7 @@ class Runtime:
         used = context.tokens(text)
         reserve = int(context.get_settings()["reserve_tokens"])
         # Within a run, older tool results are trimmed harder as it nears the window.
-        trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0)
+        trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0, fixed_tokens=used)
         shared = resources.shared_desktops([desk for _, desk in toolsets if desk])
         built = Agent(
             model,
