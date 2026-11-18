@@ -50,7 +50,8 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart,
+                                  UserPromptPart)
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 from redis.exceptions import LockError
@@ -478,8 +479,47 @@ TRIM_TOOL_RESULT_TO = 1200
 TRIM_WHEN_OVER_CHARS = 40_000
 
 
+SHORTEN_CALL_ARG_OVER = 2000  # characters in one argument of an old tool call
+
+
+def shorten_old_tool_calls(messages: list[ModelMessage], keep: int = KEEP_RECENT_TOOL_RESULTS,
+                           limit: int = SHORTEN_CALL_ARG_OVER) -> list[ModelMessage]:
+    """Shorten long arguments of all but the latest few tool calls.
+
+    A coding agent's write_file call carries the whole file, and every rewrite stays in
+    the history: a few rewrites of a 20k-character file fill a 32k window by themselves.
+    Over the window, Ollama drops the oldest messages, the user's request with them, and
+    Qwen's chat template then fails with 'No user query found in messages'. Those calls
+    have already run, so the file is on disk and the model can read it back.
+    """
+    calls = [(i, j) for i, m in enumerate(messages) if isinstance(m, ModelResponse)
+             for j, p in enumerate(m.parts) if isinstance(p, ToolCallPart)]
+    out = list(messages)
+    for i, j in (calls[:-keep] if keep else calls):
+        p = out[i].parts[j]
+        args = p.args
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if not isinstance(args, dict):
+            continue
+        short = {k: (v[:200] + f"… [{len(v):,} characters omitted to save space; this call already "
+                               "ran, so read the result back with a tool if you need it]")
+                 if isinstance(v, str) and len(v) > limit else v
+                 for k, v in args.items()}
+        if short != args:
+            parts = list(out[i].parts)
+            parts[j] = dataclasses.replace(p, args=short)
+            out[i] = dataclasses.replace(out[i], parts=parts)
+    return out
+
+
 def trim_old_tool_results(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """PydanticAI history processor: shorten all but the latest few large tool results."""
+    """PydanticAI history processor: shorten all but the latest few large tool results,
+    and the long arguments of all but the latest few tool calls."""
+    messages = shorten_old_tool_calls(messages)
     def size(c: Any) -> int:
         return len(c) if isinstance(c, str) else len(json.dumps(c, default=str))
 
@@ -1308,7 +1348,10 @@ class Runtime:
                                     agent_id=agent.id, kind="model_fallback")
             note = (f"[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Its work so far is above, and any files it wrote are still there. "
-                    "Take over from where it stopped and complete the task.]")
+                    "Take over from where it stopped and finish the task yourself with your "
+                    "tools. Its work may be incomplete or wrong: fix or redo what you need to. "
+                    "Don't stop just to report what it got wrong; stop only when the task is "
+                    "done, you are blocked, or you need the user to decide something.]")
             resume = _resume_point(att.strip_images(progress))
             if resume and isinstance(resume[-1], ModelRequest):
                 # Carry on from the main model's last step, with the note added to it.

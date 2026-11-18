@@ -338,6 +338,11 @@ def make_trimmer(budget_tokens: int):
                     out[i] = dataclasses.replace(out[i], parts=parts)
             if history_tokens(out) <= budget_tokens:
                 break
+        if history_tokens(out) > budget_tokens:
+            # Long tool-call arguments (whole files sent to write_file) count too: keep only
+            # the latest call whole.
+            from .runtime import shorten_old_tool_calls
+            out = shorten_old_tool_calls(out, keep=1)
         # Still too big: the newest results themselves don't fit (a full page snapshot of a
         # long web page can be 100k+ tokens). Sent whole, the model server would cut the
         # start of the prompt (instructions and the user's request) to make room, and the
