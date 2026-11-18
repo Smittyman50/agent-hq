@@ -1,11 +1,11 @@
 import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { DatePipe } from '@angular/common';
+import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback } from './api.service';
-import { Files } from './files';
+import { Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback, attachmentUrl } from './api.service';
+import { FileView, Files, fileSize, isArchive, isViewable } from './files';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Markdown } from './markdown';
@@ -18,12 +18,16 @@ import { GoalCard } from './goal-card';
 import { Workspace } from './workspace';
 
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
+/** A file an agent made in this chat, as listed under Outputs. */
+interface Output { file: Attachment; messageId: string; who: string; at: string | null; }
+/** How a reply's files show in the chat: pictures and text inline, the rest only under Outputs. */
+interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachment[]; }
 
 @Component({
   selector: 'hq-chat',
-  imports: [FormsModule, DatePipe, Avatar, Icon, Markdown, Files, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, GoalCard, RouterLink],
+  imports: [FormsModule, DatePipe, NgTemplateOutlet, Avatar, Icon, Markdown, Files, FileView, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, GoalCard, RouterLink],
   template: `
-  <div class="chat-layout" [class.with-desktop]="desktopAgent()">
+  <div class="chat-layout" [class.with-desktop]="desktopAgent()" [class.with-outputs]="threadId() && showOutputs()">
     <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
              (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
       @if (threadId()) {
@@ -32,6 +36,11 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
           <strong>{{ agentName(thread()?.agent_id) }}</strong>
           @if (working()) { <span class="pill live">working…</span> }
           <span class="spacer"></span>
+          <button type="button" class="ghost outputs-toggle" [class.on]="showOutputs()" (click)="toggleOutputs()"
+                  [title]="showOutputs() ? 'Hide the Outputs panel' : 'Show the files made in this chat'">
+            <hq-icon name="package" [size]="15" /> Outputs
+            @if (outputs().length) { <span class="count">{{ outputs().length }}</span> }
+          </button>
           <hq-icon name="monitor" [size]="16" class="muted" />
           <select [ngModel]="desktopAgentId()" (ngModelChange)="desktopAgentId.set($event)" name="desk">
             <option value="">No desktop</option>
@@ -76,7 +85,7 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
               <div class="note-line goal-line"><hq-icon name="goal" [size]="14" /> <span>{{ m.content }}</span>
                 @if (m.meta['goal_id']) { <a routerLink="/board" [queryParams]="{ item: m.meta['goal_id'] }">On the board</a> }</div>
             } @else if (exchange(m); as x) {
-              <div class="crumb" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
+              <div class="crumb" [id]="'msg-' + m.id" [class.open]="isOpen(m.id)" [style.margin-left.px]="(x.depth - 1) * 28">
                 <button type="button" class="crumb-head" (click)="toggle(m.id)" [attr.aria-expanded]="isOpen(m.id)">
                   <span class="crumb-avatars">
                     <hq-avatar [agent]="agentById(x.requesterId)" [size]="20" />
@@ -109,7 +118,12 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                           {{ x.assignee }} <span class="muted">→ {{ x.requester }}</span></div>
                         <div class="body rich"><hq-md [text]="x.summary" /></div>
                         @if (x.details) { <div class="body rich details"><hq-md [text]="x.details" /></div> }
-                        @if (x.files.length) { <hq-files [files]="x.files" /> }
+                        @if (x.files.length) {
+                          @let xf = split(x.files);
+                          @if (xf.images.length) { <hq-files [files]="xf.images" /> }
+                          @for (f of xf.texts; track f.id) { <hq-file-view [file]="f" /> }
+                          @if (xf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: xf.others }" /> }
+                        }
                       </div>
                     } @else {
                       <div class="crumb-msg reply working">
@@ -124,13 +138,18 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                 }
               </div>
             } @else {
-            <div class="msg {{ m.role }}">
+            <div class="msg {{ m.role }}" [id]="'msg-' + m.id">
               @if (m.role === 'agent') {
                 <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}</div>
               } @else if (m.role === 'event') { <div class="who">activity</div> }
               @if (m.role === 'agent') {
                 <div class="body rich"><hq-md [text]="m.content" /></div>
-                @if (filesOf(m).length) { <hq-files [files]="filesOf(m)" /> }
+                @if (filesOf(m).length) {
+                  @let mf = split(filesOf(m));
+                  @if (mf.images.length) { <hq-files [files]="mf.images" /> }
+                  @for (f of mf.texts; track f.id) { <hq-file-view [file]="f" /> }
+                  @if (mf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: mf.others }" /> }
+                }
                 @if (m.meta?.['job_id']) {
                   <div class="rate" [class.rated]="!!fb(m)">
                     <button type="button" class="rate-btn" [class.on]="fb(m)?.rating === 'up'"
@@ -175,7 +194,15 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
                 </div>
               } @else {
                 @if (m.content) { <div class="body">{{ m.content }}</div> }
-                @if (filesOf(m).length) { <hq-files [files]="filesOf(m)" /> }
+                @if (filesOf(m).length) {
+                  @if (m.role === 'user') { <hq-files [files]="filesOf(m)" /> }
+                  @else {
+                    @let ef = split(filesOf(m));
+                    @if (ef.images.length) { <hq-files [files]="ef.images" /> }
+                    @for (f of ef.texts; track f.id) { <hq-file-view [file]="f" /> }
+                    @if (ef.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: ef.others }" /> }
+                  }
+                }
               }
             </div>
             }
@@ -231,6 +258,39 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
       }
     </section>
 
+    @if (threadId() && showOutputs()) {
+      <aside class="outputs" aria-label="Outputs">
+        <header class="conv-head">
+          <hq-icon name="package" [size]="16" class="muted" /><strong>Outputs</strong>
+          @if (outputs().length) { <span class="pill">{{ outputs().length }}</span> }
+          <span class="spacer"></span>
+          <button type="button" class="icon-btn" title="Hide Outputs" (click)="toggleOutputs()"><hq-icon name="x" [size]="14" /></button>
+        </header>
+        <div class="outputs-list">
+          @for (o of outputs(); track o.file.id) {
+            <div class="output" [id]="'out-' + o.file.id" [class.flash]="flashed().has(o.file.id)">
+              <a class="output-main" [href]="fileUrl(o.file.id, true)" [title]="'Download ' + o.file.name">
+                @if (o.file.kind === 'image') {
+                  <img class="output-thumb" [src]="fileUrl(o.file.id)" [alt]="o.file.name" loading="lazy">
+                } @else {
+                  <span class="output-icon"><hq-icon [name]="archive(o.file) ? 'package' : 'file'" [size]="16" /></span>
+                }
+                <span class="output-text">
+                  <span class="file-name">{{ o.file.name }}</span>
+                  <span class="sub">{{ size(o.file.size) }} · {{ o.who }}@if (o.at) { · {{ o.at | date:'MMM d, h:mm a' }} }</span>
+                </span>
+                <hq-icon name="download" [size]="14" class="muted output-dl" />
+              </a>
+              <button type="button" class="icon-btn" title="Show the reply that made it" (click)="jumpTo(o.messageId)">
+                <hq-icon name="locate" [size]="14" /></button>
+            </div>
+          } @empty {
+            <p class="hint">Files the agents make in this chat collect here, newest first.</p>
+          }
+        </div>
+      </aside>
+    }
+
     @if (desktopAgent(); as d) {
       <section class="desktop">
         <header class="conv-head"><strong>{{ d.name }}'s desktop</strong>
@@ -259,7 +319,16 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
         <iframe [src]="desktopUrl()" title="Agent desktop"></iframe>
       </section>
     }
-  </div>`,
+  </div>
+
+  <ng-template #toOutputs let-files>
+    <button type="button" class="to-outputs" (click)="reveal(files)"
+            [title]="'Find in Outputs: ' + names(files)">
+      <hq-icon name="package" [size]="14" />
+      <span class="file-name">{{ files.length === 1 ? files[0].name : files.length + ' files' }}</span>
+      <span class="muted">in Outputs →</span>
+    </button>
+  </ng-template>`,
 })
 export class ChatPage implements OnInit, OnDestroy {
   private api = inject(Api);
@@ -626,6 +695,73 @@ export class ChatPage implements OnInit, OnDestroy {
   dropping = signal(false);
 
   filesOf(m: Message): Attachment[] { return (m.meta?.['attachments'] as Attachment[]) ?? []; }
+
+  // ---- Outputs: every file the agents made in this chat, in a panel beside it
+  fileUrl = attachmentUrl;
+  size = fileSize;
+  archive = isArchive;
+  showOutputs = signal(this.loadShowOutputs());
+  flashed = signal<Set<string>>(new Set());
+
+  outputs = computed<Output[]>(() => {
+    const seen = new Set<string>();
+    const out: Output[] = [];
+    for (const m of this.messages()) {
+      if (m.role === 'user') continue;
+      const x = this.exchange(m);
+      for (const f of x ? x.files : this.filesOf(m)) {
+        if (f.source === 'user' || seen.has(f.id)) continue;
+        seen.add(f.id);
+        const who = x ? x.assignee : this.agentName(f.agent_id ?? m.agent_id);
+        out.push({ file: f, messageId: m.id, who, at: f.created_at ?? m.created_at });
+      }
+    }
+    return out.reverse();  // newest first
+  });
+
+  /** Pictures and text files show in the chat; archives and other binaries only under Outputs. */
+  split(files: Attachment[]): FileSplit {
+    const s: FileSplit = { images: [], texts: [], others: [] };
+    for (const f of files) {
+      if (f.kind === 'image') s.images.push(f);
+      else if (isViewable(f)) s.texts.push(f);
+      else s.others.push(f);
+    }
+    return s;
+  }
+
+  names(files: Attachment[]) { return files.map(f => f.name).join(', '); }
+
+  toggleOutputs() {
+    const on = !this.showOutputs();
+    this.showOutputs.set(on);
+    try { localStorage.setItem('ahq.showOutputs', on ? '1' : '0'); } catch { /* ignore */ }
+  }
+
+  private loadShowOutputs() {
+    try { return localStorage.getItem('ahq.showOutputs') !== '0'; } catch { return true; }
+  }
+
+  /** Open Outputs and point at these files. */
+  reveal(files: Attachment[]) {
+    if (!this.showOutputs()) this.toggleOutputs();
+    this.flashed.set(new Set(files.map(f => f.id)));
+    setTimeout(() => document.getElementById('out-' + files[0]?.id)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    setTimeout(() => this.flashed.set(new Set()), 1800);
+  }
+
+  /** Scroll the chat to the reply that made a file (opening a delegation thread if it's in one). */
+  jumpTo(messageId: string) {
+    const m = this.messages().find(x => x.id === messageId);
+    if (m && this.exchange(m) && !this.isOpen(m.id)) this.toggle(m.id);
+    setTimeout(() => {
+      const el = document.getElementById('msg-' + messageId);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1800);
+    });
+  }
 
   pick(e: Event) {
     const input = e.target as HTMLInputElement;

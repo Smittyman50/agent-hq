@@ -878,6 +878,8 @@ export class Api {
     return this.http.post<Attachment[]>(`/api/threads/${threadId}/attachments`, form);
   }
   removeAttachment(id: string) { return this.http.delete(`/api/attachments/${id}`); }
+  /** A text file's contents, for previewing it in the chat. */
+  attachmentText(id: string) { return this.http.get(attachmentUrl(id), { responseType: 'text' }); }
   jobs(threadId: string) { return this.http.get<Job[]>(`/api/threads/${threadId}/jobs`); }
   /** Stop the conversation's running turn and everything it delegated. */
   stop(threadId: string) {
