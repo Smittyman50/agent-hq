@@ -110,15 +110,21 @@ def _provider(pid: str | None) -> ModelProvider | None:
         return s.get(ModelProvider, pid)
 
 
-async def settings_for(agent: AgentDef, *, on_fallback: bool = False) -> ModelSettings | None:
+async def settings_for(agent: AgentDef, *, on_fallback: bool = False,
+                       override: str | None = None) -> ModelSettings | None:
     """The model settings that carry the agent's thinking level to the model it runs on
-    (its main model, or its fallback). None: send nothing."""
-    level = level_of(agent.thinking)
-    if level is None:
-        return None
+    (its main model, or its fallback). None: send nothing. `override` replaces the agent's
+    own level for this run; "less" means as little as still helps: low where the model takes
+    effort levels, off where it only has on/off (there "low" would just mean on)."""
     pid, model = ((agent.fallback_provider_id, agent.fallback_model) if on_fallback
                   else (agent.provider_id, agent.model))
     p = _provider(pid)
+    if override == "less":
+        override = "off" if (p is not None and p.kind == ProviderKind.ollama
+                             and not ollama_has_levels(model)) else "low"
+    level = level_of(override if override is not None else agent.thinking)
+    if level is None:
+        return None
     if p is not None and p.kind == ProviderKind.ollama:
         if await ollama_thinks(p, model) is False:
             return None  # it can't think, and Ollama rejects thinking requests to such models

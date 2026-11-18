@@ -1189,7 +1189,15 @@ Set a **Fallback model** on an agent, for example `gpt-4.1` from OpenAI. The tur
 - it runs away, hitting the per-run request limit while looping on tool calls;
 - it calls `escalate(reason)` itself. Agents with a fallback are told to do this when a task is beyond them.
 
-The switch shows up in the conversation and the live activity panel. The fallback can't escalate again. A rerun starts the turn over, so any tool calls the main model made before failing may happen again.
+The switch shows up in the conversation and the live activity panel. The fallback can't escalate again. It doesn't start the turn over: it gets everything the main model did up to its last complete step (its tool calls and their results), with a note to take over from there and finish the task, so work already done isn't repeated.
+
+**Guardrails for the main model.** Two settings on an agent (Settings → Agents) make a stuck local model fail in minutes instead of running on:
+- **Max output tokens**: the most one model response may generate, thinking included. A model that thinks without end stops here instead of filling the context window. Leave room for the biggest file the agent writes in one call: 16,384 is a reasonable start for a coding agent.
+- **Request time limit**: a deadline in seconds for one model request, every client retry included. Without it, a request can wait for the client's 10-minute timeout and then be retried twice.
+
+When the main model hits either one, it gets one more try on the same model with less thinking (low effort, or thinking off for Ollama models that only have on/off), carrying on from where it stopped. If that fails too, the fallback takes over. The guardrails don't apply to the fallback.
+
+**Keeping a turn going.** Small models often say what they'll do next ("I'll now write the world files…") and stop. A reply whose last paragraph only announces work is sent back with a nudge to do it with tool calls, at most twice per reply. Replies that were cut off at the output limit, and replies that link to files by path (`sandbox:/…`, `/work/…`) instead of sending them, are sent back the same way.
 
 ## Observability
 

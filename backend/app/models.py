@@ -132,6 +132,12 @@ class AgentDef(SQLModel, table=True):
     use_profile: bool = True  # put your profile (Settings → Profile) in its instructions
     # Context window in tokens (None = ask the provider; see app/context.py).
     context_window: int | None = None
+    # Guardrails for its main model (not the fallback), so a stuck local model fails fast
+    # and hands over instead of running on: the most tokens one model response may generate,
+    # thinking included (None = the server's default), and a deadline in seconds for one
+    # model request, every SDK retry included (None = the client's default).
+    max_output_tokens: int | None = None
+    request_timeout_s: int | None = None
     # Skills: whether this agent may propose new skills or improvements (see app/skills.py).
     learning_mode: LearningMode = LearningMode.propose
     # Sub-agents: off (default), ask (needs your approval), allowed (within limits).

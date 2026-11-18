@@ -49,6 +49,8 @@ from pydantic_ai import (
     capture_run_messages,
 )
 from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.exceptions import (IncompleteToolCall, ModelRequestTimeout, ModelTimeoutError,
+                                    OutputTokenLimitExceeded)
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart,
                                   UserPromptPart)
@@ -380,6 +382,10 @@ CONTINUE_NUDGE = (
     "You said what you are going to do but made no tool call, so none of it has happened and "
     "the turn would end here. Do the work now by calling your tools. Reply in text only when "
     "it is finished, you are blocked, or you need the user to answer a question.")
+TRUNCATED_NUDGE = (
+    "Your reply was cut off: it reached the output limit for one response. Think less and "
+    "take the next step now with a tool call, or give a shorter answer. Write big files in "
+    "parts (one file per module, or append) rather than all at once.")
 MAX_CONTINUE_NUDGES = 2  # under the agent's output retries (3), so a stubborn model still answers
 
 
@@ -466,6 +472,33 @@ Long-term memory:
 
 def has_fallback(agent: AgentDef) -> bool:
     return bool(agent.fallback_model)
+
+
+def limit_settings(agent: AgentDef, *, on_fallback: bool = False) -> dict[str, Any]:
+    """The agent's guardrails as model settings. They apply to its main model only: the
+    fallback is what takes over when they trip."""
+    if on_fallback:
+        return {}
+    out: dict[str, Any] = {}
+    if agent.max_output_tokens:
+        out["max_tokens"] = int(agent.max_output_tokens)
+    if agent.request_timeout_s:
+        # One deadline for the whole request, SDK retries included: a stuck local model
+        # gets cut off once, not retried until three timeouts have passed.
+        out["request_timeout"] = float(agent.request_timeout_s)
+    return out
+
+
+def ran_out(e: BaseException) -> str | None:
+    """Why a run failed, when the cause is the model thinking or writing past a limit
+    (rather than an error a second try on the same model can't fix)."""
+    if _find_exc(e, IncompleteToolCall) is not None:
+        return None  # a tool call cut off mid-arguments: thinking less won't shorten the file
+    if _find_exc(e, OutputTokenLimitExceeded) is not None:
+        return "it used up its output limit before answering"
+    if _find_exc(e, ModelRequestTimeout) is not None or _find_exc(e, ModelTimeoutError) is not None:
+        return "its request ran past the time limit"
+    return None
 
 
 DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
@@ -1252,6 +1285,9 @@ class Runtime:
             # Small models often narrate the next step and stop. Push back a couple of times
             # so the turn carries on instead of ending on a promise.
             if isinstance(output, str) and ctx.retry < MAX_CONTINUE_NUDGES:
+                last = ctx.messages[-1] if ctx.messages else None
+                if isinstance(last, ModelResponse) and last.finish_reason == "length":
+                    raise ModelRetry(TRUNCATED_NUDGE)
                 if announces_unstarted_work(output):
                     raise ModelRetry(CONTINUE_NUDGE)
                 if links := dead_file_links(output):
@@ -1301,7 +1337,8 @@ class Runtime:
 
         progress: list = []  # what the main model did before it failed, for the fallback
 
-        async def attempt(on_fallback: bool, text: str | None, resume: list | None = None):
+        async def attempt(on_fallback: bool, text: str | None, resume: list | None = None,
+                          think: str | None = None):
             nonlocal history
             pid, model = ((agent.fallback_provider_id, agent.fallback_model) if on_fallback
                           else (agent.provider_id, agent.model))
@@ -1313,8 +1350,10 @@ class Runtime:
                                             memory_context=recalled, skills_context=skills_block,
                                             knowledge_context=excerpts, window=window,
                                             thread_id=deps.thread_id,
-                                            model_settings=await thinking.settings_for(
-                                                agent, on_fallback=on_fallback))
+                                            model_settings=(ModelSettings(**{
+                                                **(await thinking.settings_for(
+                                                    agent, on_fallback=on_fallback, override=think) or {}),
+                                                **limit_settings(agent, on_fallback=on_fallback)}) or None))
                 start = resume if resume is not None else history
                 start = await self._fit_history(agent, pa_agent, start, window, text or "", deps)
                 if resume is None:
@@ -1339,8 +1378,34 @@ class Runtime:
                                        seconds=asyncio.get_running_loop().time() - started, ok=ok,
                                        job_id=deps.job_id, thread_id=deps.thread_id)
 
+        def resume_from(note: str) -> tuple[str | None, list | None]:
+            """Carry on from the failed run's last complete step, with a note to the model."""
+            resume = _resume_point(att.strip_images(progress))
+            if resume and isinstance(resume[-1], ModelRequest):
+                last = resume[-1]
+                resume[-1] = dataclasses.replace(last, parts=[*last.parts, UserPromptPart(note)])
+                return None, resume
+            return f"{prompt}\n\n{note}", None
+
         try:
-            return await attempt(False, prompt)
+            try:
+                return await attempt(False, prompt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as first:
+                # A local model that thought itself past its output or time limit usually
+                # does fine with less thinking: try that once before paying for the fallback.
+                why = ran_out(first)
+                if why is None or (agent.thinking or "").lower() in ("off", "minimal", "low"):
+                    raise
+                await self.save_message(
+                    deps.thread_id, Role.event,
+                    f"{agent.name} stopped because {why}; trying again on the same model with "
+                    f"less thinking.", agent_id=agent.id, kind="think_less")
+                text, resume = resume_from(
+                    f"[Your last attempt stopped because {why}. Think briefly and act: take the "
+                    "next step with a tool call.]")
+                return await attempt(False, text, resume, think="less")
         except asyncio.CancelledError:
             raise
         except BaseException as e:
@@ -1368,13 +1433,8 @@ class Runtime:
                     "tools. Its work may be incomplete or wrong: fix or redo what you need to. "
                     "Don't stop just to report what it got wrong; stop only when the task is "
                     "done, you are blocked, or you need the user to decide something.]")
-            resume = _resume_point(att.strip_images(progress))
-            if resume and isinstance(resume[-1], ModelRequest):
-                # Carry on from the main model's last step, with the note added to it.
-                last = resume[-1]
-                resume[-1] = dataclasses.replace(last, parts=[*last.parts, UserPromptPart(note)])
-                return await attempt(True, None, resume)
-            return await attempt(True, f"{prompt}\n\n{note}")
+            text, resume = resume_from(note)
+            return await attempt(True, text, resume)
 
     @staticmethod
     def _user_input(agent: AgentDef, text: str, deps: RunDeps):

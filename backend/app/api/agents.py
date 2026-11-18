@@ -45,6 +45,9 @@ class AgentIn(BaseModel):
     learning_mode: LearningMode = LearningMode.propose
     use_profile: bool = True
     context_window: int | None = None
+    # Guardrails for its main model; None = no limit of Agent HQ's own.
+    max_output_tokens: int | None = Field(default=None, ge=256, le=262_144)
+    request_timeout_s: int | None = Field(default=None, ge=10, le=7200)
     # Standing goals it works on at once (its WIP limit); 0 = it takes no goals.
     goal_wip: int = Field(default=1, ge=0, le=10)
     # Parallel next actions per goal: itself plus sub-agents (needs sub-agents on); 1 = no team.

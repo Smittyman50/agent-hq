@@ -93,6 +93,18 @@ import { Avatar } from './avatar';
               on the server, then set it here) or trim the instructions. }
           </p>
         }
+        <label class="narrow">Max output tokens <small>per response, thinking included; blank = no limit</small>
+          <input name="maxout" type="number" min="256" step="1024" [(ngModel)]="d.max_output_tokens"
+            placeholder="No limit"></label>
+        <label class="narrow">Request time limit <small>seconds per model request; blank = no limit</small>
+          <input name="reqtimeout" type="number" min="10" step="30" [(ngModel)]="d.request_timeout_s"
+            placeholder="No limit"></label>
+        <p class="hint inline-hint">
+          Guardrails for its main model, so a local model that keeps thinking fails in minutes instead
+          of running on. If it hits one, it tries once more with less thinking, then hands over to its
+          fallback model. They don't apply to the fallback. Leave room for big files: one response can
+          hold a whole file the agent writes.
+        </p>
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>
         <datalist id="pools">@for (p of pools(); track p) { <option [value]="p"></option> }</datalist>

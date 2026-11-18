@@ -38,6 +38,8 @@ export interface AgentDef {
   learning_mode: LearningMode;
   use_profile?: boolean;
   context_window?: number | null;
+  max_output_tokens?: number | null;  // most tokens one response of its main model may generate, thinking included
+  request_timeout_s?: number | null;  // deadline in seconds for one request to its main model
   goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
   goal_team_size?: number; // parallel next actions per goal: itself + its agents and sub-agents (needs delegates or sub-agents)
   is_subagent?: boolean;
