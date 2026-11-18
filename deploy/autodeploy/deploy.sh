@@ -8,8 +8,11 @@
 #   bash deploy/autodeploy/deploy.sh <commit>   # deploy up to a commit on origin/main
 #
 # What it does, in order (it stops at the first problem and changes nothing after it):
+#   0. runs the test suite on the commit in a throwaway container; if a test fails, it
+#      stops here, before the checkout or anything running has changed
 #   1. fast-forwards the checkout to the commit (never resets or discards local changes)
-#   2. builds the images
+#   2. builds the images, and the desktop/workbench/package-server images when their
+#      folders changed
 #   3. asks the new image which schema revisions are pending; if there are any and the
 #      database is Postgres, takes a pg_dump first (SQLite is backed up by Agent HQ itself)
 #   4. starts the new version (docker compose up -d); Agent HQ migrates on startup
@@ -26,6 +29,8 @@
 #   AHQ_DEPLOY_KEEP_BACKUPS how many dumps to keep (10)
 #   AHQ_DEPLOY_PG_IMAGE     image with pg_dump, at least your server's version (postgres:17-alpine)
 #   AHQ_DEPLOY_PRUNE        0 = keep dangling images (1)
+#   AHQ_DEPLOY_TESTS        0 = deploy without running the tests first (1)
+#   AHQ_DEPLOY_TEST_IMAGE   image the tests run in (python:3.13)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +45,8 @@ BACKUP_DIR="${AHQ_DEPLOY_BACKUP_DIR:-$HOME/agent-hq-backups}"
 KEEP_BACKUPS="${AHQ_DEPLOY_KEEP_BACKUPS:-10}"
 PG_IMAGE="${AHQ_DEPLOY_PG_IMAGE:-postgres:17-alpine}"
 PRUNE="${AHQ_DEPLOY_PRUNE:-1}"
+TESTS="${AHQ_DEPLOY_TESTS:-1}"
+TEST_IMAGE="${AHQ_DEPLOY_TEST_IMAGE:-python:3.13}"
 
 started=0  # set once the new version is being started: from then on, failures say how to go back
 before=""
@@ -53,6 +60,25 @@ rollback_hint() {
   printf 'Then git checkout %s again before the next deploy.\n' "$BRANCH" >&2
 }
 die() { printf '\nDEPLOY FAILED: %s\n' "$*" >&2; rollback_hint; exit 1; }
+
+# The whole test suite, on the commit being deployed, before anything changes. A copy of
+# the commit goes into a throwaway container (git archive, not a bind mount), so the
+# checkout, the running stack and the database are never touched and nothing is left
+# behind except a pip cache volume that makes the next run faster. Valkey runs inside it
+# for the worker tests; the Postgres tests skip.
+run_tests() {
+  log "Testing $(git log -1 --format='%h %s' "$1") before deploying it (takes about 8 minutes)"
+  if ! git archive --format=tar "$1" | docker run --rm -i \
+        -v agent-hq-test-pip:/root/.cache/pip -e PYTHONDONTWRITEBYTECODE=1 "$TEST_IMAGE" bash -c '
+          set -e
+          mkdir /src && tar -x -C /src && cd /src/backend
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq valkey-server >/dev/null
+          pip install -q --root-user-action=ignore --disable-pip-version-check -e ".[dev]"
+          pytest -q -p no:warnings -p no:cacheprovider'; then
+    die "the tests failed on $(git rev-parse --short "$1") (see above), so nothing was deployed: the checkout and the running version are unchanged. Fix and push again (AHQ_DEPLOY_TESTS=0 skips the tests)."
+  fi
+}
 trap 'printf "\nDEPLOY FAILED: a command failed (line %s)\n" "$LINENO" >&2; rollback_hint' ERR
 
 command -v docker >/dev/null || die "docker isn't on the PATH for $(id -un)"
@@ -85,7 +111,9 @@ if git merge-base --is-ancestor "$target" HEAD; then
     exit 0
   fi
   log "Already at $target; rebuilding anyway (AHQ_DEPLOY_FORCE=1)"
+  if [ "$TESTS" = 1 ]; then run_tests "$target"; fi
 else
+  if [ "$TESTS" = 1 ]; then run_tests "$target"; else log "Skipping the tests (AHQ_DEPLOY_TESTS=0)"; fi
   if ! git merge --ff-only --quiet "$target"; then
     git status --short
     die "can't fast-forward to $target: the checkout has its own commits or changes to the files above. Nothing was changed."
@@ -100,6 +128,16 @@ fi
 # ---------------------------------------------------------------------------- 2. build
 log "Building images"
 docker compose build
+
+# The desktop, workbench and package-server images (compose profile "images") aren't part
+# of the running stack, so a plain build skips them. Rebuild them when their folders
+# changed; existing desktops and workbenches keep the old image until you Recreate them.
+images_changed=0
+if [ "$FORCE" = 1 ] || ! git diff --quiet "$before" "$after" -- desktop workbench mcp-runner; then
+  log "Building the desktop, workbench and package-server images"
+  docker compose --profile images build
+  images_changed=1
+fi
 
 # ---------------------------------------------------------------------------- 3. schema
 log "Checking the database schema with the new image"
@@ -178,3 +216,7 @@ if [ "$PRUNE" = 1 ]; then
   docker image prune -f >/dev/null
 fi
 log "Deployed $(git rev-parse --short HEAD) in ${SECONDS}s"
+if [ "$images_changed" = 1 ]; then
+  echo "The desktop/workbench images were rebuilt. Running desktops and workbenches keep the old"
+  echo "image until you Recreate them (Settings -> Desktops & workbenches; their files are kept)."
+fi
