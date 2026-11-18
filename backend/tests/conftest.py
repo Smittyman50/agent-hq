@@ -161,6 +161,8 @@ def spawner(spawns: int = 1, role: str = "Feed reader"):
         returns = [r for r in reversed(_tool_returns(messages)) if r.tool_name == "spawn_subagent"]
         if "spawn_subagent" not in tools:
             return ModelResponse(parts=[TextPart("I can't create sub-agents.")])
+        if "made no tool call" in prompt:  # Agent HQ sent "I'll do it myself" back: do it
+            return ModelResponse(parts=[TextPart("Done without sub-agents: I read the feeds myself.")])
         if prompt.startswith("[Sub-agent request") and "denied" in prompt:
             return ModelResponse(parts=[TextPart("Understood, I'll do it myself.")])
         if len(returns) < spawns:
@@ -176,7 +178,7 @@ def requester(messages, info):
     """Asks for sub-agents; once approved, spawns one; reports what happened."""
     prompt = _last_prompt(messages)
     returns = _tool_returns(messages)
-    if prompt.startswith("[Sub-agent request"):
+    if prompt.startswith("[Sub-agent request") or "made no tool call" in prompt:
         return spawner(1)(messages, info)
     if not returns:
         return ModelResponse(parts=[ToolCallPart("request_subagents", {

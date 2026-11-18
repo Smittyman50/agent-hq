@@ -205,7 +205,9 @@ async def test_ask_mode_cannot_spawn_without_approval_and_denial_wakes_agent(hq,
                            json={"approve": False, "note": "use Scarlett"})
     assert r.json()["status"] == "denied"
     replies = await hq.wait_agent_replies(t2["id"], 2)
-    assert replies[1] == "Understood, I'll do it myself."
+    # Its first answer, "Understood, I'll do it myself.", only announces work, so Agent HQ
+    # sends it back (runtime.announces_unstarted_work) and it does the work instead.
+    assert replies[1] == "Done without sub-agents: I read the feeds myself."
     assert _subs() == []
 
 

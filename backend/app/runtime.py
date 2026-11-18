@@ -1008,6 +1008,13 @@ class Runtime:
         await self.broker.publish(thread_id, "status", state="idle")
         return {"stopped": len(jobs), "job_ids": [j.id for j in jobs]}
 
+    async def _stop_pending(self, job_id: str) -> bool:
+        try:
+            return bool(await self.broker.stop_requested(job_id))
+        except Exception as e:  # Valkey hiccup: the watcher will still catch a stop
+            log.warning("stop check for job %s failed: %s", job_id, e)
+            return False
+
     async def _stopped(self, job: Job | None) -> None:
         """Record a job you stopped. Safe to call twice; the second call does nothing."""
         if job is None or job.status in (JobStatus.done, JobStatus.failed):
@@ -1086,6 +1093,12 @@ class Runtime:
                  "attachments": list((job.meta or {}).get("attachments") or [])},
                 config={"configurable": {"thread_id": thread_id}})
             reply = out["reply"]
+            if await self._stop_pending(job.id):
+                # You pressed Stop while the reply was being written: a delegate stopped a
+                # moment earlier can hand the lead its "stopped" result, and the lead answers
+                # before its own stop lands. No reply after Stop.
+                await self._stopped(load_job(job.id))
+                return
             msg = await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id,
                                           job_id=job.id)
             await att.link_outputs(self, job.id, msg.id)  # files the agent made this turn
