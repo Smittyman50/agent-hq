@@ -36,7 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "amqtt>=0.11",
        # for tests/test_webreader.py (the web-reader server runs in its own container)
-       "fastmcp>=2", "feedparser", "trafilatura"]
+       "fastmcp>=2", "feedparser", "trafilatura",
+       # for tests/test_ocr.py (builds scanned PDFs to read back)
+       "fpdf2"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

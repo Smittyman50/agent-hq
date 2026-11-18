@@ -8,8 +8,9 @@
 #   bash deploy/autodeploy/deploy.sh <commit>   # deploy up to a commit on origin/main
 #
 # What it does, in order (it stops at the first problem and changes nothing after it):
-#   0. runs the test suite on the commit in a throwaway container; if a test fails, it
-#      stops here, before the checkout or anything running has changed
+#   0. runs the test suite on the commit, on SQLite and on Postgres, in a test image built
+#      from it (deploy/test/Dockerfile); if a test fails, it stops here, before the
+#      checkout or anything running has changed
 #   1. fast-forwards the checkout to the commit (never resets or discards local changes)
 #   2. builds the images, and the desktop/workbench/package-server images when their
 #      folders changed
@@ -30,7 +31,6 @@
 #   AHQ_DEPLOY_PG_IMAGE     image with pg_dump, at least your server's version (postgres:17-alpine)
 #   AHQ_DEPLOY_PRUNE        0 = keep dangling images (1)
 #   AHQ_DEPLOY_TESTS        0 = deploy without running the tests first (1)
-#   AHQ_DEPLOY_TEST_IMAGE   image the tests run in (python:3.13)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ KEEP_BACKUPS="${AHQ_DEPLOY_KEEP_BACKUPS:-10}"
 PG_IMAGE="${AHQ_DEPLOY_PG_IMAGE:-postgres:17-alpine}"
 PRUNE="${AHQ_DEPLOY_PRUNE:-1}"
 TESTS="${AHQ_DEPLOY_TESTS:-1}"
-TEST_IMAGE="${AHQ_DEPLOY_TEST_IMAGE:-python:3.13}"
+TEST_IMAGE="agent-hq-test"
 
 started=0  # set once the new version is being started: from then on, failures say how to go back
 before=""
@@ -61,22 +61,37 @@ rollback_hint() {
 }
 die() { printf '\nDEPLOY FAILED: %s\n' "$*" >&2; rollback_hint; exit 1; }
 
-# The whole test suite, on the commit being deployed, before anything changes. A copy of
-# the commit goes into a throwaway container (git archive, not a bind mount), so the
-# checkout, the running stack and the database are never touched and nothing is left
-# behind except a pip cache volume that makes the next run faster. Valkey runs inside it
-# for the worker tests; the Postgres tests skip.
+# The whole test suite, on the commit being deployed, before anything changes. A test image
+# (deploy/test/Dockerfile: Valkey, Postgres 17 + pgvector, Tesseract, Chromium, Node) is
+# built from a copy of the commit (git archive, so the checkout is never touched; the layers
+# with system packages and Python dependencies are cached between deploys). The suite then
+# runs twice at once, on SQLite and on Postgres (every test on a fresh database of its own),
+# in strict mode: a test that skips because something it needs is missing fails instead.
 run_tests() {
-  log "Testing $(git log -1 --format='%h %s' "$1") before deploying it (takes about 8 minutes)"
-  if ! git archive --format=tar "$1" | docker run --rm -i \
-        -v agent-hq-test-pip:/root/.cache/pip -e PYTHONDONTWRITEBYTECODE=1 "$TEST_IMAGE" bash -c '
-          set -e
-          mkdir /src && tar -x -C /src && cd /src/backend
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq valkey-server >/dev/null
-          pip install -q --root-user-action=ignore --disable-pip-version-check -e ".[dev]"
-          pytest -q -p no:warnings -p no:cacheprovider'; then
-    die "the tests failed on $(git rev-parse --short "$1") (see above), so nothing was deployed: the checkout and the running version are unchanged. Fix and push again (AHQ_DEPLOY_TESTS=0 skips the tests)."
+  local commit tmp rc=0 db
+  commit="$(git rev-parse --short "$1")"
+  log "Testing $(git log -1 --format='%h %s' "$1") before deploying it (about 10 minutes)"
+  if ! git archive --format=tar "$1" | docker build -q -t "$TEST_IMAGE" -f deploy/test/Dockerfile - >/dev/null; then
+    die "couldn't build the test image for $commit, so nothing was deployed (the checkout and the running version are unchanged)."
+  fi
+  tmp="$(mktemp -d)"
+  declare -A pid=()
+  for db in sqlite postgres; do
+    docker run --rm -e AHQ_TEST_DB="$db" -e AHQ_TEST_STRICT=1 "$TEST_IMAGE" >"$tmp/$db.log" 2>&1 &
+    pid[$db]=$!
+  done
+  for db in sqlite postgres; do
+    if wait "${pid[$db]}"; then
+      printf '\n--- tests on %s: %s\n' "$db" "$(tail -n 1 "$tmp/$db.log")"
+    else
+      rc=1
+      printf '\n--- tests on %s FAILED ---\n' "$db"
+      cat "$tmp/$db.log"
+    fi
+  done
+  rm -rf "$tmp"
+  if [ "$rc" != 0 ]; then
+    die "the tests failed on $commit (see above), so nothing was deployed: the checkout and the running version are unchanged. Fix and push again (AHQ_DEPLOY_TESTS=0 skips the tests)."
   fi
 }
 trap 'printf "\nDEPLOY FAILED: a command failed (line %s)\n" "$LINENO" >&2; rollback_hint' ERR

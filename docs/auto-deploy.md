@@ -3,10 +3,14 @@
 When you push to `main`, a Gitea Actions workflow (`.gitea/workflows/deploy.yaml`) runs on the
 server that hosts Agent HQ and redeploys it with `deploy/autodeploy/deploy.sh`:
 
-0. **Test.** Runs the whole test suite on the pushed commit, in a throwaway `python:3.13`
-   container with Valkey installed in it (about 8 minutes). The commit goes in as a copy
-   (`git archive`), so the checkout, the running stack and the database aren't touched. If a test
-   fails, the deploy stops here and nothing has changed. The Postgres tests skip.
+0. **Test.** Builds a test image from the pushed commit (`deploy/test/Dockerfile`: Valkey,
+   Postgres 17 with pgvector, Tesseract, Chromium and Node) and runs the whole test suite in it
+   twice at once: on SQLite, and on Postgres with every test on a fresh database of its own
+   (about 10 minutes). It runs in **strict mode**: a test that would skip because something it
+   needs is missing fails instead, so a deploy can't pass with part of the suite left out. The
+   commit goes in as a copy (`git archive`), so the checkout, the running stack and your
+   database aren't touched; the image's system packages and Python dependencies are cached
+   between deploys. If a test fails, the deploy stops here and nothing has changed.
 1. **Update.** Fast-forwards the checkout to the pushed commit. It never resets or throws away
    local changes: if the checkout has commits or edits of its own that are in the way, it stops
    and changes nothing.
@@ -165,7 +169,6 @@ export them when you run it by hand):
 | `AHQ_DEPLOY_PG_IMAGE` | `postgres:17-alpine` | image used for `pg_dump`; at least your server's major version |
 | `AHQ_DEPLOY_PRUNE` | `1` | `0` keeps dangling images |
 | `AHQ_DEPLOY_TESTS` | `1` | `0` deploys without running the tests first |
-| `AHQ_DEPLOY_TEST_IMAGE` | `python:3.13` | image the tests run in |
 
 The `pg_dump` container runs with host networking, so it reaches your database host the same
 way the server does. The database URL is read from `AHQ_DB_URL` in `.env` and handed to the
@@ -184,11 +187,12 @@ bash deploy/autodeploy/deploy.sh <commit>    # up to a given commit on main
 ## When a deploy fails
 
 - **Tests failed:** the job log shows which, as pytest prints them. Nothing changed on the
-  server. To run the same tests yourself before pushing:
+  server. To run the same tests yourself, from the checkout:
 
   ```bash
-  docker run --rm -v "$PWD":/src -w /src/backend python:3.13 bash -c \
-    "apt-get update -qq && apt-get install -y -qq valkey-server >/dev/null && pip install -q -e '.[dev]' && pytest -q -p no:warnings"
+  docker build -t agent-hq-test -f deploy/test/Dockerfile .
+  docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test   # or AHQ_TEST_DB=sqlite
+  docker run --rm -e AHQ_TEST_DB=postgres agent-hq-test pytest -q tests/test_stop.py   # one file
   ```
 - **Before the start step** (fetch, build, schema check, backup): the old version is still
   running and nothing was migrated. Fix the cause and run the workflow again.

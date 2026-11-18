@@ -400,12 +400,38 @@ def redis_url():
     proc.wait()
 
 
-PG_BIN = Path("/usr/lib/postgresql/16/bin")
+def _pg_bin() -> Path | None:
+    """Postgres server binaries: AHQ_TEST_PG_BIN, or the newest /usr/lib/postgresql/N/bin."""
+    if os.environ.get("AHQ_TEST_PG_BIN"):
+        return Path(os.environ["AHQ_TEST_PG_BIN"])
+    found = [p.parent for p in Path("/usr/lib/postgresql").glob("*/bin/initdb")]
+    return max(found, key=lambda b: int(b.parent.name) if b.parent.name.isdigit() else 0) if found else None
+
+
+PG_BIN = _pg_bin()
+
+# AHQ_TEST_STRICT=1 (the deploy sets it): a test that skips because something it needs isn't
+# installed fails instead, so a deploy can't pass with part of the suite quietly left out.
+# Only skips listed here are expected even then.
+STRICT = os.environ.get("AHQ_TEST_STRICT") == "1"
+EXPECTED_SKIPS = (
+    "these only exist on Postgres",  # the SQLite run of a Postgres-only check
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if STRICT and rep.skipped and not any(s in str(rep.longrepr) for s in EXPECTED_SKIPS):
+        rep.outcome = "failed"
+        rep.longrepr = (f"skipped in strict mode (AHQ_TEST_STRICT=1), so part of the suite didn't run: "
+                        f"{rep.longrepr}")
 
 
 @pytest.fixture(scope="session")
 def postgres_url():
-    if not (PG_BIN / "initdb").exists():
+    if PG_BIN is None or not (PG_BIN / "initdb").exists():
         pytest.skip("Postgres binaries not available")
     import tempfile
     root = Path(tempfile.mkdtemp(prefix="ahq-pg-"))
@@ -426,12 +452,55 @@ def postgres_url():
     shutil.rmtree(root, ignore_errors=True)
 
 
+_PG_TEMPLATE = "ahq_template"
+_template_ready = False
+
+
 @pytest.fixture
-async def hq(tmp_path, monkeypatch, redis_url):
-    """API app + runtime against fresh Redis and SQLite. Use hq.start_worker() to add workers."""
+def pg_test_db(postgres_url, tmp_path, monkeypatch):
+    """A fresh, migrated Postgres database for one test, copied from a template that is
+    migrated once per session (CREATE DATABASE ... TEMPLATE is much faster than migrating
+    every time). Dropped afterwards."""
+    global _template_ready
+    import uuid
+
+    from sqlalchemy import create_engine, text
+
+    base = postgres_url.rsplit("/", 1)[0]
+    admin = create_engine(postgres_url.replace("postgresql://", "postgresql+psycopg://"),
+                          isolation_level="AUTOCOMMIT")
+    if not _template_ready:
+        with admin.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{_PG_TEMPLATE}"'))
+            c.execute(text(f'CREATE DATABASE "{_PG_TEMPLATE}"'))
+        monkeypatch.setenv("AHQ_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("AHQ_DB_URL", f"{base}/{_PG_TEMPLATE}")
+        reload_settings()
+        db.reset_engine()
+        db.init_db()
+        db.engine().dispose()  # a template can't be copied while anyone is connected to it
+        _template_ready = True
+    name = f"t_{uuid.uuid4().hex[:12]}"
+    with admin.connect() as c:
+        c.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{_PG_TEMPLATE}"'))
+    yield f"{base}/{name}"
+    db.engine().dispose()
+    with admin.connect() as c:
+        c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+    admin.dispose()
+
+
+@pytest.fixture
+async def hq(request, tmp_path, monkeypatch, redis_url):
+    """API app + runtime against fresh Redis and a fresh database: SQLite, or with
+    AHQ_TEST_DB=postgres a Postgres database of its own (pg_test_db). Use hq.start_worker()
+    to add workers."""
+    db_url = os.environ.get("AHQ_TEST_DB_URL", "")
+    if os.environ.get("AHQ_TEST_DB") == "postgres":
+        db_url = request.getfixturevalue("pg_test_db")
     monkeypatch.setenv("AHQ_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AHQ_REDIS_URL", redis_url)
-    monkeypatch.setenv("AHQ_DB_URL", os.environ.get("AHQ_TEST_DB_URL", ""))
+    monkeypatch.setenv("AHQ_DB_URL", db_url)
     reload_settings()
     db.reset_engine()
     db.init_db()

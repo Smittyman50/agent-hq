@@ -294,7 +294,12 @@ cd backend && pytest
 cd labtools && pip install -r requirements-dev.txt && pytest   # the lab tool servers
 ```
 
-The tests use scripted fake models (no LLM needed), a real `valkey-server` or `redis-server` started on a free port, an in-process MQTT broker, and a throwaway Postgres cluster when Postgres is installed. They cover:
+The tests use scripted fake models (no LLM needed), a real `valkey-server` or `redis-server` started on a free port, an in-process MQTT broker, and a throwaway Postgres cluster when Postgres is installed. With `AHQ_TEST_DB=postgres`, every test runs on a fresh Postgres database of its own instead of SQLite; with `AHQ_TEST_STRICT=1`, a test that would skip because something it needs isn't installed fails instead. `deploy/test/Dockerfile` has everything installed (Valkey, Postgres 17 + pgvector, Tesseract, Chromium, Node), and deploys run the suite in it on both databases, strict, before anything changes (see [docs/auto-deploy.md](docs/auto-deploy.md)):
+
+```bash
+docker build -t agent-hq-test -f deploy/test/Dockerfile .
+docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test
+``` They cover:
 - delegation in wait and background modes
 - single-slot workers (no deadlock)
 - pinning agents to pools
