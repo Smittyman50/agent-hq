@@ -173,3 +173,12 @@ def test_announcement_detection():
     assert not a("Summary: done.\n\nIf you want, I'll add a save command.")
     assert not a("Done. Let me know if you want more rooms.")
     assert not a("All tests pass.")
+
+
+def test_file_path_links_are_caught():
+    from app.runtime import dead_file_links as d
+    reply = "**Files:** [game.py](sandbox:/work/oakhaven/game.py) · [test_game.py](sandbox:/work/oakhaven/test_game.py)"
+    assert d(reply) == ["sandbox:/work/oakhaven/game.py", "sandbox:/work/oakhaven/test_game.py"]
+    assert d("see [out](/work/out.csv) and [x](file:///tmp/x)") == ["/work/out.csv", "file:///tmp/x"]
+    assert d("Docs: [Zork](https://en.wikipedia.org/wiki/Zork), [me](mailto:a@b.c), [top](#top)") == []
+    assert d("Sent game.py and test_game.py.") == []

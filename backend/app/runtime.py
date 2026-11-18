@@ -383,6 +383,20 @@ CONTINUE_NUDGE = (
 MAX_CONTINUE_NUDGES = 2  # under the agent's output retries (3), so a stubborn model still answers
 
 
+# Markdown links the user can't open: sandbox:/work/game.py (ChatGPT's habit), file:...,
+# or a bare path on the agent's workbench or desktop.
+_DEAD_LINK = re.compile(r"\[[^\]]*\]\(\s*<?(?!(?:https?|mailto):|#)([^)\s>]+)")
+FILE_LINK_NUDGE = (
+    "Your reply links to files by path ({links}). The user can't open those: they only get files "
+    "you send. Send each one with send_from_workbench (or create_file for text you write), then "
+    "reply again without links to file paths; name the files instead.")
+
+
+def dead_file_links(text: str) -> list[str]:
+    """Links in a reply that point at files instead of web pages."""
+    return _DEAD_LINK.findall(text or "")
+
+
 def announces_unstarted_work(text: str) -> bool:
     """True when a final reply promises work it didn't do (see _PROMISE)."""
     body = (text or "").strip()
@@ -1237,9 +1251,11 @@ class Runtime:
         def keep_working(ctx: RunContext[RunDeps], output):
             # Small models often narrate the next step and stop. Push back a couple of times
             # so the turn carries on instead of ending on a promise.
-            if (isinstance(output, str) and ctx.retry < MAX_CONTINUE_NUDGES
-                    and announces_unstarted_work(output)):
-                raise ModelRetry(CONTINUE_NUDGE)
+            if isinstance(output, str) and ctx.retry < MAX_CONTINUE_NUDGES:
+                if announces_unstarted_work(output):
+                    raise ModelRetry(CONTINUE_NUDGE)
+                if links := dead_file_links(output):
+                    raise ModelRetry(FILE_LINK_NUDGE.format(links=", ".join(links[:5])))
             return output
 
         return built

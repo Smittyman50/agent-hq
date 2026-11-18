@@ -81,7 +81,8 @@ def rules(files_here: bool, workbench: bool, desktop: bool) -> str:
                     "`list_desktop_files` shows the newest)")
     lines += ["- To give the user a file, use " + "; or ".join(send) + ".",
               "  It appears with your reply; say what it is, but don't paste its whole content into the",
-              "  reply as well."]
+              "  reply as well. Don't link to files by path (sandbox:/..., file:/..., /work/...): the",
+              "  user can't open those links, only files you send."]
     return "\n".join(lines)
 
 
