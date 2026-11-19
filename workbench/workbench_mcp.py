@@ -22,6 +22,7 @@ import re
 import signal
 import time
 from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -204,34 +205,63 @@ def _near(text: str, old: str) -> str:
 
 
 @mcp.tool(meta=ALLOW)
-def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
+def edit_file(path: str, old_text: str = "", new_text: str = "", replace_all: bool = False,
+              edits: list[dict[str, Any]] | None = None) -> str:
     """Change part of a text file: replace old_text with new_text.
 
     old_text must match the file exactly (spaces, indentation and line breaks included) and,
     unless replace_all is true, occur exactly once: include a few lines around the change
     to make it unique. An empty new_text deletes old_text. Much cheaper than rewriting the
     whole file with write_file.
+
+    To make several changes to the file in one call, pass edits instead: a list of
+    {"old_text": ..., "new_text": ..., "replace_all": false}, applied in order, each to the
+    result of the one before. Either all of them apply or none do. One call with ten edits
+    costs one step; ten calls cost ten.
     """
     p = _path(path)
     if not p.is_file():
         raise ValueError(f"{path} doesn't exist; create it with write_file")
-    if not old_text:
-        raise ValueError("old_text is empty; to add to the end of a file, use write_file with append")
-    text = p.read_text(errors="replace")
-    count = text.count(old_text)
-    if count == 0:
-        raise ValueError(f"old_text isn't in {path}." + _near(text, old_text))
-    if count > 1 and not replace_all:
-        raise ValueError(f"old_text occurs {count} times in {path}; add surrounding lines to make it "
-                         "unique, or set replace_all to change every one")
-    start = text.index(old_text)
-    p.write_text(text.replace(old_text, new_text) if replace_all else text.replace(old_text, new_text, 1))
-    first = text.count("\n", 0, start) + 1
-    lines = p.read_text(errors="replace").splitlines()
-    last = min(len(lines), first + new_text.count("\n"))
-    shown = "\n".join(f"{i:>5}  {lines[i - 1]}" for i in range(max(1, first - 1), min(len(lines), last + 1) + 1))
-    what = f"{count} occurrences" if replace_all and count > 1 else "1 occurrence"
-    return f"replaced {what} in {_rel(p)}. Now around line {first}:\n{shown}"
+    if edits is not None and old_text:
+        raise ValueError("pass either old_text/new_text or edits, not both")
+    steps = edits if edits is not None else [{"old_text": old_text, "new_text": new_text,
+                                               "replace_all": replace_all}]
+    if not steps:
+        raise ValueError("edits is empty")
+    original = text = p.read_text(errors="replace")
+    done: list[tuple[int, int, int]] = []  # (first line, lines in new text, occurrences) per edit
+    for n, step in enumerate(steps, 1):
+        if not isinstance(step, dict):
+            raise ValueError(f"edit {n} isn't an object with old_text and new_text")
+        old, new = step.get("old_text") or "", step.get("new_text") or ""
+        every = bool(step.get("replace_all", False))
+        which = f"edit {n} of {len(steps)}: " if len(steps) > 1 else ""
+        undone = " Nothing was changed: fix that edit and send them all again." if len(steps) > 1 else ""
+        if not old:
+            raise ValueError(f"{which}old_text is empty; to add to the end of a file, use write_file "
+                             "with append" + undone)
+        count = text.count(old)
+        if count == 0:
+            raise ValueError(f"{which}old_text isn't in {path}" + (" (after the edits before it)" if n > 1 else "")
+                             + "." + _near(text, old) + undone)
+        if count > 1 and not every:
+            raise ValueError(f"{which}old_text occurs {count} times in {path}; add surrounding lines to "
+                             "make it unique, or set replace_all to change every one." + undone)
+        start = text.index(old)
+        text = text.replace(old, new) if every else text.replace(old, new, 1)
+        done.append((text.count("\n", 0, start) + 1, new.count("\n"), count if every else 1))
+    if text != original:
+        p.write_text(text)
+    lines = text.splitlines()
+    if len(done) == 1:
+        first, extra, count = done[0]
+        last = min(len(lines), first + extra)
+        shown = "\n".join(f"{i:>5}  {lines[i - 1]}" for i in range(max(1, first - 1), min(len(lines), last + 1) + 1))
+        what = f"{count} occurrences" if count > 1 else "1 occurrence"
+        return f"replaced {what} in {_rel(p)}. Now around line {first}:\n{shown}"
+    where = ", ".join(f"line {first}" for first, _, _ in done)
+    return (f"applied {len(done)} edits to {_rel(p)} (now {len(lines)} lines), at {where}. "
+            "Read the file back if you need to check them.")
 
 
 @mcp.tool(meta=ALLOW, annotations={"readOnlyHint": True})

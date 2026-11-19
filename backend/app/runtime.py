@@ -52,7 +52,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (IncompleteToolCall, ModelHTTPError, ModelRequestTimeout,
-                                    ModelTimeoutError, OutputTokenLimitExceeded)
+                                    ModelTimeoutError, OutputTokenLimitExceeded, UsageLimitExceeded)
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart,
                                   UserPromptPart)
@@ -392,7 +392,12 @@ Your turn ends the moment you reply without calling a tool, and nothing more hap
 the user writes again. So never end a reply with a plan or a promise ("I'll now build...",
 "Next I'll...", "I'm starting with..."): make those tool calls now, in this same turn. Reply
 in text only when the work is done, you are blocked, or you need the user to answer a
-question; if you ask one, end your reply with it."""
+question; if you ask one, end your reply with it.
+
+Each response you send counts against a limit on model requests per turn; tool calls
+don't. When several tool calls don't depend on each other (reading three files, sending
+the finished files), make them all in one response. To change several places in one file,
+make one edit_file call with an edits list rather than one call per change."""
 
 # A text-only reply whose last paragraph announces work ("I'll now build ...") but asks
 # nothing: the model meant to keep going and stopped. Offers ("if you want, I'll ...",
@@ -736,6 +741,43 @@ def server_error_cause(estimate: int | None, limit: int) -> str:
     if estimate is None or limit <= 0:
         return "unclear"
     return "cut_off" if estimate >= limit * CUT_OFF_SHARE else "malformed"
+
+
+# Seen 2026-11-19: the fallback had a working, tested game 40 requests in, kept polishing
+# with one small edit per request, and at request 150 the run ended as an error: no reply,
+# no files sent. Warn the model while it can still finish, and if it runs out anyway, give
+# it a few requests to hand over what it has.
+BUDGET_MARK = "[Request budget:"
+BUDGET_NOTE = (
+    BUDGET_MARK + " this run stops after {left} more model requests. Stop adding features or "
+    "polishing now. Use what's left to make sure the work runs and its tests pass, send the "
+    "user the files they need (several send calls in one response), and reply with what's "
+    "done, how to use it and what's still open. Put independent tool calls in one response.]")
+WRAP_UP_REQUESTS = 6
+WRAP_UP_NOTE = (
+    "[You have used this run's model requests, so the work stops here. Don't change any "
+    "files now. Send the user the files they need with send_from_workbench (all in one "
+    "response), then reply with what's done, how to run it, whether the last test run "
+    "passed, and what's still open, so they can ask you to carry on.]")
+
+
+def budget_warning_at(limit: int) -> int:
+    """How many requests before the limit the run is told to wrap up: 10 of 150, 5 of 50."""
+    return max(3, min(10, limit // 10))
+
+
+def with_budget_note(messages: list, requests_done: int, limit: int) -> list:
+    """Add the wrap-up note to the request about to go out, once, near the limit."""
+    left = limit - requests_done
+    if left > budget_warning_at(limit) or not messages or not isinstance(messages[-1], ModelRequest):
+        return messages
+    if any(isinstance(p, UserPromptPart) and isinstance(p.content, str) and p.content.startswith(BUDGET_MARK)
+           for m in messages if isinstance(m, ModelRequest) for p in m.parts):
+        return messages
+    last = messages[-1]
+    out = list(messages)
+    out[-1] = dataclasses.replace(last, parts=[*last.parts, UserPromptPart(BUDGET_NOTE.format(left=left))])
+    return out
 
 
 DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
@@ -1452,7 +1494,8 @@ class Runtime:
                     memory_context: str = "", skills_context: str = "",
                     knowledge_context: str = "", window: int | None = None,
                     thread_id: str | None = None,
-                    model_settings: ModelSettings | None = None) -> Agent:
+                    model_settings: ModelSettings | None = None,
+                    request_budget: int | None = None) -> Agent:
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
@@ -1542,9 +1585,12 @@ class Runtime:
         # Times each model request, so a server error can be told apart from a cut-off.
         request_clock = RequestClock()
 
-        def process_history(messages: list[ModelMessage]) -> list[ModelMessage]:
+        def process_history(ctx: RunContext[RunDeps], messages: list[ModelMessage]) -> list[ModelMessage]:
             request_clock.mark(messages)
-            return trimmer(messages)
+            out = trimmer(messages)
+            if request_budget:  # this run's last chance: tell it to wrap up near the limit
+                out = with_budget_note(out, ctx.usage.requests, request_budget)
+            return out
         shared = resources.shared_desktops([desk for _, desk in toolsets if desk])
         built = Agent(
             model,
@@ -1630,8 +1676,14 @@ class Runtime:
         in_flight: list[int | None] = [None]  # tokens the failed request had written, if known
 
         async def attempt(on_fallback: bool, text: str | None, resume: list | None = None,
-                          think: str | None = None):
+                          think: str | None = None, limits: UsageLimits | None = None):
             nonlocal history
+            kw = {**run_kw, "usage_limits": limits} if limits else run_kw
+            # Warn near the limit only when running out would end the turn: not when the
+            # fallback would take over, nor in a sub-agent, whose delegator decides.
+            budget = (kw["usage_limits"].request_limit
+                      if not limits and not agent.is_subagent and (on_fallback or not has_fallback(agent))
+                      else None)
             pid, model = ((agent.fallback_provider_id, agent.fallback_model) if on_fallback
                           else (agent.provider_id, agent.model))
             started = asyncio.get_running_loop().time()
@@ -1646,14 +1698,15 @@ class Runtime:
                                             model_settings=(ModelSettings(**{
                                                 **(await thinking.settings_for(
                                                     agent, on_fallback=on_fallback, override=think) or {}),
-                                                **limit_settings(agent, on_fallback=on_fallback)}) or None))
+                                                **limit_settings(agent, on_fallback=on_fallback)}) or None),
+                                            request_budget=budget)
                 start = resume if resume is not None else history
                 start = await self._fit_history(agent, pa_agent, start, window, text or "", deps)
                 if resume is None:
                     history = start
                 coro = pa_agent.run(self._user_input(agent, text, deps) if text is not None else None,
                                     deps=deps, message_history=start,
-                                    conversation_id=deps.thread_id, **run_kw)
+                                    conversation_id=deps.thread_id, **kw)
                 with capture_run_messages() as captured:
                     try:
                         result = await (asyncio.wait_for(coro, minutes * 60) if minutes else coro)
@@ -1681,6 +1734,25 @@ class Runtime:
                 resume[-1] = dataclasses.replace(last, parts=[*last.parts, UserPromptPart(note)])
                 return None, resume
             return f"{prompt}\n\n{note}", None
+
+        async def wrap_up(on_fallback: bool, error: Exception):
+            """Out of requests: a few more to send the files and report, instead of an error."""
+            if agent.is_subagent or _find_exc(error, UsageLimitExceeded) is None:
+                raise error
+            limit = run_kw["usage_limits"].request_limit
+            await self.save_message(
+                deps.thread_id, Role.event,
+                f"{agent.name} used all {limit} of its model requests for this run; asking it to "
+                f"send its files and report where it got to.", agent_id=agent.id, kind="wrap_up")
+            text, resume = resume_from(WRAP_UP_NOTE)
+            try:
+                return await attempt(on_fallback, text, resume,
+                                     limits=UsageLimits(request_limit=WRAP_UP_REQUESTS))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("wrap-up after the request limit failed: %s", e)
+                raise error from None
 
         try:
             try:
@@ -1738,7 +1810,7 @@ class Runtime:
             if down is not None and not _find_exc(e, Escalation):
                 raise down
             if not has_fallback(agent):
-                raise
+                return await wrap_up(False, e)
             esc = _find_exc(e, Escalation)
             reason = f"escalated: {esc.reason}" if esc else f"{type(e).__name__}: {e}"
             target = describe_model(agent.fallback_provider_id, agent.fallback_model)
@@ -1760,7 +1832,12 @@ class Runtime:
                         "fix or redo the rest. Finish the task yourself with your tools. Don't stop "
                         "just to report what it got wrong; stop only when the task is done, you are "
                         "blocked, or you need the user to decide something.]")
-                return await attempt(True, f"{prompt}\n\n{note}", None)
+                try:
+                    return await attempt(True, f"{prompt}\n\n{note}", None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as last:
+                    return await wrap_up(True, last)
             note = (f"[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Its work so far is above, and any files it wrote are still there. "
                     "Take over from where it stopped and finish the task yourself with your "
@@ -1768,7 +1845,12 @@ class Runtime:
                     "Don't stop just to report what it got wrong; stop only when the task is "
                     "done, you are blocked, or you need the user to decide something.]")
             text, resume = resume_from(note)
-            return await attempt(True, text, resume)
+            try:
+                return await attempt(True, text, resume)
+            except asyncio.CancelledError:
+                raise
+            except Exception as last:
+                return await wrap_up(True, last)
 
     @staticmethod
     def _user_input(agent: AgentDef, text: str, deps: RunDeps):
