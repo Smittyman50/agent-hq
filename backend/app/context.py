@@ -238,17 +238,21 @@ async def summarise(agent: AgentDef, text: str, window: int) -> tuple[str, str]:
 
     from .llm import build_agent_model, build_model_for, describe_model
 
+    from .thinking import own_model_settings
+
     cfg = get_settings()
+    settings = None
     if cfg.get("model"):
         model = build_model_for(cfg.get("provider_id"), cfg["model"], "the summary model")
         name = describe_model(cfg.get("provider_id"), cfg["model"])
         piece_tokens = max(1500, int(cfg["cloud_window"] * 0.4))
     else:
         model, name = build_agent_model(agent), describe_model(agent.provider_id, agent.model)
+        settings = await own_model_settings(agent)
         piece_tokens = max(800, int(window * 0.5) - int(cfg["summary_max_tokens"]))
     max_words = max(80, int(cfg["summary_max_tokens"] * 0.7))
     writer = Agent(model, instructions=SUMMARY_RULES.format(name=agent.name, max_words=max_words),
-                   name=f"{agent.name} (summarising)")
+                   name=f"{agent.name} (summarising)", model_settings=settings)
     piece_chars = int(piece_tokens * 3.5)
     summary = ""
     for start in range(0, max(1, len(text)), piece_chars):

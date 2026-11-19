@@ -18,7 +18,7 @@ from .conftest import SCRIPTS
 
 def test_limits_become_model_settings_for_the_main_model_only():
     a = AgentDef(name="x", max_output_tokens=16384, request_timeout_s=300, fallback_model="fake:strong")
-    assert limit_settings(a) == {"max_tokens": 16384, "request_timeout": 300.0}
+    assert limit_settings(a) == {"max_tokens": 16384, "max_retries": 0, "request_timeout": 300.0}
     assert limit_settings(a, on_fallback=True) == {}
     assert limit_settings(AgentDef(name="y")) == {}
 
@@ -85,7 +85,20 @@ def overthinker(messages, info: AgentInfo) -> ModelResponse:
     return ModelResponse(parts=[TextPart("Summary: did it with less thinking.")])
 
 
-SCRIPTS.update({"overthinker": overthinker})
+def big_writer(messages, info: AgentInfo) -> ModelResponse:
+    # Writes a whole file in one call and gets cut off (Ollama: a 500); in parts once told.
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    STATE["calls"] += 1
+    told = any("write a big file in parts" in str(getattr(p, "content", ""))
+               for m in messages for p in m.parts)
+    STATE["told"] = told
+    if not told:
+        raise ModelHTTPError(500, "qwen", {"error": "failed to parse tool call"})
+    return ModelResponse(parts=[TextPart("Summary: wrote it in parts.")])
+
+
+SCRIPTS.update({"overthinker": overthinker, "big-writer": big_writer})
 
 
 async def test_overthinking_retries_on_the_same_model_before_the_fallback(hq):
@@ -97,6 +110,21 @@ async def test_overthinking_retries_on_the_same_model_before_the_fallback(hq):
     assert await hq.wait_agent_replies(t["id"], 1) == ["Summary: did it with less thinking."]
     kinds = [m.meta.get("kind") for m in hq.messages(t["id"]) if m.meta]
     assert "think_less" in kinds and "model_fallback" not in kinds
+
+
+async def test_a_server_error_retries_once_asking_for_smaller_tool_calls(hq):
+    # Regression (2026-11-18): three 5-minute 500s in one run, each a write_file cut off at
+    # the 8,192-token limit and quietly re-sent by the SDK.
+    STATE.update(calls=0, told=False)
+    await hq.start_worker()
+    a = await hq.agent(name="Local", model="fake:big-writer", fallback_model="fake:strong",
+                       max_output_tokens=8192, thinking="off")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "build it")
+    assert await hq.wait_agent_replies(t["id"], 1) == ["Summary: wrote it in parts."]
+    kinds = [m.meta.get("kind") for m in hq.messages(t["id"]) if m.meta]
+    assert "cut_off_retry" in kinds and "model_fallback" not in kinds
+    assert STATE["told"]
 
 
 def test_less_thinking_means_off_for_on_off_ollama_models(monkeypatch):

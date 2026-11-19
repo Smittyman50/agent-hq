@@ -125,3 +125,31 @@ def test_header_goes_to_workbenches_not_desktops():
     assert mcp_toolset(_server("http://wb/mcp"), "t1")._static_headers == {CHAT_HEADER: "t1"}
     assert not mcp_toolset(_server("http://desk/mcp", desktop=True), "t1")._static_headers
     assert not mcp_toolset(_server("http://wb/mcp"))._static_headers
+
+
+async def test_a_run_survives_more_tool_errors_than_the_retry_limit(wb, wb_url):
+    # Regression (2026-11-18): the fallback model missed with edit_file four times in a row
+    # on a big file; each miss used one of the tool's 3 retries and the fourth ended the run
+    # with no reply at all. Errors now come back as failed tool results instead.
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.runtime import mcp_toolset
+
+    await _call(wb_url, "chat-e", "write_file", {"path": "engine.py", "content": "x = 1\n"})
+    errors = []
+
+    def model(messages, info: AgentInfo):
+        last = messages[-1].parts[-1]
+        if isinstance(last, ToolReturnPart) or getattr(last, "tool_name", None):
+            errors.append(str(getattr(last, "content", "")))
+        if len(errors) < 6:
+            return ModelResponse(parts=[ToolCallPart("edit_file", {"path": "engine.py", "old_text": f"y = {len(errors)}",
+                                                                   "new_text": "z"}, tool_call_id=f"e{len(errors)}")])
+        return ModelResponse(parts=[TextPart("I couldn't find that code; engine.py has x = 1.")])
+
+    agent = Agent(FunctionModel(model), toolsets=[mcp_toolset(_server(wb_url), "chat-e")])
+    result = await agent.run("fix engine.py")
+    assert result.output.startswith("I couldn't find")
+    assert len(errors) == 6 and all("isn't in engine.py" in e for e in errors)

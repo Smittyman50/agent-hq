@@ -1201,8 +1201,14 @@ The switch shows up in the conversation and the live activity panel. The fallbac
 
 **Guardrails for the main model.** Two settings on an agent (Settings → Agents) make a stuck local model fail in minutes instead of running on:
 - **Max output tokens**: the most one model response may generate, thinking included. A model that thinks without end stops here instead of filling the context window. Leave room for the biggest file the agent writes in one call: 16,384 is a reasonable start for a coding agent.
+
+  When a tool call is cut off at this limit, Ollama can't read it and answers with a server error (500) instead of saying the model ran out of room. The client would quietly send the request again, and on a local GPU each try can take 5 minutes (8,192 tokens at 25 a second). So when this limit is set, Agent HQ makes a single attempt per request. On a 500 it says so in the chat and tries once more on the same model, telling it to keep each tool call well under the limit by writing big files in parts (`write_file`, then `write_file` with `append=true`). If that fails too, the fallback takes over as usual.
 - **Request time limit**: a deadline in seconds for one model request, every client retry included. Without it, a request can wait for the client's 10-minute timeout and then be retried twice.
 - **Model requests per run**: the most model requests one run may make, 50 if left blank. It stops a model looping on tool calls, but a coding agent working through a big task (write, run, read, edit, run again) can need more: 150 is a reasonable start. The retry with less thinking and the fallback each get that many again.
+
+**Side jobs follow the same settings.** When no separate summary, reflection or judge model is set, Agent HQ names chats, writes compaction summaries, reflects on finished work and grades test runs with the agent's own model. Those calls now carry the agent's thinking level, max output tokens and request time limit too. Before, they got the model's defaults, which on Qwen3.8 is the highest reasoning effort with no cap and no deadline: one reflection could hold a single-GPU server for many minutes while the agent's own requests queued behind it.
+
+**A failing tool call doesn't end the run.** When a tool server reports an error (edit_file can't find the text, a command fails), the model gets it back as a failed tool result and carries on. PydanticAI's default would count it as a retry, and the fourth miss on the same tool in a row ended the whole run with no reply. Repeated failures are still bounded by **Model requests per run**.
 
 When the main model hits either one, it gets one more try on the same model with less thinking (low effort, or thinking off for Ollama models that only have on/off), carrying on from where it stopped. If that fails too, the fallback takes over. The guardrails don't apply to the fallback.
 
@@ -1292,15 +1298,6 @@ deploy/autodeploy/   deploy.sh (pull, build, back up, restart, health check), th
                      systemd unit; .gitea/workflows/deploy.yaml runs it on push (docs/auto-deploy.md)
 examples/            example crew (providers, agents, pools, tools, subscriptions) as importable JSON; homelab-crew.json (a worked example)
 ```
-
-## Next steps worth building
-
-- **Incidents on the board:** alerts and webhook events grouped by a correlation key into one work item (kind `incident`) that the lab crew works with the same columns, next actions and WIP limits as goals.
-- **A weekly review for goals:** an optional schedule per agent to prune its backlog and flag stuck goals, GTD style.
-
-- **Daily budgets for sub-agents:** per-agent model-minutes or tokens per day, once the Usage page shows what's normal.
-- **More notification channels:** Telegram or Discord for requests and alerts, alongside MQTT.
-- **Nightly eval runs and model-change runs:** run every active case on a schedule, or when an agent's model changes, once you've seen what a run costs.
 
 ## License
 

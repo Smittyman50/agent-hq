@@ -536,9 +536,13 @@ async def reflect(rt, r_id: str) -> Reflection:
     try:
         context = context_for(r, agent)
         model, provider_id, model_id, model_name = _model_for(agent, cfg)
+        from .thinking import own_model_settings
+
+        own = not cfg.get("model")  # the agent's own model: give it the agent's settings
         reviewer = Agent(model, output_type=ReflectionOut, retries=2,
                          instructions=REFLECT_RULES.format(name=agent.name),
-                         name=f"{agent.name} (reflection)")
+                         name=f"{agent.name} (reflection)",
+                         model_settings=await own_model_settings(agent) if own else None)
         result = await reviewer.run(context, usage_limits=UsageLimits(request_limit=6))
         usage, ok, out = result.usage, True, result.output
     except Exception as e:

@@ -73,9 +73,14 @@ async def _ask_model(agent: AgentDef, user: str, reply: str, thread_id: str | No
     from .llm import build_agent_model, build_model_for
 
     cfg = get_settings()
-    model = (build_model_for(cfg.get("provider_id"), cfg["model"], "the summary model")
-             if cfg.get("model") else build_agent_model(agent))
-    namer = Agent(model, instructions=RULES, name=f"{agent.name} (naming the chat)")
+    from .thinking import own_model_settings
+
+    if cfg.get("model"):
+        model, settings = build_model_for(cfg.get("provider_id"), cfg["model"], "the summary model"), None
+    else:
+        model, settings = build_agent_model(agent), await own_model_settings(agent)
+    namer = Agent(model, instructions=RULES, name=f"{agent.name} (naming the chat)",
+                  model_settings=settings)
     prompt = f"The user said:\n{user[:1500]}"
     if reply:
         prompt += f"\n\n{agent.name} replied:\n{reply[:1500]}"

@@ -50,8 +50,8 @@ from pydantic_ai import (
     capture_run_messages,
 )
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.exceptions import (IncompleteToolCall, ModelRequestTimeout, ModelTimeoutError,
-                                    OutputTokenLimitExceeded)
+from pydantic_ai.exceptions import (IncompleteToolCall, ModelHTTPError, ModelRequestTimeout,
+                                    ModelTimeoutError, OutputTokenLimitExceeded)
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart,
                                   UserPromptPart)
@@ -254,6 +254,12 @@ def find_delegate(agent: AgentDef, name: str) -> AgentDef | None:
     return None
 
 
+# A tool server's error ("old_text isn't in engine.py") goes back to the model as a failed
+# tool result (tool_error_behavior="failed") instead of a retry: retries are capped at 3 per
+# tool, and a model working through a big file can miss with edit_file more often than that.
+# The 2026-11-18 run died on the fourth miss with no reply at all. Repeated failures are
+# still bounded by the run's request limit.
+#
 # Names the chat a call belongs to. A workbench gives each chat its own folder with it,
 # so a new chat starts with an empty workspace (see workbench/workbench_mcp.py).
 CHAT_HEADER = "X-AgentHQ-Chat"
@@ -270,11 +276,11 @@ def mcp_toolset(srv: ToolServer, chat: str | None = None) -> MCPToolset:
             headers = {k: unseal(v) for k, v in srv.headers.items()}
         if chat and not srv.desktop:
             headers[CHAT_HEADER] = chat
-        return MCPToolset(srv.url, id=srv.name, headers=headers) if headers else MCPToolset(srv.url, id=srv.name)
+        return MCPToolset(srv.url, id=srv.name, headers=headers or None, tool_error_behavior="failed")
     if not srv.command:
         raise ValueError(f"tool server {srv.name} has no command")
     config = {"mcpServers": {srv.name: {"command": srv.command, "args": srv.args, "env": srv.env}}}
-    return MCPToolset(config, id=srv.name)
+    return MCPToolset(config, id=srv.name, tool_error_behavior="failed")
 
 
 def agent_tool_servers(agent: AgentDef) -> list[ToolServer]:
@@ -583,6 +589,10 @@ def limit_settings(agent: AgentDef, *, on_fallback: bool = False) -> dict[str, A
     out: dict[str, Any] = {}
     if agent.max_output_tokens:
         out["max_tokens"] = int(agent.max_output_tokens)
+        # Ollama answers a tool call cut off at max_tokens with a 500, which the SDK would
+        # quietly send again (another 5 minutes on a local GPU, the same cut-off likely).
+        # Make one attempt and let _run_agent retry knowing why: see CUT_OFF_NOTE.
+        out["max_retries"] = 0
     if agent.request_timeout_s:
         # One deadline for the whole request, SDK retries included: a stuck local model
         # gets cut off once, not retried until three timeouts have passed.
@@ -600,6 +610,25 @@ def ran_out(e: BaseException) -> str | None:
     if _find_exc(e, ModelRequestTimeout) is not None or _find_exc(e, ModelTimeoutError) is not None:
         return "its request ran past the time limit"
     return None
+
+
+def server_failed(e: BaseException) -> bool:
+    """A 5xx from the model server, such as Ollama's answer to a tool call cut off at the
+    output limit."""
+    err = _find_exc(e, ModelHTTPError)
+    return err is not None and err.status_code >= 500
+
+
+# Seen 2026-11-18: Qwen started writing a whole game file in one write_file call, hit its
+# 8,192-token limit after 5 minutes at 25 tokens a second, and Ollama, unable to parse the
+# cut-off call, answered 500. It happened three times in one run.
+CUT_OFF_NOTE = (
+    "[Your last response failed with a server error. Most likely it was cut off at your "
+    "{limit:,}-token output limit while you were writing one big tool call, such as a whole "
+    "file at once, and the server couldn't read the incomplete call. Keep every tool call "
+    "well under that limit: write a big file in parts (write_file with the first part, then "
+    "write_file with append=true for each further part, a few hundred lines at a time), or "
+    "split the code into smaller modules. Then carry on with the task.]")
 
 
 DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
@@ -1520,6 +1549,17 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as first:
+                # A server error from a model with an output limit: most likely a tool call
+                # cut off at that limit. Say so and try once more on the same model.
+                if agent.max_output_tokens and server_failed(first) and ran_out(first) is None:
+                    await self.save_message(
+                        deps.thread_id, Role.event,
+                        f"{agent.name}'s model answered with a server error, most likely a tool "
+                        f"call cut off at its {int(agent.max_output_tokens):,}-token output limit; "
+                        f"trying again on the same model, writing in smaller parts.",
+                        agent_id=agent.id, kind="cut_off_retry")
+                    text, resume = resume_from(CUT_OFF_NOTE.format(limit=int(agent.max_output_tokens)))
+                    return await attempt(False, text, resume)
                 # A local model that thought itself past its output or time limit usually
                 # does fine with less thinking: try that once before paying for the fallback.
                 why = ran_out(first)

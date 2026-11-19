@@ -132,6 +132,20 @@ async def settings_for(agent: AgentDef, *, on_fallback: bool = False,
     return ModelSettings(thinking=level)
 
 
+async def own_model_settings(agent: AgentDef) -> ModelSettings | None:
+    """Settings for a side job run on the agent's own main model (naming the chat, a
+    compaction summary, a reflection, grading a test): the agent's thinking level and its
+    guardrails (max output tokens, request time limit).
+
+    Without them a side job gets the model's defaults: on Qwen3.8 that is the highest
+    reasoning effort, no output cap and no deadline, so one reflection could hold a shared
+    GPU for many minutes while the agent's own requests queue behind it."""
+    from .runtime import limit_settings
+
+    merged = {**(await settings_for(agent) or {}), **limit_settings(agent)}
+    return ModelSettings(**merged) if merged else None
+
+
 async def support(provider_id: str | None, model: str) -> dict[str, Any]:
     """Whether a thinking setting reaches this model, for the hint in the agent settings.
     {"supported": True | False | None (unknown), "levels": whether it takes effort levels

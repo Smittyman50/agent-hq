@@ -168,3 +168,34 @@ async def test_api_checks_the_level(hq):
     # Export/import keeps it.
     exported = (await hq.http.get("/api/agents/export")).json()
     assert {x["name"]: x["thinking"] for x in exported["agents"]}["Y"] == "low"
+
+
+# -- side jobs on the agent's own model --------------------------------------------------
+
+async def test_side_jobs_get_the_agents_thinking_and_limits(store, ollama_url):
+    # Regression (2026-11-18): naming, summaries, reflections and grading ran on the agent's
+    # own model with no settings, which on Qwen3.8 means the highest reasoning effort, no
+    # output cap and no deadline: one could hold the GPU while the agent's turn queued.
+    ol = _provider(ProviderKind.ollama, ollama_url)
+    a = AgentDef(name="H", provider_id=ol, model="qwen3:14b", thinking="off",
+                 max_output_tokens=8192, request_timeout_s=420)
+    assert await thinking.own_model_settings(a) == {
+        "extra_body": {"reasoning_effort": "none"}, "max_tokens": 8192, "max_retries": 0,
+        "request_timeout": 420.0}
+    assert await thinking.own_model_settings(AgentDef(name="P", provider_id=ol, model="qwen3:14b")) is None
+
+
+async def test_naming_the_chat_uses_them(store):
+    from app import titles
+
+    seen = []
+
+    def namer(messages, info: AgentInfo):
+        seen.append((info.model_request_parameters.thinking, (info.model_settings or {}).get("max_tokens")))
+        return ModelResponse(parts=[TextPart("Zork style game")])
+
+    register_model_factory("settingsfake", lambda name: FunctionModel(
+        namer, model_name=name, profile={"supports_thinking": True}))
+    a = AgentDef(name="H", model="settingsfake:x", thinking="off", max_output_tokens=512)
+    assert await titles._ask_model(a, "write me a game", "") == "Zork style game"
+    assert seen == [(False, 512)]  # thinking off, and the output cap

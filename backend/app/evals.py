@@ -335,8 +335,12 @@ async def _grade(case: EvalCase, reply: str, calls: list[dict], agent: AgentDef)
             out.append({"check": chk, "passed": ok, "note": "" if ok else f"loaded: {', '.join(loaded) or 'none'}"})
         elif t == "rubric":
             if judge is None:
+                from .thinking import own_model_settings
+
                 model, judge_name = _judge_model(agent)
-                judge = Agent(model, output_type=Verdict, retries=2, instructions=JUDGE_RULES, name="judge")
+                own = not get_settings().get("judge_model")  # the agent itself is the judge
+                judge = Agent(model, output_type=Verdict, retries=2, instructions=JUDGE_RULES, name="judge",
+                              model_settings=await own_model_settings(agent) if own else None)
             steps = "\n".join(f"- {c['tool']} ({c['answered']})" for c in calls) or "(none)"
             prompt = (f"The request:\n{case.prompt}\n\nThe agent's tool calls:\n{steps}\n\n"
                       f"The agent's reply:\n{reply}\n\nThe criterion:\n{v}")
