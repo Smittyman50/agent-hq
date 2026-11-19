@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 import contextlib
+import time
 import dataclasses
 import json
 import logging
@@ -53,7 +54,7 @@ from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (IncompleteToolCall, ModelHTTPError, ModelRequestTimeout,
                                     ModelTimeoutError, OutputTokenLimitExceeded)
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart,
+from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart,
                                   UserPromptPart)
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
@@ -525,6 +526,47 @@ def _resume_point(messages: list) -> list:
     return msgs
 
 
+# A fallback that inherits a long failed run starts with its truncated, re-read transcript
+# and spends its own request budget re-learning the files (seen 2026-11-19: 150 requests of
+# re-reads). Past this many tool calls it starts fresh with a short brief instead.
+FRESH_START_AFTER_TOOL_CALLS = 12
+_FILE_TOOLS = ("write_file", "edit_file", "append_file", "create_file")
+
+
+def turn_tool_calls(messages: list) -> list[ToolCallPart]:
+    return [p for m in messages if isinstance(m, ModelResponse)
+            for p in m.parts if isinstance(p, ToolCallPart)]
+
+
+def handover_brief(messages: list, clip: int = 600) -> str:
+    """What a failed run did, in a few lines, for a model taking over from scratch: the
+    files it wrote or edited, how many calls of each tool it made, and its last words."""
+    calls = turn_tool_calls(messages)
+    files: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for c in calls:
+        counts[c.tool_name] = counts.get(c.tool_name, 0) + 1
+        if c.tool_name.endswith(_FILE_TOOLS):
+            try:
+                args = c.args_as_dict()
+            except Exception:
+                continue
+            path = args.get("path") or args.get("file_path") or args.get("name")
+            if isinstance(path, str) and path:
+                files[path] = files.get(path, 0) + 1
+    lines = [f"- {len(calls)} tool calls: " + ", ".join(
+        f"{name} ×{n}" for name, n in sorted(counts.items(), key=lambda kv: -kv[1]))]
+    if files:
+        lines.append("- Files it wrote or edited: " + ", ".join(
+            f"{path} ({n}×)" for path, n in files.items()))
+    said = [p.content for m in messages if isinstance(m, ModelResponse)
+            for p in m.parts if isinstance(p, TextPart) and p.content.strip()]
+    if said:
+        last = said[-1].strip()
+        lines.append("- Its last words: " + (last[:clip] + "…" if len(last) > clip else last))
+    return "\n".join(lines)
+
+
 class Escalation(Exception):
     """Raised by the escalate tool to hand the run to the agent's fallback model."""
 
@@ -631,6 +673,71 @@ CUT_OFF_NOTE = (
     "split the code into smaller modules. Then carry on with the task.]")
 
 
+# Seen 2026-11-19: llama-server answered "invalid tool call arguments ... unexpected end of
+# JSON input" 31 seconds into a request, some 750 tokens in, nowhere near the 16,384-token
+# limit. The cut-off note then told the model to write in small parts, which only made it
+# split files and re-read them. A malformed call needs a different note.
+MALFORMED_NOTE = (
+    "[Your last response failed with a server error: the server couldn't read the arguments "
+    "of your tool call. It was about {tokens:,} tokens long, well under your {limit:,}-token "
+    "output limit, so it wasn't cut off: its JSON was malformed. Make the same step again "
+    "with valid arguments: escape quotes, backslashes and newlines inside strings, and "
+    "avoid deeply nested quoting in shell commands (write a script with write_file and run "
+    "it instead). Don't split your work into smaller pieces because of this. Then carry on "
+    "with the task.]")
+
+UNCLEAR_NOTE = (
+    "[Your last response failed with a server error: the server couldn't read your tool "
+    "call. Either it was cut off at your {limit:,}-token output limit or its JSON was "
+    "malformed. If you were writing a big file in one call, write a big file in parts "
+    "(write_file with the first part, then write_file with append=true for each further "
+    "part). Otherwise make the same step again with valid arguments: escape quotes, "
+    "backslashes and newlines inside strings. Then carry on with the task.]")
+
+CUT_OFF_SHARE = 0.6  # of the output limit: an estimate at least this big counts as a cut-off
+
+
+class RequestClock:
+    """Times a run's model requests, to estimate how much a failed request had written.
+
+    A server error carries no token count, so the estimate is the time the request ran
+    times the fastest output rate seen in this run. The rate counts each response's
+    output tokens over the time from its request to the next one, tool calls included,
+    so it errs low; CUT_OFF_SHARE leaves room for that."""
+
+    MIN_SAMPLE_TOKENS = 300  # shorter responses say more about latency than speed
+
+    def __init__(self) -> None:
+        self.sent: float | None = None
+        self.responses = 0
+        self.rates: list[float] = []
+
+    def mark(self, messages: list) -> None:
+        """Called as each request is about to go out, with the history it carries."""
+        now = time.monotonic()
+        responses = [m for m in messages if isinstance(m, ModelResponse)]
+        if self.sent is not None and len(responses) > self.responses:
+            out = getattr(getattr(responses[-1], "usage", None), "output_tokens", 0) or 0
+            took = now - self.sent
+            if out >= self.MIN_SAMPLE_TOKENS and took > 0:
+                self.rates.append(out / took)
+        self.responses = len(responses)
+        self.sent = now
+
+    def tokens_in_flight(self) -> int | None:
+        """About how many tokens the latest request wrote before it ended, if known."""
+        if self.sent is None or not self.rates:
+            return None
+        return int((time.monotonic() - self.sent) * max(self.rates))
+
+
+def server_error_cause(estimate: int | None, limit: int) -> str:
+    """'cut_off', 'malformed' or 'unclear': why a model's server error most likely came."""
+    if estimate is None or limit <= 0:
+        return "unclear"
+    return "cut_off" if estimate >= limit * CUT_OFF_SHARE else "malformed"
+
+
 DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
                 "Do not retry now. Report that the shared desktop is busy, or ask whoever you "
                 "report to to try again later.")
@@ -657,6 +764,24 @@ TRIM_WHEN_OVER_CHARS = 40_000
 
 
 SHORTEN_CALL_ARG_OVER = 2000  # characters in one argument of an old tool call
+MAX_KEEP_RECENT_TOOL_RESULTS = 12
+
+
+def tool_result_limits(window: int | None) -> tuple[int, int]:
+    """How many of the latest tool results to keep whole, and how many characters of tool
+    results a run may hold before older ones are shortened, for a model's context window.
+
+    The fixed 3 results and 40,000 characters suit an 8k-16k local model, but they also
+    applied to a 400k fallback: seen 2026-11-19, a coding run read a 600-line file in
+    chunks, lost the first chunks to the trim before it had read the last, and spent 150
+    requests re-reading the same lines. Results now scale with the window (one kept whole
+    per 4k tokens, up to 12; trimming starts at 40% of the window); without a known window
+    the old limits stand. The window-fitting trim in context.make_trimmer still applies."""
+    if not window or window <= 0:
+        return KEEP_RECENT_TOOL_RESULTS, TRIM_WHEN_OVER_CHARS
+    keep = max(KEEP_RECENT_TOOL_RESULTS, min(MAX_KEEP_RECENT_TOOL_RESULTS, int(window) // 4000))
+    over = max(TRIM_WHEN_OVER_CHARS, int(window * 3.5 * 0.4))
+    return keep, over
 
 
 def shorten_old_tool_calls(messages: list[ModelMessage], keep: int = KEEP_RECENT_TOOL_RESULTS,
@@ -693,19 +818,21 @@ def shorten_old_tool_calls(messages: list[ModelMessage], keep: int = KEEP_RECENT
     return out
 
 
-def trim_old_tool_results(messages: list[ModelMessage]) -> list[ModelMessage]:
+def trim_old_tool_results(messages: list[ModelMessage], window: int | None = None) -> list[ModelMessage]:
     """PydanticAI history processor: shorten all but the latest few large tool results,
-    and the long arguments of all but the latest few tool calls."""
-    messages = shorten_old_tool_calls(messages)
+    and the long arguments of all but the latest few tool calls. How few depends on the
+    model's context window: see tool_result_limits."""
+    keep_recent, trim_over = tool_result_limits(window)
+    messages = shorten_old_tool_calls(messages, keep=keep_recent)
     def size(c: Any) -> int:
         return len(c) if isinstance(c, str) else len(json.dumps(c, default=str))
 
     returns = [(i, j) for i, m in enumerate(messages) if isinstance(m, ModelRequest)
                for j, p in enumerate(m.parts) if isinstance(p, ToolReturnPart)]
     total = sum(size(messages[i].parts[j].content) for i, j in returns)
-    if total <= TRIM_WHEN_OVER_CHARS:
+    if total <= trim_over:
         return messages
-    old = returns[:-KEEP_RECENT_TOOL_RESULTS] if KEEP_RECENT_TOOL_RESULTS else returns
+    old = returns[:-keep_recent] if keep_recent else returns
     by_msg: dict[int, list[int]] = {}
     for i, j in old:
         by_msg.setdefault(i, []).append(j)
@@ -1410,7 +1537,14 @@ class Runtime:
         used = context.tokens(text)
         reserve = int(context.get_settings()["reserve_tokens"])
         # Within a run, older tool results are trimmed harder as it nears the window.
-        trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0, fixed_tokens=used)
+        trimmer = context.make_trimmer(int(window * 0.9) - used - reserve if window else 0, fixed_tokens=used,
+                                       window=window)
+        # Times each model request, so a server error can be told apart from a cut-off.
+        request_clock = RequestClock()
+
+        def process_history(messages: list[ModelMessage]) -> list[ModelMessage]:
+            request_clock.mark(messages)
+            return trimmer(messages)
         shared = resources.shared_desktops([desk for _, desk in toolsets if desk])
         built = Agent(
             model,
@@ -1421,7 +1555,7 @@ class Runtime:
             # their answer as text; accept that too rather than throwing the work away.
             output_type=[WorkResult, str] if as_worker else str,
             retries=3,  # a malformed tool call or result gets a few tries, not one
-            capabilities=[ProcessHistory(trimmer)],
+            capabilities=[ProcessHistory(process_history)],
             # The agent's thinking level, translated for its model (app/thinking.py).
             model_settings=model_settings,
             toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
@@ -1430,6 +1564,7 @@ class Runtime:
                       for i, (t, desk) in enumerate(toolsets)],
         )
         built.ahq_instruction_tokens = used  # for fitting the history around them
+        built.ahq_request_clock = request_clock
 
         @built.output_validator
         def keep_working(ctx: RunContext[RunDeps], output):
@@ -1492,6 +1627,7 @@ class Runtime:
             minutes = float(caps.get("max_minutes") or 10)
 
         progress: list = []  # what the main model did before it failed, for the fallback
+        in_flight: list[int | None] = [None]  # tokens the failed request had written, if known
 
         async def attempt(on_fallback: bool, text: str | None, resume: list | None = None,
                           think: str | None = None):
@@ -1500,6 +1636,7 @@ class Runtime:
                           else (agent.provider_id, agent.model))
             started = asyncio.get_running_loop().time()
             usage, ok = None, False
+            pa_agent = None
             try:
                 window, _ = await context.window_for(agent, on_fallback=on_fallback)
                 pa_agent = self.build_agent(agent, as_worker=as_worker, on_fallback=on_fallback,
@@ -1525,6 +1662,8 @@ class Runtime:
                         raise RuntimeError(f"stopped at its {minutes:g}-minute limit") from None
                     except Exception:
                         progress[:] = captured
+                        clock = getattr(pa_agent, "ahq_request_clock", None)
+                        in_flight[0] = clock.tokens_in_flight() if clock else None
                         raise
                 usage, ok = result.usage, True
                 # Images were for this run; the saved history keeps a placeholder instead.
@@ -1549,16 +1688,31 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as first:
-                # A server error from a model with an output limit: most likely a tool call
-                # cut off at that limit. Say so and try once more on the same model.
+                # A server error from a model with an output limit: a tool call cut off at
+                # that limit, or one the server couldn't parse. How long the request ran
+                # tells them apart; say which, and try once more on the same model.
                 if agent.max_output_tokens and server_failed(first) and ran_out(first) is None:
-                    await self.save_message(
-                        deps.thread_id, Role.event,
-                        f"{agent.name}'s model answered with a server error, most likely a tool "
-                        f"call cut off at its {int(agent.max_output_tokens):,}-token output limit; "
-                        f"trying again on the same model, writing in smaller parts.",
-                        agent_id=agent.id, kind="cut_off_retry")
-                    text, resume = resume_from(CUT_OFF_NOTE.format(limit=int(agent.max_output_tokens)))
+                    limit = int(agent.max_output_tokens)
+                    est = in_flight[0]
+                    cause = server_error_cause(est, limit)
+                    if cause == "cut_off":
+                        event = (f"{agent.name}'s model answered with a server error after about "
+                                 f"{est:,} tokens, most likely a tool call cut off at its {limit:,}-token "
+                                 f"output limit; trying again on the same model, writing in smaller parts.")
+                        note = CUT_OFF_NOTE.format(limit=limit)
+                    elif cause == "malformed":
+                        event = (f"{agent.name}'s model answered with a server error after about "
+                                 f"{est:,} tokens, well under its {limit:,}-token output limit, so most "
+                                 f"likely a malformed tool call; trying again on the same model.")
+                        note = MALFORMED_NOTE.format(tokens=est, limit=limit)
+                    else:
+                        event = (f"{agent.name}'s model answered with a server error: a tool call cut "
+                                 f"off at its {limit:,}-token output limit or one the server couldn't "
+                                 f"parse; trying again on the same model.")
+                        note = UNCLEAR_NOTE.format(limit=limit)
+                    await self.save_message(deps.thread_id, Role.event, event, agent_id=agent.id,
+                                            kind="cut_off_retry", cause=cause, tokens=est)
+                    text, resume = resume_from(note)
                     return await attempt(False, text, resume)
                 # A local model that thought itself past its output or time limit usually
                 # does fine with less thinking: try that once before paying for the fallback.
@@ -1594,6 +1748,19 @@ class Runtime:
             await self.save_message(deps.thread_id, Role.event,
                                     f"{agent.name} switched to its fallback model {target} ({reason[:300]})",
                                     agent_id=agent.id, kind="model_fallback")
+            done = att.strip_images(progress)[len(history or []):]
+            if len(turn_tool_calls(done)) > FRESH_START_AFTER_TOOL_CALLS:
+                # A long failed run: its transcript is mostly trimmed re-reads. Start the
+                # fallback on the request itself, with a brief of what was done.
+                note = (f"[A smaller model worked on this first and stopped: {reason[:500]}. "
+                        "You're starting fresh rather than from its long transcript. What it did:\n"
+                        f"{handover_brief(done)}\n"
+                        "Any files it wrote are still on your workbench. List them, then read each "
+                        "one you need once, in full, before changing anything; keep what works and "
+                        "fix or redo the rest. Finish the task yourself with your tools. Don't stop "
+                        "just to report what it got wrong; stop only when the task is done, you are "
+                        "blocked, or you need the user to decide something.]")
+                return await attempt(True, f"{prompt}\n\n{note}", None)
             note = (f"[A smaller model attempted this first and stopped: {reason[:500]}. "
                     "Its work so far is above, and any files it wrote are still there. "
                     "Take over from where it stopped and finish the task yourself with your "

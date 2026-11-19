@@ -337,17 +337,18 @@ def calibration(messages: list[ModelMessage], fixed_tokens: int) -> float:
     return 1.0
 
 
-def make_trimmer(budget_tokens: int, fixed_tokens: int = 0):
+def make_trimmer(budget_tokens: int, fixed_tokens: int = 0, window: int | None = None):
     """A history processor for one run: the usual trim of old tool results, then harder
     trimming when the run is about to outgrow the window.
 
     budget_tokens is what the history may take by this module's estimate, after
     fixed_tokens (the instructions). The estimate is scaled by calibration(), so the real
-    prompt (tool definitions and the model's own token counts included) stays inside."""
+    prompt (tool definitions and the model's own token counts included) stays inside.
+    window, when known, sets how many recent tool results the usual trim keeps whole."""
     from .runtime import trim_old_tool_results
 
     def trim(messages: list[ModelMessage]) -> list[ModelMessage]:
-        out = list(trim_old_tool_results(messages))
+        out = list(trim_old_tool_results(messages, window=window))
         if budget_tokens <= 0:
             return out
         budget = budget_tokens
