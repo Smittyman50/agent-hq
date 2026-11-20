@@ -45,7 +45,7 @@ export class Files {
 
 // ------------------------------------------------------------------ outputs
 
-/** Extensions shown as text in the chat (code, config, data, notes), with their language label. */
+/** Extensions viewable as text in Outputs (code, config, data, notes), with their language label. */
 const TEXT_EXT: Record<string, string> = {
   py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
   sh: 'bash', bash: 'bash', zsh: 'bash', ps1: 'powershell', bat: 'batch', cmd: 'batch',
@@ -58,7 +58,7 @@ const TEXT_EXT: Record<string, string> = {
 };
 const TEXT_NAMES = new Set(['dockerfile', 'makefile', 'caddyfile', 'readme', 'license', '.gitignore', '.env']);
 const ARCHIVE_EXT = new Set(['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst']);
-/** Bigger text files aren't previewed inline (download them from Outputs). */
+/** Bigger text files aren't previewed (download them instead). */
 export const PREVIEW_LIMIT = 512 * 1024;
 
 function ext(name: string): string {
@@ -66,7 +66,7 @@ function ext(name: string): string {
   return i > 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
-/** A file whose contents read as text, so the chat can show it under the reply. */
+/** A file whose contents read as text, so Outputs can show it. */
 export function isViewable(f: Attachment): boolean {
   if (f.kind === 'image' || isArchive(f)) return false;
   if (f.kind === 'text') return true;
@@ -85,7 +85,7 @@ export function languageOf(f: Attachment): string {
   return TEXT_EXT[ext(f.name)] ?? (TEXT_NAMES.has(f.name.toLowerCase()) ? f.name.toLowerCase() : 'text');
 }
 
-/** A text file an agent made, shown in full under its reply with Copy and Download. */
+/** A text file an agent made, opened in the Outputs panel with Copy and Download. */
 @Component({
   selector: 'hq-file-view',
   imports: [Icon],
@@ -104,7 +104,7 @@ export function languageOf(f: Attachment): string {
         <hq-icon name="download" [size]="13" /><span>Download</span></a>
     </div>
     @if (tooBig()) {
-      <div class="file-view-note muted">Too large to preview here. Download it, or find it under Outputs.</div>
+      <div class="file-view-note muted">Too large to preview here. Download it instead.</div>
     } @else if (error()) {
       <div class="file-view-note err">{{ error() }}</div>
     } @else if (text() === null) {

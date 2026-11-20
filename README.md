@@ -880,7 +880,7 @@ With neither, the agent can read documents but tells you it can't view images.
 
 **Delegation:** every agent working in a conversation can read its files, so a supervisor passes your file on by ID: `delegate(agent_name=…, task=…, attachment_ids=["att_…"])`. The delegate gets the manifest with its task; the file shows on the delegation card. Files a delegate makes appear on its card and are listed in its result, so the supervisor can use them too.
 
-**Files agents send back** appear under their reply, or on the delegation card for a delegate's files: images as thumbnails, everything else as a download.
+**Files agents send back** collect in the **Outputs** panel beside the chat, newest first; images also show as thumbnails under the reply (or on the delegation card for a delegate's files). Text files (code, config, Markdown, CSV, logs…) get a **view →** chip under the reply: it opens the file in Outputs, as does clicking the file there. An open file shows its contents with **Copy** and **Download**, and the panel widens while any file is open; click the file again, or **Collapse all**, to close it and narrow the panel. Archives and other binaries stay a download, with an **in Outputs →** chip under the reply that points at them.
 
 **After updating:** rebuild the workbench and desktop images. The file transfers use hidden `ahq_*` tools in them.
 

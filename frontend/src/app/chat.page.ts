@@ -20,14 +20,15 @@ import { Workspace } from './workspace';
 interface Activity { ts: string; text: string; kind: string; depth: number; agent?: string; }
 /** A file an agent made in this chat, as listed under Outputs. */
 interface Output { file: Attachment; messageId: string; who: string; at: string | null; }
-/** How a reply's files show in the chat: pictures and text inline, the rest only under Outputs. */
+/** How a reply's files show in the chat: pictures inline; text files open in Outputs; the rest download from Outputs. */
 interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachment[]; }
 
 @Component({
   selector: 'hq-chat',
   imports: [FormsModule, DatePipe, NgTemplateOutlet, Avatar, Icon, Markdown, Files, FileView, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, GoalCard, RouterLink],
   template: `
-  <div class="chat-layout" [class.with-desktop]="desktopAgent()" [class.with-outputs]="threadId() && showOutputs()">
+  <div class="chat-layout" [class.with-desktop]="desktopAgent()" [class.with-outputs]="threadId() && showOutputs()"
+       [class.viewing]="threadId() && showOutputs() && viewing().size > 0">
     <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
              (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
       @if (threadId()) {
@@ -121,8 +122,7 @@ interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachm
                         @if (x.files.length) {
                           @let xf = split(x.files);
                           @if (xf.images.length) { <hq-files [files]="xf.images" /> }
-                          @for (f of xf.texts; track f.id) { <hq-file-view [file]="f" /> }
-                          @if (xf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: xf.others }" /> }
+                                                    @if (xf.texts.length || xf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: xf }" /> }
                         }
                       </div>
                     } @else {
@@ -147,8 +147,7 @@ interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachm
                 @if (filesOf(m).length) {
                   @let mf = split(filesOf(m));
                   @if (mf.images.length) { <hq-files [files]="mf.images" /> }
-                  @for (f of mf.texts; track f.id) { <hq-file-view [file]="f" /> }
-                  @if (mf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: mf.others }" /> }
+                                    @if (mf.texts.length || mf.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: mf }" /> }
                 }
                 @if (m.meta?.['job_id']) {
                   <div class="rate" [class.rated]="!!fb(m)">
@@ -199,8 +198,7 @@ interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachm
                   @else {
                     @let ef = split(filesOf(m));
                     @if (ef.images.length) { <hq-files [files]="ef.images" /> }
-                    @for (f of ef.texts; track f.id) { <hq-file-view [file]="f" /> }
-                    @if (ef.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: ef.others }" /> }
+                                        @if (ef.texts.length || ef.others.length) { <ng-container *ngTemplateOutlet="toOutputs; context: { $implicit: ef }" /> }
                   }
                 }
               }
@@ -264,25 +262,45 @@ interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachm
           <hq-icon name="package" [size]="16" class="muted" /><strong>Outputs</strong>
           @if (outputs().length) { <span class="pill">{{ outputs().length }}</span> }
           <span class="spacer"></span>
+          @if (viewing().size) {
+            <button type="button" class="ghost small" title="Close every open file and narrow the panel" (click)="closeViews()">Collapse all</button>
+          }
           <button type="button" class="icon-btn" title="Hide Outputs" (click)="toggleOutputs()"><hq-icon name="x" [size]="14" /></button>
         </header>
         <div class="outputs-list">
           @for (o of outputs(); track o.file.id) {
-            <div class="output" [id]="'out-' + o.file.id" [class.flash]="flashed().has(o.file.id)">
-              <a class="output-main" [href]="fileUrl(o.file.id, true)" [title]="'Download ' + o.file.name">
-                @if (o.file.kind === 'image') {
-                  <img class="output-thumb" [src]="fileUrl(o.file.id)" [alt]="o.file.name" loading="lazy">
-                } @else {
-                  <span class="output-icon"><hq-icon [name]="archive(o.file) ? 'package' : 'file'" [size]="16" /></span>
+            <div class="output" [id]="'out-' + o.file.id" [class.flash]="flashed().has(o.file.id)" [class.open]="viewing().has(o.file.id)">
+              @if (viewable(o.file)) {
+                <button type="button" class="output-main" (click)="toggleView(o.file.id)" [attr.aria-expanded]="viewing().has(o.file.id)"
+                        [title]="(viewing().has(o.file.id) ? 'Collapse ' : 'View ') + o.file.name">
+                  <span class="output-icon"><hq-icon name="file" [size]="16" /></span>
+                  <span class="output-text">
+                    <span class="file-name">{{ o.file.name }}</span>
+                    <span class="sub">{{ size(o.file.size) }} · {{ o.who }}@if (o.at) { · {{ o.at | date:'MMM d, h:mm a' }} }</span>
+                  </span>
+                  <hq-icon name="chevron" [size]="14" class="muted output-chev" />
+                </button>
+                @if (!viewing().has(o.file.id)) {
+                  <a class="icon-btn" [href]="fileUrl(o.file.id, true)" [title]="'Download ' + o.file.name">
+                    <hq-icon name="download" [size]="14" /></a>
                 }
-                <span class="output-text">
-                  <span class="file-name">{{ o.file.name }}</span>
-                  <span class="sub">{{ size(o.file.size) }} · {{ o.who }}@if (o.at) { · {{ o.at | date:'MMM d, h:mm a' }} }</span>
-                </span>
-                <hq-icon name="download" [size]="14" class="muted output-dl" />
-              </a>
+              } @else {
+                <a class="output-main" [href]="fileUrl(o.file.id, true)" [title]="'Download ' + o.file.name">
+                  @if (o.file.kind === 'image') {
+                    <img class="output-thumb" [src]="fileUrl(o.file.id)" [alt]="o.file.name" loading="lazy">
+                  } @else {
+                    <span class="output-icon"><hq-icon [name]="archive(o.file) ? 'package' : 'file'" [size]="16" /></span>
+                  }
+                  <span class="output-text">
+                    <span class="file-name">{{ o.file.name }}</span>
+                    <span class="sub">{{ size(o.file.size) }} · {{ o.who }}@if (o.at) { · {{ o.at | date:'MMM d, h:mm a' }} }</span>
+                  </span>
+                  <hq-icon name="download" [size]="14" class="muted output-dl" />
+                </a>
+              }
               <button type="button" class="icon-btn" title="Show the reply that made it" (click)="jumpTo(o.messageId)">
                 <hq-icon name="locate" [size]="14" /></button>
+              @if (viewing().has(o.file.id)) { <hq-file-view [file]="o.file" /> }
             </div>
           } @empty {
             <p class="hint">Files the agents make in this chat collect here, newest first.</p>
@@ -321,13 +339,23 @@ interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachm
     }
   </div>
 
-  <ng-template #toOutputs let-files>
-    <button type="button" class="to-outputs" (click)="reveal(files)"
-            [title]="'Find in Outputs: ' + names(files)">
-      <hq-icon name="package" [size]="14" />
-      <span class="file-name">{{ files.length === 1 ? files[0].name : files.length + ' files' }}</span>
-      <span class="muted">in Outputs →</span>
-    </button>
+  <ng-template #toOutputs let-fs>
+    <div class="to-outputs-row">
+      @for (f of fs.texts; track f.id) {
+        <button type="button" class="to-outputs" (click)="reveal([f], true)" [title]="'View ' + f.name + ' in Outputs'">
+          <hq-icon name="file" [size]="14" />
+          <span class="file-name">{{ f.name }}</span>
+          <span class="muted">view →</span>
+        </button>
+      }
+      @if (fs.others.length) {
+        <button type="button" class="to-outputs" (click)="reveal(fs.others)" [title]="'Find in Outputs: ' + names(fs.others)">
+          <hq-icon name="package" [size]="14" />
+          <span class="file-name">{{ fs.others.length === 1 ? fs.others[0].name : fs.others.length + ' files' }}</span>
+          <span class="muted">in Outputs →</span>
+        </button>
+      }
+    </div>
   </ng-template>`,
 })
 export class ChatPage implements OnInit, OnDestroy {
@@ -556,6 +584,7 @@ export class ChatPage implements OnInit, OnDestroy {
   select(id: string | null) {
     this.sub?.unsubscribe();
     this.threadId.set(id);
+    this.viewing.set(new Set());
     this.messages.set([]);
     this.activity.set([]);
     this.busy.set(false);
@@ -702,6 +731,9 @@ export class ChatPage implements OnInit, OnDestroy {
   archive = isArchive;
   showOutputs = signal(this.loadShowOutputs());
   flashed = signal<Set<string>>(new Set());
+  /** Text files open in the Outputs panel (the panel widens while any is open). */
+  viewing = signal<Set<string>>(new Set());
+  viewable = isViewable;
 
   outputs = computed<Output[]>(() => {
     const seen = new Set<string>();
@@ -719,7 +751,7 @@ export class ChatPage implements OnInit, OnDestroy {
     return out.reverse();  // newest first
   });
 
-  /** Pictures and text files show in the chat; archives and other binaries only under Outputs. */
+  /** Pictures show in the chat; text files and everything else are found under Outputs. */
   split(files: Attachment[]): FileSplit {
     const s: FileSplit = { images: [], texts: [], others: [] };
     for (const f of files) {
@@ -742,9 +774,19 @@ export class ChatPage implements OnInit, OnDestroy {
     try { return localStorage.getItem('ahq.showOutputs') !== '0'; } catch { return true; }
   }
 
-  /** Open Outputs and point at these files. */
-  reveal(files: Attachment[]) {
+  closeViews() { this.viewing.set(new Set()); }
+
+  /** Open or close a text file's viewer in Outputs. */
+  toggleView(id: string) {
+    const v = new Set(this.viewing());
+    if (v.has(id)) v.delete(id); else v.add(id);
+    this.viewing.set(v);
+  }
+
+  /** Open Outputs and point at these files (and open them, for text files). */
+  reveal(files: Attachment[], open = false) {
     if (!this.showOutputs()) this.toggleOutputs();
+    if (open) this.viewing.set(new Set([...this.viewing(), ...files.map(f => f.id)]));
     this.flashed.set(new Set(files.map(f => f.id)));
     setTimeout(() => document.getElementById('out-' + files[0]?.id)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
     setTimeout(() => this.flashed.set(new Set()), 1800);
