@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
@@ -22,6 +22,8 @@ interface Activity { ts: string; text: string; kind: string; depth: number; agen
 interface Output { file: Attachment; messageId: string; who: string; at: string | null; }
 /** How a reply's files show in the chat: pictures inline; text files open in Outputs; the rest download from Outputs. */
 interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachment[]; }
+/** Per chat: how many outputs it had when you closed the panel. It opens again only when more arrive. */
+const outputsClosedAt = new Map<string, number>();
 
 @Component({
   selector: 'hq-chat',
@@ -585,6 +587,7 @@ export class ChatPage implements OnInit, OnDestroy {
     this.sub?.unsubscribe();
     this.threadId.set(id);
     this.viewing.set(new Set());
+    this.showOutputs.set(false);
     this.messages.set([]);
     this.activity.set([]);
     this.busy.set(false);
@@ -729,7 +732,15 @@ export class ChatPage implements OnInit, OnDestroy {
   fileUrl = attachmentUrl;
   size = fileSize;
   archive = isArchive;
-  showOutputs = signal(this.loadShowOutputs());
+  /** Closed by default; opens by itself when a chat has files you haven't dismissed, and stays shut once you close it. */
+  showOutputs = signal(false);
+  private autoOpenOutputs = effect(() => {
+    const id = this.threadId();
+    const n = this.outputs().length;
+    if (!id || !n || untracked(this.showOutputs)) return;
+    const shut = outputsClosedAt.get(id);
+    if (shut === undefined || n > shut) this.showOutputs.set(true);
+  });
   flashed = signal<Set<string>>(new Set());
   /** Text files open in the Outputs panel (the panel widens while any is open). */
   viewing = signal<Set<string>>(new Set());
@@ -767,11 +778,9 @@ export class ChatPage implements OnInit, OnDestroy {
   toggleOutputs() {
     const on = !this.showOutputs();
     this.showOutputs.set(on);
-    try { localStorage.setItem('ahq.showOutputs', on ? '1' : '0'); } catch { /* ignore */ }
-  }
-
-  private loadShowOutputs() {
-    try { return localStorage.getItem('ahq.showOutputs') !== '0'; } catch { return true; }
+    const id = this.threadId();
+    if (!id) return;
+    if (on) outputsClosedAt.delete(id); else outputsClosedAt.set(id, this.outputs().length);
   }
 
   closeViews() { this.viewing.set(new Set()); }
