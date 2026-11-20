@@ -4,13 +4,13 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { AgentDef, Api, ChannelLogRow, NoticeRoute, NoticeSettings, NoticeTypes, NotifyChannel, PairingCode } from './api.service';
 
-const KIND_LABEL: Record<string, string> = { telegram: 'Telegram', mqtt: 'MQTT' };
+const KIND_LABEL: Record<string, string> = { telegram: 'Telegram', discord: 'Discord', mqtt: 'MQTT' };
 
 function blankRoute(types: string[] = []): NoticeRoute {
   return { types: [...types], agent_ids: [], min_severity: 'info', enabled: true };
 }
 
-/** Where requests and alerts reach you (MQTT, Telegram), which ones, and who may answer. */
+/** Where requests and alerts reach you (MQTT, Telegram, Discord), which ones, and who may answer. */
 @Component({
   selector: 'hq-notifications',
   imports: [FormsModule, DatePipe, RouterLink],
@@ -21,6 +21,7 @@ function blankRoute(types: string[] = []): NoticeRoute {
         <select [ngModel]="''" (ngModelChange)="add($event)" name="addkind">
           <option value="">+ New…</option>
           <option value="telegram">Telegram bot</option>
+          <option value="discord">Discord bot</option>
           <option value="mqtt">MQTT topic</option>
         </select>
       </div>
@@ -54,12 +55,24 @@ function blankRoute(types: string[] = []): NoticeRoute {
         @if (d.last_error) { <p class="error">{{ d.last_error }}</p> }
         <label>Name<input name="name" [(ngModel)]="d.name" required placeholder="Phone"></label>
 
-        @if (d.kind === 'telegram') {
-          <label>Bot token <small>from &#64;BotFather (/newbot).
+        @if (d.kind !== 'mqtt') {
+          <label>Bot token <small>
+            @if (d.kind === 'telegram') { from &#64;BotFather (/newbot). }
+            @else { Developer Portal → New Application → Bot → Reset Token. }
             @if (d.has_token) { Saved{{ d.bot_username ? ' for @' + d.bot_username : '' }}: leave empty to keep it. }
-            Checked with Telegram when you save; stored encrypted when AHQ_SECRET_KEY is set.</small>
+            Checked with {{ kind(d.kind) }} when you save; stored encrypted when AHQ_SECRET_KEY is set.</small>
             <input name="token" type="password" autocomplete="off" [(ngModel)]="d.token"
-              [placeholder]="d.has_token ? '••••••••' : '123456789:AA…'"></label>
+              [placeholder]="d.has_token ? '••••••••' : (d.kind === 'telegram' ? '123456789:AA…' : 'MTA…')"></label>
+          @if (d.kind === 'discord') {
+            <label class="check"><input type="checkbox" name="mc" [(ngModel)]="d.message_content">
+              <span>Message Content <small>lets you write in a paired server channel without &#64;mentioning the bot.
+                Not needed for DMs, mentions or replies. Turn it on for the bot in the Developer Portal too
+                (Bot → Privileged Gateway Intents), or Discord refuses the connection.</small></span></label>
+            @if (d.invite_link) {
+              <p class="hint inline-hint spaced">Add the bot to a server you're in (Discord only lets you DM a bot you share
+                a server with): <a [href]="d.invite_link" target="_blank" rel="noopener">invite link</a>.</p>
+            }
+          }
           <label class="check"><input type="checkbox" name="dec" [(ngModel)]="d.decisions_allowed">
             <span>Decide from the chat <small>buttons and approve/deny replies. Off: requests arrive with a link, and
               you decide them in Agent HQ, behind its sign-in and two-factor.</small></span></label>
@@ -134,13 +147,19 @@ function blankRoute(types: string[] = []): NoticeRoute {
           </table>
           <div class="actions"><button type="button" class="ghost" (click)="pair(d)">Pair an account</button></div>
           @if (code(); as c) {
-            <p>Within 10 minutes, open
-              @if (c.link) { <a [href]="c.link" target="_blank" rel="noopener">{{ c.link }}</a> and tap Start, or }
-              send the bot <code>{{ c.command }}</code>.</p>
+            @if (d.kind === 'discord') {
+              <p>Within 10 minutes, DM the bot <code>{{ c.command }}</code> to get notices in your DMs, or post
+                <code>&#64;{{ d.bot_username }} {{ c.command }}</code> in the server channel they should go to.
+                @if (c.link) { Not in a server with the bot yet? <a [href]="c.link" target="_blank" rel="noopener">Add it first</a>. }</p>
+            } @else {
+              <p>Within 10 minutes, open
+                @if (c.link) { <a [href]="c.link" target="_blank" rel="noopener">{{ c.link }}</a> and tap Start, or }
+                send the bot <code>{{ c.command }}</code>.</p>
+            }
           }
           @if (d.default_agent_id && d.chat_thread_id) {
             <p class="hint inline-hint"><a [routerLink]="['/chat', d.chat_thread_id]">Open the chat conversation</a>.
-              /new in the chat starts another.</p>
+              {{ d.kind === 'discord' ? '!new' : '/new' }} in the chat starts another.</p>
           }
         }
 
@@ -167,15 +186,19 @@ function blankRoute(types: string[] = []): NoticeRoute {
         <ul>
           <li><strong>Telegram:</strong> make a bot with &#64;BotFather, add it here, then pair your account. Tap the buttons
             to decide, reply to a notice to answer or continue its conversation, or just write to talk to the default agent.</li>
+          <li><strong>Discord:</strong> make an application with a bot in the Developer Portal, add it here, invite it to
+            a server you're in, then pair your account by DM (or in a server channel). Buttons, replies and messages
+            work as on Telegram.</li>
           <li><strong>MQTT:</strong> the event JSON on a topic, for dashboards and automations.</li>
         </ul>
-        <p class="hint inline-hint">Agent HQ reads the bot's messages by polling Telegram, so nothing has to reach it from
-          the internet. Let agents send alerts under Settings → Agents (Alerts).</p>
+        <p class="hint inline-hint">Agent HQ polls Telegram and keeps a connection open to Discord, so nothing has to
+          reach it from the internet. Let agents send alerts under Settings → Agents (Alerts).</p>
       </div>
     }
   </div>`,
   styles: [`
     .pad { padding: 8px 12px; }
+    .spaced { margin: 6px 0 10px; }
     .type-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }
     .chips { display: flex; flex-wrap: wrap; gap: 0 16px; }
     fieldset.route legend { display: flex; gap: 8px; align-items: center; }
@@ -221,7 +244,7 @@ export class NotificationsPage implements OnInit {
     if (!kind) { return; }
     const chat = kind !== 'mqtt';
     this.code.set(null); this.error.set(''); this.msg.set(''); this.log.set([]);
-    this.draft.set({ name: chat ? 'Phone' : 'MQTT', kind: kind as NotifyChannel['kind'], enabled: true,
+    this.draft.set({ name: KIND_LABEL[kind] ?? kind, message_content: false, kind: kind as NotifyChannel['kind'], enabled: true,
       decisions_allowed: chat, default_agent_id: null, topic: '', token: '',
       routes: [blankRoute(chat ? this.types()?.default_chat_types : [])] });
   }

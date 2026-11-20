@@ -1,6 +1,6 @@
 # Agent HQ
 
-A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Standing goals on a Kanban board keep agents working an outcome, one next action at a time, until it's done. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own. Requests and alerts reach your phone on Telegram, where you can decide them, answer agents and chat with them.
+A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Standing goals on a Kanban board keep agents working an outcome, one next action at a time, until it's done. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own. Requests and alerts reach your phone on Telegram or Discord, where you can decide them, answer agents and chat with them.
 
 - **Backend:** FastAPI, LangGraph (conversation graph + checkpointing), PydanticAI (agents, typed results, MCP tools)
 - **Frontend:** Angular 22 (signals, standalone components)
@@ -174,7 +174,7 @@ Subscriptions are managed on the **Settings → Events** page:
 
 Under **Try it**, the editor previews the prompt a template produces for a topic and payload you enter, or for a recent webhook delivery that matches the filter, and can send it as a test event without a broker. It reports what happened per subscription (queued, or skipped for cooldown) and any missing fields. The bridge runs in the API process; run only one API process with `AHQ_MQTT_URL` set, or each event is handled twice.
 
-MQTT works in the other direction too. Agent HQ publishes your notifications (requests, alerts and decisions; see [Notifications](#notifications-telegram-and-mqtt)) to `AHQ_MQTT_NOTIFY_TOPIC`, and agents can publish their own status and commands through the [MQTT publisher](#mqtt-publisher-agents-publish-back-to-the-lab).
+MQTT works in the other direction too. Agent HQ publishes your notifications (requests, alerts and decisions; see [Notifications](#notifications-telegram-discord-and-mqtt)) to `AHQ_MQTT_NOTIFY_TOPIC`, and agents can publish their own status and commands through the [MQTT publisher](#mqtt-publisher-agents-publish-back-to-the-lab).
 
 ### Inbound webhooks
 
@@ -329,6 +329,7 @@ docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test
 - sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
 - sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
 - notifications, against a fake Telegram Bot API: the token checked and never shown, pairing and strangers ignored, routing by type, agent and severity, a tool approval decided by button and by a "no, …" reply, a web UI decision editing the chat message, decisions turned off, chatting with the default agent and replying to continue, a goal question answered from the chat, alerts and their hourly cap, one listener per bot, the delivery log, and the MQTT channel publishing the same JSON to a real broker
+- Discord, against a fake Discord (REST and Gateway): the token checked and hidden and the invite link, pairing by DM and in a server channel, strangers ignored, a tool approval decided by button (deferred, then answered to the presser) and by reply, the message edited, answers coming back as plain text that pings nobody, chatting with the default agent, a server channel ignoring talk not addressed to the bot, the Message Content intent refused until it's turned on in the portal, and resuming the Gateway after a drop
 - goal teams: your agents (delegate_action) and sub-agents (assign_action) working actions in parallel, dependencies, team slots, one action per agent per goal, results landing on actions with no report turns, a failed result blocking its action, waiting on the team, the done check, approval mode, duplicate refusals pointing to your agent, and Stop
 - workbenches and tool approvals: allow/ask/block per tool, waiting for a decision, "don't ask again", timeouts, and a real workbench over MCP
 - skills: matching, loading, outcomes, versions and rollback, proposals in propose/auto/off modes, diffs and stale warnings
@@ -479,7 +480,7 @@ A **skill** is a short, named procedure. It has a title, a line saying *when to 
 
 **How agents learn.** When an agent works out how to do something that will come up again, or finds that a skill it used was wrong or incomplete, it calls `propose_skill`. A proposal is either a new skill, or a revision to an existing one with a diff against the current version. What happens next depends on the agent's **Learning** setting (Settings → Agents):
 - **Propose to me** (the default for every agent):
-  - **Where it shows up:** in the conversation, in the **Requests** inbox (with the sidebar badge), and on your [notification channels](#notifications-telegram-and-mqtt) as a `skill_proposal` notice.
+  - **Where it shows up:** in the conversation, in the **Requests** inbox (with the sidebar badge), and on your [notification channels](#notifications-telegram-discord-and-mqtt) as a `skill_proposal` notice.
   - **Your options:** approve it, edit it first, or reject it, with an optional note.
   - **Revisions** show a diff against the current version, with a warning if the skill changed after the agent wrote its proposal.
 - **Save automatically:** the change is saved at once and you're told. You can review it or roll it back on the Skills page. If there are test cases for that agent or skill (see Evals), the change is tested first. It's applied only if it doesn't lower the pass rate; otherwise it waits for you.
@@ -534,7 +535,7 @@ For every tool on every tool server, you choose under **Settings → Tools → (
 A rule on `*` covers every tool on that server that doesn't have its own rule. A server can suggest a mode for each tool in the tool's MCP metadata (`{"agent_hq/approval": "ask"}`); the workbench does this for the tools that run code. Your rules always win. A tool with no rule and no suggestion is allowed, so your existing tool servers behave exactly as before.
 
 **When a call needs your OK:**
-- **Where it shows up:** in the conversation, as a card showing exactly what the agent wants to run, with code and commands shown as code. It also appears in the **Requests** inbox (with the sidebar badge) and on your [notification channels](#notifications-telegram-and-mqtt) as a `tool_approval` notice, which you can approve or deny from Telegram.
+- **Where it shows up:** in the conversation, as a card showing exactly what the agent wants to run, with code and commands shown as code. It also appears in the **Requests** inbox (with the sidebar badge) and on your [notification channels](#notifications-telegram-discord-and-mqtt) as a `tool_approval` notice, which you can approve or deny from Telegram or Discord.
 - **Your options:** approve it; approve it and don't ask again for that tool, from that agent, in that conversation, for an hour; or deny it, optionally with a note the agent sees.
 - **While it waits:** the agent's worker slot is freed for other work.
 - **If you don't decide** within `AHQ_APPROVAL_TIMEOUT_MINUTES` (default 30), the call isn't made, and the agent is told it's waiting for approval.
@@ -1092,7 +1093,7 @@ On the board, a card with a team shows **team ×N** while N team members are wor
 
 **Built for incidents next.** The board's rows aren't specific to goals: each work item has a kind, a source and a correlation key, and the same columns, runner, next actions and WIP rules will carry incidents (alerts grouped into one problem to solve) later.
 
-## Notifications: Telegram and MQTT
+## Notifications: Telegram, Discord and MQTT
 
 Everything that waits for you shows up in the **Requests** inbox: tool approvals, sub-agent requests, skill, profile and knowledge proposals, done claims, proposed goals, goal questions and desktop take-overs. **Notification channels** (Settings → Notifications) send these to you as well, together with agents' **alerts**. Chat channels also take your answers, so you can handle most of them from your phone.
 
@@ -1100,16 +1101,18 @@ Everything that waits for you shows up in the **Requests** inbox: tool approvals
 flowchart LR
     R["Requests and alerts<br/>(tool approvals, proposals,<br/>goal questions, send_alert)"] --> N["Notices<br/>(routing rules:<br/>type × agent × severity)"]
     N --> T["Telegram bot"]
+    N --> DC["Discord bot"]
     N --> M["MQTT topic"]
     T -- "buttons, replies,<br/>messages" --> I["Inbox<br/>(paired accounts only)"]
+    DC -- "buttons, replies,<br/>DMs, mentions" --> I
     I --> D["the same decisions<br/>as the web UI"]
     I --> C["your message in<br/>the conversation"]
     C --> A["the agent's answer<br/>back to the chat"]
 ```
 
-- **Channels:** **MQTT** publishes each notice's event JSON on a topic, as before (it's set up for you from `AHQ_MQTT_URL` and the old Settings → Sub-agents switch). **Telegram** uses a bot you create with @BotFather. Discord comes next, on the same framework (`app/channels/`).
+- **Channels:** **MQTT** publishes each notice's event JSON on a topic, as before (it's set up for you from `AHQ_MQTT_URL` and the old Settings → Sub-agents switch). **Telegram** and **Discord** use a bot of your own. Both are drivers on one framework (`app/channels/`): what to send, who may answer and what an answer does are shared, so they behave the same.
 - **Routing rules:** each channel has one or more rules. A rule picks notice types (none = all), agents (none = all) and, for alerts, the lowest severity it takes. A notice goes to a channel when any of its rules match, so "tool approvals and goal questions from everyone, plus Breaker's and Mainframe's critical alerts" is two rules.
-- **Telegram needs no inbound access.** Agent HQ reads the bot's messages by long polling (`getUpdates`), so nothing on the internet has to reach it. The listener runs in the API process (`AHQ_CHANNELS=1`, the default); a Valkey lock keeps a second API process from reading the same bot.
+- **No inbound access needed.** Agent HQ reads a Telegram bot's messages by long polling (`getUpdates`), and keeps a Gateway websocket open to Discord (resuming it after a drop, so nothing is missed). Nothing on the internet has to reach Agent HQ. The listeners run in the API process (`AHQ_CHANNELS=1`, the default); a Valkey lock keeps a second API process from reading the same bot.
 
 **Setting up Telegram:**
 1. Create a bot with @BotFather (`/newbot`) and copy its token.
@@ -1117,16 +1120,34 @@ flowchart LR
 3. **Pair an account:** this makes a one-time code that's valid for 10 minutes. Open the `t.me` link it shows and tap **Start**, or send the bot `/start <code>`. Only paired accounts get notices and can answer. Anyone else who finds the bot is ignored without a reply, and logged under **Recent activity**.
 4. **Send a test** to check it arrives.
 
+**Setting up Discord:**
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application. On its **Bot** page, **Reset Token** and copy it.
+2. Under **Settings → Notifications**, choose **+ New… → Discord bot**, paste the token and save. Agent HQ checks it with Discord and stores it the same way as a Telegram token.
+3. Use the channel's **invite link** to add the bot to a server you're in. Discord only lets you DM a bot you share a server with.
+4. **Pair an account:**
+   - **In a DM:** send the bot `!start <code>`, and notices come to your DMs.
+   - **In a server channel:** post `@YourBot !start <code>` there, and notices go to that channel. Only paired accounts can press its buttons or talk to the bot; everyone else in the channel is ignored.
+5. **Send a test.**
+
+Commands start with `!` on Discord (`!new`, `!help`), since Discord keeps `/` for its own commands.
+
+Discord only shows a bot the text of some messages unless it has the privileged **Message Content** intent:
+- **Always visible:** DMs, messages that @mention the bot, and replies to its messages (with *ping on reply* on, which is Discord's default).
+- **Without the intent:** that's everything above needs, so leave it off.
+- **With it:** tick **Message Content** on the channel to talk in a paired server channel without mentioning the bot. Turn it on for the bot in the Developer Portal as well (**Bot → Privileged Gateway Intents**), or Discord refuses the connection, and the channel shows that error.
+
+On Discord, notices are embeds coloured by kind (alerts by severity), and agents' answers are plain messages, so their Markdown renders. A button press is answered only to the person who pressed it.
+
 **Answering from the chat:**
 - **Buttons decide the request** with the same code the web UI uses: ✅ Approve / ❌ Deny for tool approvals, sub-agent requests (as asked; change the terms in Agent HQ) and proposals; ✅ Confirm done / ↩️ Send back for done claims; To Ready / To Backlog / Reject for proposed goals.
 - **A reply that starts with approve/yes or deny/no** decides it too, and the rest becomes your note: "no, not on a Friday".
 - **Any other reply to a notice** (a goal question, an alert, an agent's answer) goes to that notice's conversation as your message.
-- **A message that isn't a reply** goes to the channel's **default agent**, in a conversation of the channel's own. `/new` starts a fresh one, and `/help` lists the commands.
+- **A message that isn't a reply** goes to the channel's **default agent**, in a conversation of the channel's own. `/new` (`!new` on Discord) starts a fresh one, and `/help` (`!help`) lists the commands.
 - **Answers come back:**
   - The agent's answer to a turn you started from the chat is sent back to the chat.
   - So is anything in the channel's own conversation.
   - After you answer from the chat, that conversation's background reports and follow-ups go there too, for **Follow-ups for** minutes (default 30). Goal turns, events and schedules don't follow you there.
-- **Every copy is settled:** whichever way a request is decided (web UI, Telegram, another paired phone), each message about it is edited to show the outcome ("✅ Approved via Phone (Mike)") and loses its buttons. Tapping a stale button says what already happened.
+- **Every copy is settled:** whichever way a request is decided (web UI, Telegram, Discord, another paired account), each message about it is edited to show the outcome ("✅ Approved via Phone (Mike)") and loses its buttons. Tapping a stale button says what already happened.
 
 **Decide from the chat** can be turned off per channel. Requests then arrive with a link only, and you decide them in Agent HQ, behind its sign-in and two-factor. Every decision, reply, chat, pairing and refusal on a channel is logged under its **Recent activity**, with the sender.
 
@@ -1165,7 +1186,7 @@ An approval is a grant for that agent in that conversation, and it expires. Your
 - **If the conversation is the agent's own,** it carries on with (or without) the sub-agents.
 - **If the agent asked while working on a task delegated to it,** the conversation's owner is told and delegates the task again.
 
-**MQTT notifications.** New requests and your decisions are published as JSON to `AHQ_MQTT_NOTIFY_TOPIC` (default `agent-hq/notifications`) on the broker in `AHQ_MQTT_URL`, using a client ID of their own. This is now the **MQTT** channel under Settings → Notifications, where you can turn it off, change its topic or narrow what it gets (see [Notifications](#notifications-telegram-and-mqtt)). Set `AHQ_PUBLIC_URL` (for example `http://shockwave:8000`) to include a link to the request.
+**MQTT notifications.** New requests and your decisions are published as JSON to `AHQ_MQTT_NOTIFY_TOPIC` (default `agent-hq/notifications`) on the broker in `AHQ_MQTT_URL`, using a client ID of their own. This is now the **MQTT** channel under Settings → Notifications, where you can turn it off, change its topic or narrow what it gets (see [Notifications](#notifications-telegram-discord-and-mqtt)). Set `AHQ_PUBLIC_URL` (for example `http://shockwave:8000`) to include a link to the request.
 
 ```json
 {"type": "subagent_request", "request_id": "…", "agent": "Duke", "why": "…",
@@ -1345,7 +1366,8 @@ backend/app/
   notifications.py   notices for you: building them from events, routing rules, delivery, settling
                      every copy when decided, the inbox for chat answers (pairing, decisions,
                      replies, default-agent chat), replies back to the chat, send_alert, listeners
-  channels/          one driver per kind of channel: mqtt.py, telegram.py (Bot API, long polling)
+  channels/          one driver per kind of channel: mqtt.py, telegram.py (Bot API, long polling),
+                     discord.py (REST, and a Gateway websocket that resumes after drops)
   api/notifications.py  Settings → Notifications (/api/notifications)
   workitems.py       standing goals: the board, WIP limits, pulling from Ready, the goal runner and its
                      guards, the card prompt, goal tools, proposals, teams (dependencies, team slots,

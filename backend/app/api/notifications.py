@@ -1,4 +1,4 @@
-"""Notification channels (MQTT, Telegram), the rules that route notices to them, pairing,
+"""Notification channels (MQTT, Telegram, Discord), the rules that route notices to them, pairing,
 test sends and the delivery log (Settings → Notifications)."""
 
 from __future__ import annotations
@@ -31,8 +31,9 @@ class ChannelIn(BaseModel):
     name: str
     kind: str = "telegram"
     enabled: bool = True
-    token: str = ""            # Telegram: the bot token from @BotFather; empty on update = keep it
+    token: str = ""            # Telegram, Discord: the bot token; empty on update = keep it
     topic: str = ""            # MQTT: empty = AHQ_MQTT_NOTIFY_TOPIC
+    message_content: bool = False  # Discord: ask for the Message Content intent
     decisions_allowed: bool = True
     default_agent_id: str | None = None
     routes: list[RouteIn] | None = None  # None = keep them (new channel: the defaults)
@@ -41,6 +42,9 @@ class ChannelIn(BaseModel):
 class SettingsIn(BaseModel):
     alerts_per_hour: int = Field(default=10, ge=0, le=200)
     linger_minutes: int = Field(default=30, ge=0, le=1440)
+
+
+TOKEN_KINDS = ("telegram", "discord")
 
 
 def _routes(s: Session, channel_id: str) -> list[NotificationRoute]:
@@ -55,7 +59,8 @@ def _out(s: Session, ch: NotificationChannel) -> dict[str, Any]:
         "chat": ch.kind in CHAT_KINDS, "decisions_allowed": ch.decisions_allowed,
         "default_agent_id": ch.default_agent_id, "chat_thread_id": ch.chat_thread_id,
         "has_token": bool(cfg.get("token")), "bot_username": cfg.get("bot_username", ""),
-        "topic": cfg.get("topic", ""),
+        "topic": cfg.get("topic", ""), "message_content": bool(cfg.get("message_content")),
+        "invite_link": driver_for(ch).invite_link() if ch.kind == "discord" else "",
         "paired": [{k: p.get(k) for k in ("user_id", "name", "chat_id", "paired_at")} for p in ch.paired or []],
         "pairing_open": bool(ch.pairing_code and ch.pairing_expires_at
                              and nt._aware(ch.pairing_expires_at) > datetime.now(timezone.utc)),
@@ -76,8 +81,9 @@ def _check(s: Session, body: ChannelIn, own: NotificationChannel | None) -> None
         raise HTTPException(409, f"a channel named '{body.name.strip()}' already exists")
     if body.default_agent_id and not s.get(AgentDef, body.default_agent_id):
         raise HTTPException(422, "default agent not found")
-    if body.kind == "telegram" and not body.token.strip() and not (own and (own.config or {}).get("token")):
-        raise HTTPException(422, "paste the bot token from @BotFather")
+    if body.kind in TOKEN_KINDS and not body.token.strip() and not (own and (own.config or {}).get("token")):
+        raise HTTPException(422, "paste the bot token from @BotFather" if body.kind == "telegram"
+                            else "paste the bot token (Developer Portal → your app → Bot → Reset Token)")
     for r in body.routes or []:
         bad = [t for t in r.types if t not in nt.TYPES]
         if bad:
@@ -131,10 +137,12 @@ async def create_channel(body: ChannelIn, s: Session = Depends(get_session)):
     ch = NotificationChannel(name=body.name.strip(), kind=body.kind, enabled=body.enabled,
                              decisions_allowed=body.decisions_allowed and body.kind in CHAT_KINDS,
                              default_agent_id=body.default_agent_id or None)
-    if body.kind == "telegram":
+    if body.kind in TOKEN_KINDS:
         ch.config = {"token": body.token.strip()}
         ch.config = {**ch.config, **(await _verify(ch))}
         ch.config["token"] = seal(ch.config["token"])
+        if body.kind == "discord":
+            ch.config["message_content"] = body.message_content
     else:
         ch.config = {"topic": body.topic.strip()}
     s.add(ch)
@@ -157,10 +165,12 @@ async def update_channel(channel_id: str, body: ChannelIn, s: Session = Depends(
     ch.decisions_allowed = body.decisions_allowed and ch.kind in CHAT_KINDS
     if body.default_agent_id != ch.default_agent_id:
         ch.default_agent_id, ch.chat_thread_id = body.default_agent_id or None, None
-    if ch.kind == "telegram" and body.token.strip():
+    if ch.kind in TOKEN_KINDS and body.token.strip():
         trial = NotificationChannel(**{**ch.model_dump(), "config": {"token": body.token.strip()}})
         found = await _verify(trial)
         ch.config = {**(ch.config or {}), **found, "token": seal(body.token.strip())}
+    if ch.kind == "discord":
+        ch.config = {**(ch.config or {}), "message_content": body.message_content}
     elif ch.kind == "mqtt":
         ch.config = {**(ch.config or {}), "topic": body.topic.strip()}
     s.add(ch)
@@ -184,7 +194,9 @@ def delete_channel(channel_id: str, s: Session = Depends(get_session)):
 
 @router.post("/channels/{channel_id}/pair")
 def pair(channel_id: str, s: Session = Depends(get_session)):
-    """A one-time code (10 minutes). Send /start <code> to the bot, or open the link."""
+    """A one-time code (10 minutes). Telegram: send /start <code> to the bot, or open the
+    link. Discord: add the bot to a server you're in (the link), then DM it !start <code>,
+    or post @bot !start <code> in the server channel the notices should go to."""
     ch = s.get(NotificationChannel, channel_id)
     if ch is None:
         raise HTTPException(404)
@@ -192,8 +204,11 @@ def pair(channel_id: str, s: Session = Depends(get_session)):
         raise HTTPException(422, "only chat channels are paired")
     code, until = nt.new_pairing_code(channel_id)
     bot = (ch.config or {}).get("bot_username", "")
+    if ch.kind == "discord":
+        return {"code": code, "expires_at": until, "command": f"!start {code}",
+                "link": driver_for(ch).invite_link()}
     return {"code": code, "expires_at": until, "command": f"/start {code}",
-            "link": f"https://t.me/{bot}?start={code}" if ch.kind == "telegram" and bot else ""}
+            "link": f"https://t.me/{bot}?start={code}" if bot else ""}
 
 
 @router.delete("/channels/{channel_id}/paired/{user_id}", status_code=204)

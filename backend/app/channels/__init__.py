@@ -55,20 +55,26 @@ class Driver:
     async def close(self) -> None:
         return None
 
+    def invite_link(self) -> str:
+        """Where to add the bot to a server (Discord); empty for other kinds."""
+        return ""
+
 
 def driver_for(row: NotificationChannel) -> Driver:
+    from .discord import DiscordDriver
     from .mqtt import MqttDriver
     from .telegram import TelegramDriver
 
-    kinds: dict[str, type[Driver]] = {"mqtt": MqttDriver, "telegram": TelegramDriver}
+    kinds: dict[str, type[Driver]] = {"mqtt": MqttDriver, "telegram": TelegramDriver,
+                                      "discord": DiscordDriver}
     cls = kinds.get(row.kind)
     if cls is None:
         raise ChannelError(f"unknown channel kind {row.kind!r}")
     return cls(row)
 
 
-KINDS = ("mqtt", "telegram")
-CHAT_KINDS = ("telegram",)
+KINDS = ("mqtt", "telegram", "discord")
+CHAT_KINDS = ("telegram", "discord")
 
 
 # --------------------------------------------------------------------------- shared rendering

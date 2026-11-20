@@ -119,7 +119,7 @@ export interface NoticeRoute {
 export interface NotifyChannel {
   id?: string;
   name: string;
-  kind: 'telegram' | 'mqtt';
+  kind: 'telegram' | 'discord' | 'mqtt';
   enabled: boolean;
   chat?: boolean;
   decisions_allowed: boolean;
@@ -129,6 +129,8 @@ export interface NotifyChannel {
   has_token?: boolean;
   bot_username?: string;
   topic: string;            // MQTT: empty = AHQ_MQTT_NOTIFY_TOPIC
+  message_content?: boolean; // Discord: ask for the Message Content intent
+  invite_link?: string;      // Discord: add the bot to a server
   paired?: { user_id: string; name: string; chat_id: string; paired_at: string }[];
   pairing_open?: boolean;
   last_error?: string;

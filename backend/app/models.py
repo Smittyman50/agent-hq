@@ -1070,7 +1070,8 @@ class NotificationChannel(SQLModel, table=True):
     id: str = Field(default_factory=_id, primary_key=True)
     name: str = Field(index=True, unique=True)
     kind: str = "telegram"  # mqtt | telegram | discord
-    # Kind-specific settings. Telegram: {"token" (sealed), "bot_username"}. MQTT: {"topic"}.
+    # Kind-specific settings. Telegram: {"token" (sealed), "bot_username"}. Discord: {"token"
+    # (sealed), "bot_username", "bot_id", "application_id", "message_content"}. MQTT: {"topic"}.
     # Secrets are encrypted at rest when AHQ_SECRET_KEY is set (see webhooks.seal).
     config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # Off: requests arrive with a link only, and buttons and approve/deny replies are refused.

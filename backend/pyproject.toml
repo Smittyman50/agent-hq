@@ -5,7 +5,7 @@ description = "Self-hosted multi-agent system: data-defined agents, MCP tools, r
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
-  "uvicorn[standard]>=0.30",
+  "uvicorn[standard]>=0.30",     # [standard] also brings websockets: the Discord Gateway
   "sqlmodel>=0.0.22",
   "alembic>=1.13",              # schema migrations (app/migrations, app/migrate.py)
   "pydantic-ai-slim[openai,anthropic,mcp]>=2.66",

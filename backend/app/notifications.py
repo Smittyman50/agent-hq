@@ -671,7 +671,7 @@ HELP = ("Agent HQ\n"
         "• Buttons decide requests. Or reply to a request with approve or deny, and a note after it.\n"
         "• Reply to any other notice or agent message to continue that conversation.\n"
         "• Write without replying to talk to this channel's default agent.\n"
-        "• /new starts a new conversation with it.")
+        "• /new starts a new conversation with it (!new on Discord).")
 
 
 def _agent_name(agent_id: str | None) -> str | None:
@@ -844,6 +844,8 @@ class Listeners:
                     for cid, (fp, task) in list(self.tasks.items()):
                         if cid not in wanted or fp != self._fingerprint(wanted[cid]) or task.done():
                             task.cancel()
+                            # Let it let go of its lock first, so a restart takes over at once.
+                            await asyncio.gather(task, return_exceptions=True)
                             del self.tasks[cid]
                     for cid, ch in wanted.items():
                         if cid not in self.tasks:
@@ -860,7 +862,7 @@ class Listeners:
     async def _hold(self, ch: NotificationChannel) -> None:
         lock = self.rt.broker.r.lock(f"ahq:lock:channel:{ch.id}", timeout=60, blocking_timeout=None)
         while not await lock.acquire(blocking=False):
-            await asyncio.sleep(15)  # another API process listens; take over if it stops
+            await asyncio.sleep(5)  # another API process listens; take over if it stops
         keeper = asyncio.create_task(self._keep(lock))
         listener = asyncio.create_task(driver_for(ch).listen(self.inbox))
         try:
