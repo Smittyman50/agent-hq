@@ -17,6 +17,7 @@ class FakeDocker:
 
     def __init__(self, images=("agent-hq/desktop:latest", "agent-hq/workbench:latest")) -> None:
         self.images = set(images)
+        self.ids = {img: f"sha256:{img}#1" for img in self.images}  # what each tag points to
         self.containers: dict[str, dict] = {}
         self.volumes: dict[str, dict] = {}
         self.calls: list[tuple[str, str]] = []
@@ -30,13 +31,20 @@ class FakeDocker:
             "NetworkSettings": {"Networks": {n: {} for n in networks}}}
         return name
 
+    def rebuild(self, image: str) -> None:
+        """docker build: the tag now points to a new image."""
+        n = int(self.ids[image].rsplit("#", 1)[1]) + 1
+        self.ids[image] = f"sha256:{image}#{n}"
+
     def handler(self, req: httpx.Request) -> httpx.Response:
         path, m = req.url.path, req.method
         self.calls.append((m, path))
         parts = path.strip("/").split("/")
         if parts[0] == "images":
             image = "/".join(parts[1:-1])
-            return httpx.Response(200 if image in self.images else 404, json={"message": "no such image"})
+            if image in self.images:
+                return httpx.Response(200, json={"Id": self.ids[image]})
+            return httpx.Response(404, json={"message": "no such image"})
         if path == "/containers/create":
             name = req.url.params["name"]
             if name in self.containers:
@@ -46,7 +54,8 @@ class FakeDocker:
                 if mnt["Type"] == "volume":
                     self.volumes.setdefault(mnt["Source"], {"Labels": mnt.get("VolumeOptions", {}).get("Labels", {})})
             net = body["HostConfig"]["NetworkMode"]
-            self.containers[name] = {"Id": name, "Names": ["/" + name], "State": {"Status": "created"},
+            self.containers[name] = {"Id": name, "Image": self.ids.get(body["Image"]),
+                                     "Names": ["/" + name], "State": {"Status": "created"},
                                      "Config": {"Image": body["Image"]}, "body": body,
                                      "Labels": body["Labels"], "NetworkSettings": {"Networks": {net: {}}},
                                      "Mounts": [{"Type": x["Type"], "Name": x["Source"] if x["Type"] == "volume" else None,

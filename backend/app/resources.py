@@ -160,6 +160,11 @@ class Docker:
         r = await self._req("GET", f"/images/{image}/json", ok=(404,))
         return r.status_code != 404
 
+    async def image_id(self, image: str) -> str | None:
+        """The ID (sha256:...) the image tag points to now, or None if there's no such image."""
+        r = await self._req("GET", f"/images/{image}/json", ok=(404,))
+        return None if r.status_code == 404 else (r.json().get("Id") or None)
+
     async def compose_container(self, service: str) -> dict | None:
         """The container compose runs for a service of this project, if any."""
         filters = {"label": [f"com.docker.compose.project={settings.compose_project}",
@@ -334,6 +339,130 @@ async def recreate(res: Resource, d: Docker | None = None) -> Resource:
     if info:
         await d.remove(res.container)
     return await provision(res, d, mounts=mounts)
+
+
+# --------------------------------------------------------------------------- automatic recreate
+#
+# A deploy rebuilds the workbench (desktop, package server) images, but a running container
+# keeps the image it was made from. Agent HQ checks every minute (AHQ_AUTO_RECREATE_INTERVAL)
+# for managed, running resources whose container is older than their image, and recreates
+# each one when none of its agents has a job queued or running: the same as the Recreate
+# button, so files and installed packages are kept. A run that starts meanwhile waits for it
+# (wait_while_updating) instead of failing to connect.
+
+UPDATING_TTL = 300  # seconds: a recreate that died half way doesn't hold runs up for longer
+_redis = None
+
+
+def use(r) -> None:
+    """The Valkey client for the updating flag (set in each process that runs agents)."""
+    global _redis
+    _redis = r
+
+
+def updating_key(res_id: str) -> str:
+    return f"ahq:updating:{res_id}"
+
+
+def auto_kinds() -> set[str]:
+    return {k.strip() for k in (settings.auto_recreate_kinds or "").split(",") if k.strip()}
+
+
+async def outdated(res: Resource, d: Docker) -> bool:
+    """True when the resource's container runs an older image than its image tag has now."""
+    if not res.container:
+        return False
+    info = await d.inspect(res.container)
+    current = await d.image_id(_image_for(res))
+    return bool(info and current and info.get("Image") and info["Image"] != current)
+
+
+def busy_agents(s: Session, res: Resource) -> list[str]:
+    """Agents (sub-agents included) using this resource that have a job queued or running.
+    A job waiting on your approval is still running, and so still counts."""
+    from .models import Job, JobStatus
+
+    ids = {t.id for t in servers_of(s, res.id)}
+    agents = {a.id: a.name for a in s.exec(select(AgentDef)).all() if ids & set(a.tool_server_ids or [])}
+    if not agents:
+        return []
+    jobs = s.exec(select(Job).where(Job.assignee_agent_id.in_(list(agents)))
+                  .where(Job.status.in_([JobStatus.queued, JobStatus.running]))).all()
+    return sorted({agents[j.assignee_agent_id] for j in jobs})
+
+
+async def recreate_if_idle(s: Session, res: Resource, d: Docker, r) -> str:
+    """'recreated', 'busy', 'current' or 'skipped' (not ours to recreate, or not running)."""
+    if not res.managed or res.kind not in auto_kinds() or not res.container:
+        return "skipped"
+    info = await d.inspect(res.container)
+    if info is None or _status_of(info) != "running":
+        return "skipped"  # stopped on purpose, or gone: leave it to you
+    if not await outdated(res, d):
+        return "current"
+    if busy_agents(s, res):
+        return "busy"
+    # Flag it first, then look again: a run that starts after the flag waits for the new
+    # container, and one that started before it shows up as a job here.
+    await r.set(updating_key(res.id), "1", ex=UPDATING_TTL)
+    try:
+        s.expire_all()
+        if busy_agents(s, res):
+            return "busy"
+        await recreate(res, d)
+        await refresh(res, d)
+        res.updated_at = _now()
+        s.add(res)
+        s.commit()
+        await publish_egress(r, s)  # a new container may sign in with a new token
+        log.info("recreated %s on its rebuilt image", res.name)
+        return "recreated"
+    finally:
+        await r.delete(updating_key(res.id))
+
+
+async def auto_recreate_pass(r, d: Docker | None = None) -> dict[str, str]:
+    """One look at every resource; {name: outcome} for those that weren't current."""
+    from . import db
+
+    d = d or docker()
+    out: dict[str, str] = {}
+    if not d.enabled:
+        return out
+    with db.session() as s:
+        for res in s.exec(select(Resource).order_by(Resource.name)).all():
+            try:
+                what = await recreate_if_idle(s, res, d, r)
+            except DockerError as e:
+                log.warning("couldn't recreate %s on its new image: %s", res.name, e)
+                what = "error"
+            if what not in ("current", "skipped"):
+                out[res.name] = what
+    return out
+
+
+async def auto_recreate_loop(r) -> None:
+    if not settings.auto_recreate:
+        return
+    await asyncio.sleep(15)  # let a fresh deploy settle first
+    while True:
+        try:
+            await auto_recreate_pass(r)
+        except Exception as e:  # never let this loop die
+            log.warning("automatic recreate pass failed: %s", e)
+        await asyncio.sleep(max(5.0, settings.auto_recreate_interval))
+
+
+async def wait_while_updating(res_id: str | None, timeout: float = 180) -> None:
+    """Hold a run that's about to connect to a resource Agent HQ is recreating."""
+    if not res_id or _redis is None:
+        return
+    deadline = time.monotonic() + timeout
+    try:
+        while await _redis.exists(updating_key(res_id)) and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+    except Exception as e:  # Valkey trouble: connect anyway
+        log.warning("couldn't check whether %s is being recreated: %s", res_id, e)
 
 
 async def take_over(res: Resource, d: Docker | None = None) -> Resource:

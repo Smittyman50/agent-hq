@@ -146,7 +146,8 @@ docker compose build
 
 # The desktop, workbench and package-server images (compose profile "images") aren't part
 # of the running stack, so a plain build skips them. Rebuild them when their folders
-# changed; existing desktops and workbenches keep the old image until you Recreate them.
+# changed. Agent HQ moves idle workbenches and package servers to the new images by itself
+# (AHQ_AUTO_RECREATE); desktops keep the old image until you Recreate them.
 images_changed=0
 if [ "$FORCE" = 1 ] || ! git diff --quiet "$before" "$after" -- desktop workbench mcp-runner; then
   log "Building the desktop, workbench and package-server images"
@@ -232,6 +233,7 @@ if [ "$PRUNE" = 1 ]; then
 fi
 log "Deployed $(git rev-parse --short HEAD) in ${SECONDS}s"
 if [ "$images_changed" = 1 ]; then
-  echo "The desktop/workbench images were rebuilt. Running desktops and workbenches keep the old"
-  echo "image until you Recreate them (Settings -> Desktops & workbenches; their files are kept)."
+  echo "The desktop/workbench images were rebuilt. Agent HQ moves each workbench and package server"
+  echo "to its new image by itself once its agents are idle (their files are kept). Desktops keep the"
+  echo "old image until you Recreate them (Settings -> Desktops & workbenches)."
 fi

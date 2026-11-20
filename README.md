@@ -463,7 +463,7 @@ print(f"{len(vms)} VMs, {len(stale)} without a backup this week: {', '.join(stal
 - **Output:** 20,000 characters (`WORKBENCH_MAX_OUTPUT`), for printed output and for the structured result.
 - **Stopping the turn** stops the script. If Agent HQ stops collecting a script's calls for 3 minutes (`WORKBENCH_SCRIPT_ABANDON`), say because a worker died, the workbench kills it. While a call is waiting on you or on a slow tool, Agent HQ keeps pinging the workbench, so a long wait doesn't count.
 
-Scripts can't do anything the agent couldn't do itself. Rebuild the workbench image (`docker compose --profile images build`, then **Recreate** each workbench) to get the new `ahq_script_*` tools.
+Scripts can't do anything the agent couldn't do itself. The `ahq_script_*` tools come with the workbench image: a deploy rebuilds it, and each workbench moves to it by itself when idle (see [Automatic recreate](#automatic-recreate-after-a-rebuild)).
 
 ### Skills: know-how agents write down and improve
 
@@ -559,6 +559,14 @@ Desktops and workbenches are **resources**: one container each, plus the tool se
 On an agent's page, **Desktops & workbenches** lists them all: tick one to give it to the agent (all of its servers go together), and dedicated ones belonging to someone else are greyed out.
 
 **Running them.** The resource's page has **Start**, **Stop**, **Restart**, **Recreate** (a new container from the current image, same data, e.g. after `docker compose --profile images build`) and **Delete**. Delete takes it from its agents and removes its tool servers and container. Its data volume goes only if you say so. Otherwise a new desktop with the same name picks it up again.
+
+#### Automatic recreate after a rebuild
+
+A running container keeps the image it was made from, so rebuilding the images (`docker compose --profile images build`, which [auto-deploy](docs/auto-deploy.md) runs when `workbench/`, `desktop/` or `mcp-runner/` change) doesn't change what's running by itself. Agent HQ closes that gap: every minute it compares each running workbench and package server with its image, and recreates the ones on an older image, the same as the **Recreate** button, so files, installed packages and saved scripts stay.
+- **Only when idle.** It waits until no agent that has the resource (sub-agents included) has a job queued or running. A turn waiting on your approval is still running, so it waits for that too.
+- **No half-made connections.** While a container is being replaced, it's flagged in Valkey, and a turn that starts then waits for the new container instead of failing to connect.
+- **Left alone:** stopped containers (you stopped them), ones docker compose runs (take them over first), and desktops, because recreating a desktop closes its browser and you may be using it. Add them with `AHQ_AUTO_RECREATE_KINDS=workbench,package,desktop`.
+- **Settings:** `AHQ_AUTO_RECREATE=0` turns it off; `AHQ_AUTO_RECREATE_INTERVAL` (60) sets how often it checks.
 
 **Docker access.** The `docker-proxy` service gives `hq`, and nothing else, a Docker API limited to containers, images, networks and volumes (`AHQ_DOCKER_URL=http://docker-proxy:2375`). The images come from compose: the build-only services `desktop-image` and `workbench-image` (profile `images`, so they never run) build `agent-hq/desktop:latest` and `agent-hq/workbench:latest` (`AHQ_DESKTOP_IMAGE` / `AHQ_WORKBENCH_IMAGE`). Plain `docker compose up --build` skips them: after changing `./desktop` or `./workbench`, run `docker compose --profile images build`, then **Recreate** each desktop or workbench. Containers join `agent-hq_default` (desktops) or `agent-hq_workbench` (workbenches) under their name (`AHQ_RESOURCE_NETWORK` / `AHQ_WORKBENCH_NETWORK`, for another compose project name). Without Docker access, the page still registers tool servers and tracks resources, but you run the containers yourself. Anyone who controls `hq` can start containers on this host, so leave `docker-proxy` out if you'd rather not allow that.
 

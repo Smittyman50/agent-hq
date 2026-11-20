@@ -74,6 +74,8 @@ async def lifespan(app: FastAPI):
 
         webhooks_mod.seal_existing()
         background.append(asyncio.create_task(webhooks_api.cleanup_loop()))
+        # Workbenches and package servers move to a rebuilt image once they're idle.
+        background.append(asyncio.create_task(_resources.auto_recreate_loop(broker.r)))
         from . import titles
 
         background.append(asyncio.create_task(titles.backfill(broker)))

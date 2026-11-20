@@ -131,6 +131,13 @@ class Settings:
     # Package servers from the MCP server catalog (mcp-runner/).
     mcp_runner_image: str = field(default_factory=lambda: _env("MCP_RUNNER_IMAGE", "agent-hq/mcp-runner:latest"))
     resource_network: str = field(default_factory=lambda: _env("RESOURCE_NETWORK", "agent-hq_default"))
+    # Recreate managed workbenches and package servers by themselves once their image has
+    # been rebuilt (a deploy does that), as soon as none of their agents has work under way.
+    # Kinds: a comma-separated list of workbench, package, desktop (desktops are off by
+    # default: recreating one closes its browser, and you may be in it).
+    auto_recreate: bool = field(default_factory=lambda: _env("AUTO_RECREATE", "1").lower() not in ("0", "false", "no"))
+    auto_recreate_kinds: str = field(default_factory=lambda: _env("AUTO_RECREATE_KINDS", "workbench,package"))
+    auto_recreate_interval: float = field(default_factory=lambda: float(_env("AUTO_RECREATE_INTERVAL", "60")))
     workbench_network: str = field(default_factory=lambda: _env("WORKBENCH_NETWORK", "agent-hq_workbench"))
     compose_project: str = field(default_factory=lambda: _env("COMPOSE_PROJECT", "agent-hq"))
     # A shared desktop is used by one conversation at a time. Another waits this long for

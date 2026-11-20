@@ -327,8 +327,11 @@ class ReachableToolset(WrapperToolset):
 
     server_name: str = ""
     where: str = ""
+    resource_id: str | None = None  # the desktop or workbench serving it, if any
 
     async def __aenter__(self):
+        # Agent HQ may be recreating its container on a rebuilt image: wait for the new one.
+        await resources.wait_while_updating(self.resource_id)
         try:
             return await super().__aenter__()
         except Exception as e:
@@ -345,7 +348,7 @@ def build_tool_toolsets(agent: AgentDef, wrap=None, chat: str | None = None) -> 
     out = []
     for srv in agent_tool_servers(agent):
         ts = ReachableToolset(mcp_toolset(srv, chat), server_name=srv.name,
-                              where=srv.url or srv.command or "no address")
+                              where=srv.url or srv.command or "no address", resource_id=srv.resource_id)
         if wrap is not None:
             ts = wrap(ts, srv)
         # ahq_* tools are for Agent HQ itself (e.g. moving attachments to a workbench).
@@ -1134,6 +1137,7 @@ class Runtime:
     def __init__(self, broker: Broker, checkpointer=None) -> None:
         self.broker = broker
         slots.use(broker.r)  # provider slots are leases in this process's Valkey
+        resources.use(broker.r)  # runs wait while Agent HQ recreates a container they use
         self.graph = None
         if checkpointer is not None:
             g = StateGraph(TurnState)
