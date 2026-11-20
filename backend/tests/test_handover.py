@@ -141,3 +141,76 @@ async def test_a_short_failed_call_is_retried_as_malformed_not_cut_off(hq, monke
     assert SEEN["malformed_note"] and not SEEN["cut_off_note"]
     [event] = [m for m in hq.messages(t["id"]) if m.meta and m.meta.get("kind") == "cut_off_retry"]
     assert event.meta["cause"] == "malformed" and "malformed tool call" in event.content
+
+
+# -- several unreadable calls in one turn (2026-11-20: a second run_shell slip sent a
+# -- 55-minute local run to the fallback) ------------------------------------------------
+
+SLIPS = {"fail": 0, "calls": 0, "notes": []}
+
+
+def slipping(messages, info: AgentInfo) -> ModelResponse:
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    SLIPS["calls"] += 1
+    SLIPS["notes"] = [str(getattr(p, "content", "")) for m in messages for p in m.parts
+                      if p.part_kind == "user-prompt"]
+    if SLIPS["calls"] <= SLIPS["fail"]:
+        raise ModelHTTPError(500, "qwen", {"message": 'llama-server returned invalid tool call arguments for '
+                                                      '"workbench-2_run_shell": unexpected end of JSON input'})
+    return ModelResponse(parts=[TextPart("Summary: done on the local model.")])
+
+
+SCRIPTS["slipping"] = slipping
+
+
+async def retries(hq, thread_id):
+    return [m for m in hq.messages(thread_id) if (m.meta or {}).get("kind") == "cut_off_retry"]
+
+
+async def test_up_to_three_unreadable_calls_are_retried_on_the_same_model(hq, monkeypatch):
+    monkeypatch.setattr(RequestClock, "tokens_in_flight", lambda self: 750)
+    SLIPS.update(fail=3, calls=0)
+    await hq.start_worker()
+    a = await hq.agent(name="Local", model="fake:slipping", fallback_model="fake:strong",
+                       max_output_tokens=16384, thinking="off")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "build it")
+    assert await hq.wait_agent_replies(t["id"], 1) == ["Summary: done on the local model."]
+    events = await retries(hq, t["id"])
+    assert [e.meta["retry"] for e in events] == [1, 2, 3]
+    assert all(e.meta["tool"] == "workbench-2_run_shell" for e in events)
+    assert "malformed workbench-2_run_shell call" in events[0].content and "(retry 1 of 3)" in events[0].content
+    kinds = [m.meta.get("kind") for m in hq.messages(t["id"]) if m.meta]
+    assert "model_fallback" not in kinds
+    # The notes name the tool, and from the second slip on say plainly to keep code out of
+    # shell commands.
+    notes = [n for n in SLIPS["notes"] if "couldn't read" in n]
+    assert "workbench-2_run_shell call" in notes[0]
+    assert "This is the third time" in notes[-1] and "run_python" in notes[-1]
+
+
+async def test_a_fourth_unreadable_call_goes_to_the_fallback(hq, monkeypatch):
+    monkeypatch.setattr(RequestClock, "tokens_in_flight", lambda self: 750)
+    SLIPS.update(fail=4, calls=0)
+    await hq.start_worker()
+    a = await hq.agent(name="Local", model="fake:slipping", fallback_model="fake:strong",
+                       max_output_tokens=16384, thinking="off")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "build it")
+    [reply] = await hq.wait_agent_replies(t["id"], 1)
+    assert reply == "answered by the fallback model"
+    assert len(await retries(hq, t["id"])) == 3 and SLIPS["calls"] == 4
+
+
+async def test_a_cut_off_call_still_gets_one_retry(hq, monkeypatch):
+    monkeypatch.setattr(RequestClock, "tokens_in_flight", lambda self: 15_000)
+    SLIPS.update(fail=2, calls=0)
+    await hq.start_worker()
+    a = await hq.agent(name="Local", model="fake:slipping", fallback_model="fake:strong",
+                       max_output_tokens=16384, thinking="off")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "build it")
+    assert await hq.wait_agent_replies(t["id"], 1) == ["answered by the fallback model"]
+    [event] = await retries(hq, t["id"])
+    assert event.meta["cause"] == "cut_off" and SLIPS["calls"] == 2

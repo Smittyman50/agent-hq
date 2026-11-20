@@ -697,12 +697,33 @@ CUT_OFF_NOTE = (
 # split files and re-read them. A malformed call needs a different note.
 MALFORMED_NOTE = (
     "[Your last response failed with a server error: the server couldn't read the arguments "
-    "of your tool call. It was about {tokens:,} tokens long, well under your {limit:,}-token "
+    "of your {tool} call. It was about {tokens:,} tokens long, well under your {limit:,}-token "
     "output limit, so it wasn't cut off: its JSON was malformed. Make the same step again "
     "with valid arguments: escape quotes, backslashes and newlines inside strings, and "
     "avoid deeply nested quoting in shell commands (write a script with write_file and run "
     "it instead). Don't split your work into smaller pieces because of this. Then carry on "
     "with the task.]")
+
+# Seen 2026-11-19 and 20: all four unreadable calls were run_shell commands with code inside
+# (python - <<EOF, cat > file <<EOF), while far bigger write_file and run_python calls never
+# failed. After a second one, say so plainly.
+SHELL_CODE_NOTE = (
+    " [This is the {nth} time a tool call of yours couldn't be read. Don't put code or file "
+    "contents in shell commands at all (no heredocs, no long quoted strings): write files with "
+    "write_file, run Python with run_python, and keep run_shell to short commands.]")
+# Retries on the same model before the fallback takes over. A malformed call is a slip that
+# costs seconds to minutes to redo, and switching models throws away the local model's run;
+# a cut-off one usually happens again, so it gets one.
+MAX_MALFORMED_RETRIES = 3
+MAX_CUT_OFF_RETRIES = 1
+_BAD_CALL_TOOL = re.compile(r'tool call arguments for "([^"]+)"')
+
+
+def unreadable_tool(e: BaseException) -> str:
+    """The tool whose call the model server couldn't read, when its error names it."""
+    err = _find_exc(e, ModelHTTPError)
+    m = _BAD_CALL_TOOL.search(str(getattr(err, "body", "") or err or ""))
+    return m.group(1) if m else ""
 
 UNCLEAR_NOTE = (
     "[Your last response failed with a server error: the server couldn't read your tool "
@@ -1839,11 +1860,21 @@ class Runtime:
             except Exception as first:
                 # A server error from a model with an output limit: a tool call cut off at
                 # that limit, or one the server couldn't parse. How long the request ran
-                # tells them apart; say which, and try once more on the same model.
-                if agent.max_output_tokens and server_failed(first) and ran_out(first) is None:
+                # tells them apart; say which, and try again on the same model: up to
+                # MAX_MALFORMED_RETRIES times for unreadable calls, once for cut-off ones.
+                err: Exception = first
+                tries = {"cut_off": 0, "malformed": 0}
+                while agent.max_output_tokens and server_failed(err) and ran_out(err) is None:
                     limit = int(agent.max_output_tokens)
                     est = in_flight[0]
                     cause = server_error_cause(est, limit)
+                    kind = "cut_off" if cause == "cut_off" else "malformed"  # unclear: a slip too
+                    tries[kind] += 1
+                    allowed = MAX_CUT_OFF_RETRIES if kind == "cut_off" else MAX_MALFORMED_RETRIES
+                    if tries[kind] > allowed:
+                        raise err
+                    tool = unreadable_tool(err)
+                    of = f" (retry {tries[kind]} of {allowed})" if allowed > 1 else ""
                     if cause == "cut_off":
                         event = (f"{agent.name}'s model answered with a server error after about "
                                  f"{est:,} tokens, most likely a tool call cut off at its {limit:,}-token "
@@ -1852,22 +1883,31 @@ class Runtime:
                     elif cause == "malformed":
                         event = (f"{agent.name}'s model answered with a server error after about "
                                  f"{est:,} tokens, well under its {limit:,}-token output limit, so most "
-                                 f"likely a malformed tool call; trying again on the same model.")
-                        note = MALFORMED_NOTE.format(tokens=est, limit=limit)
+                                 f"likely a malformed {tool or 'tool'} call; trying again on the same "
+                                 f"model{of}.")
+                        note = MALFORMED_NOTE.format(tokens=est, limit=limit, tool=tool or "tool")
                     else:
                         event = (f"{agent.name}'s model answered with a server error: a tool call cut "
                                  f"off at its {limit:,}-token output limit or one the server couldn't "
-                                 f"parse; trying again on the same model.")
+                                 f"parse; trying again on the same model{of}.")
                         note = UNCLEAR_NOTE.format(limit=limit)
+                    if kind == "malformed" and tries[kind] >= 2:
+                        note += SHELL_CODE_NOTE.format(nth={2: "second", 3: "third"}.get(tries[kind], "again"))
                     await self.save_message(deps.thread_id, Role.event, event, agent_id=agent.id,
-                                            kind="cut_off_retry", cause=cause, tokens=est)
+                                            kind="cut_off_retry", cause=cause, tokens=est,
+                                            retry=tries[kind], tool=tool)
                     text, resume = resume_from(note)
-                    return await attempt(False, text, resume)
+                    try:
+                        return await attempt(False, text, resume)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as again:
+                        err = again
                 # A local model that thought itself past its output or time limit usually
                 # does fine with less thinking: try that once before paying for the fallback.
-                why = ran_out(first)
+                why = ran_out(err)
                 if why is None or (agent.thinking or "").lower() in ("off", "minimal", "low"):
-                    raise
+                    raise err
                 await self.save_message(
                     deps.thread_id, Role.event,
                     f"{agent.name} stopped because {why}; trying again on the same model with "

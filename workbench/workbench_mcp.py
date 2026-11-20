@@ -131,6 +131,8 @@ async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
 
     The working directory is your workspace, so files you write stay there. Print what you
     want to see. timeout is in seconds (the process and its children are killed after it).
+    Use this, not run_shell with python - <<EOF, for any Python: the code goes in as it is,
+    with no shell quoting to get wrong.
     """
     runs = WORK / ".runs"  # outside every chat's folder; the file is deleted afterwards
     runs.mkdir(exist_ok=True)
@@ -144,7 +146,14 @@ async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
 
 @mcp.tool(meta=ASK)
 async def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
-    """Run a bash command in your workspace (the venv is on PATH) and return its output."""
+    """Run a bash command in your workspace (the venv is on PATH) and return its output.
+
+    Keep it to short commands (ls, grep, wc, git, running a script you wrote). Never put
+    code or file contents in the command (heredocs such as cat > f <<EOF or python - <<EOF,
+    or long quoted strings): the quotes and backslashes inside them often make the tool
+    call itself unreadable, and the call fails. Write files with write_file, run Python
+    with run_python, or write a script with write_file and run it here.
+    """
     return await _run(["bash", "-lc", command], timeout)
 
 
