@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import resources, speed, workitems
+from . import notifications, resources, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -211,6 +211,13 @@ Operating rules:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _agent_name(agent_id: str | None) -> str:
+    try:
+        return load_agent(agent_id).name if agent_id else ""
+    except LookupError:
+        return ""
 
 
 def load_agent(agent_id: str) -> AgentDef:
@@ -1411,6 +1418,7 @@ class Runtime:
             msg = await self.save_message(thread_id, Role.agent, reply, agent_id=job.assignee_agent_id,
                                           job_id=job.id)
             await att.link_outputs(self, job.id, msg.id)  # files the agent made this turn
+            await notifications.reply_back(self, thread_id, job, reply, _agent_name(job.assignee_agent_id))
             update_job(job.id, status=JobStatus.done, result={"reply": reply}, finished_at=_now())
             titles.title_soon(thread_id, self.broker)  # a chat still called "Chat with …" gets a name
             skills.finish_job(job.id, "done")
@@ -1420,6 +1428,9 @@ class Runtime:
         except Exception as e:
             log.exception("turn %s failed", job.id)
             await self.save_message(thread_id, Role.event, f"Error: {e}", kind="error")
+            if (job.meta or {}).get("channel_id"):
+                await notifications.reply_back(self, thread_id, job, f"That turn failed: {e}",
+                                               _agent_name(job.assignee_agent_id))
             update_job(job.id, status=JobStatus.failed, error=str(e), finished_at=_now())
             skills.finish_job(job.id, "failed")
             learning.job_finished(job.id, "failed")
@@ -1622,6 +1633,9 @@ class Runtime:
         if not agent.is_subagent:
             instructions.append(workitems.PROPOSE_RULES)
             toolsets.append((workitems.propose_toolset(self), None))
+        if agent.can_alert and not agent.is_subagent:
+            instructions.append(notifications.ALERT_RULES)
+            toolsets.append((notifications.alert_toolset(self), None))
         if agent.is_subagent:
             instructions.append(SUBAGENT_SELF_RULES)
         instructions.append(clock.instructions())  # last: it changes every minute (caching)
@@ -2554,6 +2568,9 @@ class Runtime:
             await rt.save_message(ctx.deps.thread_id, Role.event,
                                   f"{me.name} needs you on its desktop: {reason}",
                                   agent_id=me.id, kind="desktop_request", tool_server_id=srv.id)
+            await subagents.notify({"type": "desktop_request", "agent": me.name, "reason": reason,
+                                    "thread_id": ctx.deps.thread_id, "tool_server_id": srv.id,
+                                    "link": subagents.link(f"/chat/{ctx.deps.thread_id}")})
             workitems.mark_waiting(ctx.deps.thread_id, "handoff", f"{me.name} needs you on its desktop: {reason}")
             try:
                 async with released_slot():
@@ -2826,6 +2843,7 @@ class Runtime:
             s.refresh(p)
         if p.message_id:
             await self.update_message(p.message_id, status=p.status, note=p.note)
+        await notifications.settled("skill_proposal", p.id, p.status)
         return p
 
     async def suggest_profile(self, me: AgentDef, text: str, reason: str, *, thread_id: str,
@@ -2903,6 +2921,7 @@ class Runtime:
                 c = s.get(KnowledgeCollection, p.collection_id)
             await self.update_message(p.message_id, status=p.status, note=p.note, doc_id=p.doc_id,
                                       collection=c.name if c else "")
+        await notifications.settled("knowledge_proposal", p.id, p.status)
         return p
 
     def _knowledge_suggest_toolset(self) -> FunctionToolset:
@@ -2950,6 +2969,7 @@ class Runtime:
         p = profile.decide(proposal_id, approve, note=note, text=text)
         if p.message_id:
             await self.update_message(p.message_id, status=p.status, note=p.note)
+        await notifications.settled("profile_proposal", p.id, p.status)
         return p
 
     # ------------------------------------------------------------ tool approvals
@@ -2998,6 +3018,7 @@ class Runtime:
                 s.refresh(row)
         if got is None and row.status == "expired":
             await self.update_message(row.message_id, status="expired")
+            await notifications.settled("tool_approval", row.id, "expired")
             return {"status": "expired",
                     "message": f"Not run: the user didn't approve {tool} within "
                                f"{wait / 60:g} minutes. Report that it's waiting for approval."}
@@ -3031,6 +3052,7 @@ class Runtime:
             await self.update_message(row.message_id, status=row.status, note=row.note,
                                       remember_until=row.remember_until.isoformat()
                                       if row.remember_until else None)
+        await notifications.settled("tool_approval", row.id, row.status)
         await subagents.notify({"type": "tool_approval_decision", "approval_id": row.id,
                                 "agent": row.agent_name, "tool": row.tool, "status": row.status,
                                 "note": row.note})
@@ -3360,6 +3382,7 @@ class Runtime:
         if req.message_id:
             await self.update_message(req.message_id, status=req.status, grant=req.grant,
                                       note=req.note, decided_at=req.decided_at.isoformat())
+        await notifications.settled("subagent_request", req.id, req.status)
         await subagents.notify({"type": "subagent_decision", "request_id": req.id,
                                 "agent": agent.name, "status": req.status, "grant": req.grant,
                                 "note": req.note, "thread_id": req.thread_id})

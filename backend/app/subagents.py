@@ -22,7 +22,6 @@ sub-agent retires as soon as it reports back. Sub-agents can't delegate or spawn
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -55,7 +54,9 @@ DEFAULTS: dict[str, Any] = {
     "similarity_threshold": 0.78,  # role vs. an existing agent's description: above = refused
     "max_pending_per_agent": 2,    # unanswered requests an agent may have open
     "request_ttl_hours": 24,       # an unanswered request lapses after this long
-    "notify_mqtt": True,           # publish requests and decisions on AHQ_MQTT_NOTIFY_TOPIC
+    # Before notification channels: whether requests went to MQTT. Now only read once, to set
+    # up the MQTT channel (app/notifications.ensure_defaults).
+    "notify_mqtt": True,
 }
 
 GRACE_MINUTES = 5  # time to get a worker on top of a sub-agent's max_minutes
@@ -455,24 +456,12 @@ def link(path: str) -> str | None:
 
 
 async def notify(event: dict[str, Any]) -> bool:
-    """Publish a notification for you on MQTT (in addition to the in-app card). Best effort."""
-    if not settings.mqtt_url or not get_settings().get("notify_mqtt", True):
-        return False
-    import uuid
+    """Tell you about something (in addition to the in-app card): sent to the notification
+    channels whose rules match (Settings → Notifications; app/notifications.py). Best effort."""
+    from . import notifications
 
-    import aiomqtt
-
-    from .mqtt_bridge import client_args
-
-    args = client_args(settings.mqtt_url)
-    # A client ID of its own: reusing the bridge's would kick the bridge off the broker.
-    args["identifier"] = f"agent-hq-notify-{settings.worker_name}-{uuid.uuid4().hex[:6]}"
-    payload = json.dumps({**event, "at": _now().isoformat()}, default=str)
     try:
-        async with asyncio.timeout(10):
-            async with aiomqtt.Client(**args) as client:
-                await client.publish(settings.mqtt_notify_topic, payload, qos=1)
-        return True
+        return await notifications.dispatch(event)
     except Exception as e:
-        log.warning("MQTT notification failed: %s", e)
+        log.warning("notification failed: %s", e)
         return False

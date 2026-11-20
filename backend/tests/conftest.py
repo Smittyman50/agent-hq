@@ -359,7 +359,18 @@ def historian(messages, info):
     return ModelResponse(parts=[TextPart(f"messages={len(messages)} summary={str(first).startswith('[Summary')}")])
 
 
-SCRIPTS = {"boss": boss(False), "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
+def alerter(messages, info):
+    """Sends an alert about the prompt if it has send_alert, then reports what came back."""
+    returns = [r for r in _tool_returns(messages) if r.tool_name == "send_alert"]
+    if "send_alert" not in {t.name for t in info.function_tools}:
+        return ModelResponse(parts=[TextPart("I can't send alerts.")])
+    if not returns:
+        return ModelResponse(parts=[ToolCallPart("send_alert", {
+            "message": f"WAN down: {_last_prompt(messages)[:60]}", "severity": "critical"})])
+    return ModelResponse(parts=[TextPart(f"alert {returns[-1].content['status']}")])
+
+
+SCRIPTS = {"boss": boss(False), "alerter": alerter, "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
            "requester": requester, "retrying": retrying,

@@ -154,6 +154,9 @@ class AgentDef(SQLModel, table=True):
     subagent_mode: SubagentMode = SubagentMode.off
     subagent_limits: dict[str, Any] = Field(default_factory=default_subagent_limits,
                                             sa_column=Column(JSON))
+    # Alerts: offer send_alert, which pings you on your notification channels (Telegram,
+    # Discord, MQTT; Settings → Notifications). Replying to an alert continues its conversation.
+    can_alert: bool = False
     # Standing goals (app/workitems.py): how many goals it works on at once (its WIP limit).
     # 0 = it takes no goals.
     goal_wip: int = 1
@@ -1057,3 +1060,96 @@ class WorkItemEvent(SQLModel, table=True):
     kind: str = ""                              # created, status, action_added, note, ...
     text: str = Field(default="", sa_column=Column(Text, default=""))
     data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class NotificationChannel(SQLModel, table=True):
+    """Somewhere your notifications go: MQTT, a Telegram bot or a Discord bot (see
+    app/notifications.py). Chat channels also take your answers: buttons decide requests,
+    replies continue conversations, and other messages go to the channel's default agent."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    kind: str = "telegram"  # mqtt | telegram | discord
+    # Kind-specific settings. Telegram: {"token" (sealed), "bot_username"}. MQTT: {"topic"}.
+    # Secrets are encrypted at rest when AHQ_SECRET_KEY is set (see webhooks.seal).
+    config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Off: requests arrive with a link only, and buttons and approve/deny replies are refused.
+    decisions_allowed: bool = True
+    # Messages that aren't a reply to a notice go to this agent, in the channel's own chat.
+    default_agent_id: str | None = None
+    chat_thread_id: str | None = None
+    # The people allowed to use it, paired with a code from the UI, and where their notices
+    # go: [{"user_id", "chat_id", "name", "paired_at"}]. Anyone else is ignored.
+    paired: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    pairing_code: str | None = None
+    pairing_expires_at: datetime | None = None
+    enabled: bool = True
+    last_error: str = ""
+    last_ok_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class NotificationRoute(SQLModel, table=True):
+    """Which notices a channel gets. A channel gets a notice when any of its rules match."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    channel_id: str = Field(index=True)
+    types: list[str] = Field(default_factory=list, sa_column=Column(JSON))      # empty = every type
+    agent_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # empty = every agent
+    # Alerts below this severity (info < warning < critical) don't match this rule.
+    min_severity: str = "info"
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_now)
+
+
+class Notice(SQLModel, table=True):
+    """One notification: a request for you, an alert or an agent's reply, sent to the
+    channels whose rules match. `ref` is what it is about, so a decision made anywhere
+    settles it everywhere."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    type: str = Field(index=True)
+    ref_kind: str = ""          # tool_approval, subagent_request, goal, ... ("" = none)
+    ref_id: str = Field(default="", index=True)
+    thread_id: str | None = None
+    agent_name: str = ""
+    title: str = ""
+    body: str = Field(default="", sa_column=Column(Text, default=""))
+    link: str = ""
+    # Buttons: [{"id", "label"}]. Empty = nothing to decide (a reply still goes to the thread).
+    actions: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    severity: str = ""
+    event: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status: str = "open"        # open | settled
+    outcome: str = ""           # e.g. "Approved via Telegram (Mike)"
+    created_at: datetime = Field(default_factory=_now, index=True)
+    settled_at: datetime | None = None
+
+
+class NoticeDelivery(SQLModel, table=True):
+    """A notice sent to one chat of one channel: the message to edit when it's settled,
+    and what a reply to that message is about."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    notice_id: str = Field(index=True)
+    channel_id: str = Field(index=True)
+    chat_id: str = ""
+    message_id: str = Field(default="", index=True)
+    status: str = "sent"        # sent | failed
+    error: str = ""
+    at: datetime = Field(default_factory=_now, index=True)
+
+
+class ChannelInbound(SQLModel, table=True):
+    """What came in on a chat channel: decisions, replies, chats, pairings and refusals."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    channel_id: str = Field(index=True)
+    at: datetime = Field(default_factory=_now, index=True)
+    # decision | reply | chat | pairing | refused | ignored
+    kind: str = Field(index=True)
+    sender_id: str = ""
+    sender_name: str = ""
+    notice_id: str | None = None
+    thread_id: str | None = None
+    detail: str = Field(default="", sa_column=Column(Text, default=""))

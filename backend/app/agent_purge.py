@@ -128,6 +128,20 @@ def purge(s: Session, agent: AgentDef) -> list[str]:
     _rm(s, Subscription, Subscription.agent_id.in_(ids))
     s.exec(sa_update(Schedule).where(Schedule.thread_id.in_(tids)).values(thread_id=None))
     s.exec(sa_update(Subscription).where(Subscription.thread_id.in_(tids)).values(thread_id=None))
+    # Notification channels: no longer its default agent, and its rules forget it (a rule
+    # that named only this agent is switched off rather than widened to every agent).
+    from .models import NotificationChannel, NotificationRoute
+
+    s.exec(sa_update(NotificationChannel).where(NotificationChannel.default_agent_id.in_(ids))
+           .values(default_agent_id=None, chat_thread_id=None))
+    s.exec(sa_update(NotificationChannel).where(NotificationChannel.chat_thread_id.in_(tids))
+           .values(chat_thread_id=None))
+    for r in s.exec(select(NotificationRoute)).all():
+        if set(r.agent_ids or []) & set(ids):
+            r.agent_ids = [a for a in r.agent_ids if a not in ids]
+            if not r.agent_ids:  # empty would mean every agent: switch the rule off instead
+                r.enabled = False
+            s.add(r)
 
     # What it learned for itself (team memories and skills stay).
     _rm(s, Memory, Memory.agent_id.in_(ids), Memory.scope != MemoryScope.team)

@@ -26,8 +26,8 @@ import { Workspace } from './workspace';
           <input type="number" min="0.3" max="1" step="0.01" name="sim" [(ngModel)]="c.similarity_threshold"></label>
         <p class="hint inline-hint">Uses the embedding model from Settings → Memory. Lower = stricter. A sub-agent named
           after an existing agent is always refused.</p>
-        <label class="check"><input type="checkbox" name="mqtt" [(ngModel)]="c.notify_mqtt">
-          Also notify me on MQTT (topic set by AHQ_MQTT_NOTIFY_TOPIC, default agent-hq/notifications)</label>
+        <p class="hint inline-hint">Where requests reach you besides the inbox (MQTT, Telegram) is set under
+          <a routerLink="/settings/notifications">Notifications</a>.</p>
         @if (msg()) { <p class="hint">{{ msg() }}</p> }
         <div class="actions"><button type="submit">Save</button>
           <a class="ghost-link" routerLink="/requests/subagents">Requests inbox ({{ ws.pendingRequests() }} pending)</a></div>

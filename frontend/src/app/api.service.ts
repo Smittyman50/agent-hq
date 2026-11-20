@@ -41,6 +41,7 @@ export interface AgentDef {
   max_output_tokens?: number | null;  // most tokens one response of its main model may generate, thinking included
   request_timeout_s?: number | null;  // deadline in seconds for one request to its main model
   request_timeout_auto?: boolean;     // deadline from the model's measured speed (request_timeout_s: starting value)
+  can_alert?: boolean;               // offer send_alert: ping you on your notification channels
   scripts_with_tools?: boolean;       // offer run_with_tools: a workbench script that calls its other tools
   max_requests?: number | null;       // most model requests one run may make (blank = 50)
   goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
@@ -107,6 +108,51 @@ export interface Decision {
   approve: boolean; note?: string; count?: number; concurrent?: number; max_minutes?: number;
   max_requests?: number; hours?: number; models?: ModelRef[]; tool_server_ids?: string[];
 }
+export interface NoticeRoute {
+  id?: string;
+  types: string[];        // empty = every type
+  agent_ids: string[];    // empty = every agent
+  min_severity: 'info' | 'warning' | 'critical';
+  enabled: boolean;
+}
+
+export interface NotifyChannel {
+  id?: string;
+  name: string;
+  kind: 'telegram' | 'mqtt';
+  enabled: boolean;
+  chat?: boolean;
+  decisions_allowed: boolean;
+  default_agent_id: string | null;
+  chat_thread_id?: string | null;
+  token?: string;           // write-only: the bot token (empty on save = keep it)
+  has_token?: boolean;
+  bot_username?: string;
+  topic: string;            // MQTT: empty = AHQ_MQTT_NOTIFY_TOPIC
+  paired?: { user_id: string; name: string; chat_id: string; paired_at: string }[];
+  pairing_open?: boolean;
+  last_error?: string;
+  last_ok_at?: string | null;
+  routes: NoticeRoute[];
+}
+
+export interface NoticeTypes {
+  types: { type: string; label: string; group: 'request' | 'alert' | 'info' | 'decision' }[];
+  severities: string[];
+  kinds: string[];
+  chat_kinds: string[];
+  default_chat_types: string[];
+}
+
+export interface NoticeSettings { alerts_per_hour: number; linger_minutes: number; }
+
+export interface ChannelLogRow {
+  at: string; direction: 'in' | 'out'; kind: string; status: string; text: string;
+  outcome?: string; error?: string; sender?: string; thread_id?: string | null;
+}
+
+export interface PairingCode { code: string; expires_at: string; command: string; link: string; }
+
 export interface SubagentCaps {
   max_live: number; max_per_day: number; similarity_threshold: number; max_pending_per_agent: number;
   request_ttl_hours: number; notify_mqtt: boolean;
@@ -858,6 +904,19 @@ export class Api {
   decideRequest(id: string, d: Decision) {
     return this.http.post<SubagentRequest>(`/api/subagent-requests/${id}/decide`, d);
   }
+  noticeTypes() { return this.http.get<NoticeTypes>('/api/notifications/types'); }
+  noticeSettings() { return this.http.get<NoticeSettings>('/api/notifications/settings'); }
+  saveNoticeSettings(x: NoticeSettings) { return this.http.put<NoticeSettings>('/api/notifications/settings', x); }
+  channels() { return this.http.get<NotifyChannel[]>('/api/notifications/channels'); }
+  saveChannel(x: NotifyChannel): Observable<NotifyChannel> {
+    return x.id ? this.http.put<NotifyChannel>(`/api/notifications/channels/${x.id}`, x)
+                : this.http.post<NotifyChannel>('/api/notifications/channels', x);
+  }
+  deleteChannel(id: string) { return this.http.delete(`/api/notifications/channels/${id}`); }
+  pairChannel(id: string) { return this.http.post<PairingCode>(`/api/notifications/channels/${id}/pair`, {}); }
+  unpair(id: string, userId: string) { return this.http.delete(`/api/notifications/channels/${id}/paired/${userId}`); }
+  testChannel(id: string) { return this.http.post<{ sent: boolean }>(`/api/notifications/channels/${id}/test`, {}); }
+  channelLog(id: string) { return this.http.get<ChannelLogRow[]>(`/api/notifications/channels/${id}/log`); }
   subagentCaps() { return this.http.get<SubagentCaps>('/api/settings/subagents'); }
   saveSubagentCaps(c: SubagentCaps) { return this.http.put<SubagentCaps>('/api/settings/subagents', c); }
   liveSubagents() { return this.http.get<LiveSubagents>('/api/subagents/live'); }

@@ -128,10 +128,18 @@ def seal_existing() -> int:
                 t.headers = {k: seal(v) for k, v in t.headers.items()}
                 s.add(t)
                 n += 1
+        from .models import NotificationChannel
+
+        for c in s.exec(select(NotificationChannel)).all():
+            tok = (c.config or {}).get("token") or ""
+            if tok and not tok.startswith(SEALED):
+                c.config = {**c.config, "token": seal(tok)}
+                s.add(c)
+                n += 1
         if n:
             s.commit()
     if n:
-        log.info("encrypted the secrets of %d webhook(s) and tool server(s)", n)
+        log.info("encrypted the secrets of %d webhook(s), tool server(s) and channel(s)", n)
     return n
 
 

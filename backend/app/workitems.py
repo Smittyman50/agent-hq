@@ -465,6 +465,41 @@ def decide_proposal(goal_id: str, approve: bool, *, ready: bool = False, note: s
     return get(goal_id)
 
 
+async def review_and_record(rt, goal_id: str, approve: bool, note: str = "") -> WorkItem:
+    """Your decision on a done claim, from the web UI or a notification channel: the board,
+    a line in the goal's conversation, and every notice about it settled."""
+    from . import notifications
+
+    g = decide_review(goal_id, approve, note)
+    if g.thread_id:
+        extra = f" Your note: {note.strip()}" if (note or "").strip() else ""
+        text = (f"You confirmed the goal is done.{extra}" if approve else f"You sent the goal back.{extra}")
+        await rt.save_message(g.thread_id, Role.event, text, agent_id=g.owner_agent_id, kind="goal",
+                              goal_id=g.id, status="done" if approve else "sent_back")
+    await notifications.settled("goal_review", g.id, "done" if approve else "sent_back")
+    return g
+
+
+async def proposal_and_record(rt, goal_id: str, approve: bool, *, ready: bool = False,
+                              note: str = "") -> WorkItem:
+    """Your decision on a proposed goal: the board, its card in the conversation it was
+    proposed in, and every notice about it settled."""
+    from . import notifications
+
+    g = decide_proposal(goal_id, approve, ready=ready, note=note)
+    thread_id = (g.source or {}).get("thread_id")
+    if thread_id:
+        with db.session() as s:
+            msgs = s.exec(select(Message).where(Message.thread_id == thread_id)).all()
+        for m in msgs:
+            if (m.meta or {}).get("kind") == "goal_proposal" and (m.meta or {}).get("goal_id") == g.id:
+                await rt.update_message(m.id, status="approved" if approve else "rejected",
+                                        note=(note or "").strip())
+    await notifications.settled("goal_proposal", g.id,
+                                ("ready" if ready else "backlog") if approve else "rejected")
+    return g
+
+
 # --------------------------------------------------------------------------- actions
 
 def _goal_and_action(s, goal_id: str, action_id: str) -> tuple[WorkItem, WorkItem]:

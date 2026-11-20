@@ -50,6 +50,7 @@ class AgentIn(BaseModel):
     request_timeout_s: int | None = Field(default=None, ge=10, le=7200)
     request_timeout_auto: bool = False  # deadline from the model's measured speed
     scripts_with_tools: bool = False    # offer run_with_tools (needs a workbench)
+    can_alert: bool = False             # offer send_alert: ping you on your notification channels
     max_requests: int | None = Field(default=None, ge=5, le=1000)
     # Standing goals it works on at once (its WIP limit); 0 = it takes no goals.
     goal_wip: int = Field(default=1, ge=0, le=10)

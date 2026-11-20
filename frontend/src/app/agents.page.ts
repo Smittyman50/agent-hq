@@ -153,6 +153,10 @@ import { Avatar } from './avatar';
             Scripts with tools <small>let it run a script on its workbench that calls its other tools, so a job
             of many tool calls takes one step and only the script's output comes back. Each call still needs
             the approvals it would need directly; the script itself follows the workbench's rule for run_python.</small></label>
+          <label class="check"><input type="checkbox" name="canalert" [(ngModel)]="d.can_alert">
+            Alerts <small>let it ping you on your notification channels (Telegram, MQTT) when something needs you
+            now. Your reply comes back to its conversation. Routing and the hourly cap are on
+            <a routerLink="/settings/notifications">Notifications</a>.</small></label>
         </fieldset>
 
         <fieldset>

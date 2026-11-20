@@ -57,6 +57,7 @@ export const routes: Routes = [
       // Loaded when opened: keeps the main bundle under its budget.
       { path: 'resources', loadComponent: () => import('./resources.page').then(m => m.ResourcesPage) },
       { path: 'events', component: EventsPage },
+      { path: 'notifications', loadComponent: () => import('./notifications.page').then(m => m.NotificationsPage) },
       { path: 'system', component: SystemPage },
       { path: 'security', component: SecurityPage },
     ],

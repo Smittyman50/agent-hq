@@ -18,6 +18,7 @@ export const SETTINGS_SECTIONS = [
   { path: 'tools', label: 'Tools', icon: 'tools' },
   { path: 'resources', label: 'Desktops & workbenches', icon: 'monitor' },
   { path: 'events', label: 'Events', icon: 'events' },
+  { path: 'notifications', label: 'Notifications', icon: 'bell' },
   { path: 'system', label: 'System', icon: 'system' },
   { path: 'security', label: 'Security', icon: 'lock' },
 ];

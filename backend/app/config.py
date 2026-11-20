@@ -65,6 +65,11 @@ class Settings:
     # Where Agent HQ publishes notifications for you (sub-agent requests and decisions),
     # on the same broker as AHQ_MQTT_URL. JSON payloads; see the README.
     mqtt_notify_topic: str = field(default_factory=lambda: _env("MQTT_NOTIFY_TOPIC", "agent-hq/notifications"))
+    # Notification channels (Settings → Notifications): run the Telegram/Discord listeners
+    # that take your answers in this API process (one listener per bot, held with a lock),
+    # and the Telegram Bot API address (a self-hosted Bot API server, or a fake in tests).
+    channels_enabled: bool = field(default_factory=lambda: _env("CHANNELS", "1").lower() not in ("0", "false", "no"))
+    telegram_api_url: str = field(default_factory=lambda: _env("TELEGRAM_API_URL", "https://api.telegram.org").rstrip("/"))
     # Optional address of the web UI, e.g. http://shockwave:8000, used for links in notifications.
     public_url: str = field(default_factory=lambda: _env("PUBLIC_URL", "").rstrip("/"))
     mqtt_max_payload: int = field(default_factory=lambda: int(_env("MQTT_MAX_PAYLOAD", "4000")))

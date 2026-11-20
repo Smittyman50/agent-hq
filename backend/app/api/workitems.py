@@ -223,16 +223,9 @@ class DecisionIn(BaseModel):
 async def review(goal_id: str, body: DecisionIn, request: Request):
     _goal(goal_id)
     try:
-        g = wi.decide_review(goal_id, body.approve, body.note)
+        g = await wi.review_and_record(request.app.state.runtime, goal_id, body.approve, body.note)
     except (wi.WorkError, LookupError) as e:
         raise _bad(e) from None
-    if g.thread_id:
-        note = f" Your note: {body.note.strip()}" if body.note.strip() else ""
-        text = (f"You confirmed the goal is done.{note}" if body.approve
-                else f"You sent the goal back.{note}")
-        await request.app.state.runtime.save_message(
-            g.thread_id, Role.event, text, agent_id=g.owner_agent_id, kind="goal", goal_id=g.id,
-            status="done" if body.approve else "sent_back")
     return _detail(g)
 
 
@@ -240,20 +233,10 @@ async def review(goal_id: str, body: DecisionIn, request: Request):
 async def proposal(goal_id: str, body: DecisionIn, request: Request):
     _goal(goal_id)
     try:
-        g = wi.decide_proposal(goal_id, body.approve, ready=body.ready, note=body.note)
+        g = await wi.proposal_and_record(request.app.state.runtime, goal_id, body.approve,
+                                         ready=body.ready, note=body.note)
     except (wi.WorkError, LookupError) as e:
         raise _bad(e) from None
-    thread_id = (g.source or {}).get("thread_id")
-    if thread_id:
-        with db.session() as s:
-            from ..models import Message
-
-            msgs = s.exec(select(Message).where(Message.thread_id == thread_id)).all()
-        rt = request.app.state.runtime
-        for m in msgs:
-            if (m.meta or {}).get("kind") == "goal_proposal" and (m.meta or {}).get("goal_id") == g.id:
-                await rt.update_message(m.id, status="approved" if body.approve else "rejected",
-                                        note=body.note.strip())
     return _detail(g)
 
 
