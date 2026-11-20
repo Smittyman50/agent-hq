@@ -40,6 +40,7 @@ export interface AgentDef {
   context_window?: number | null;
   max_output_tokens?: number | null;  // most tokens one response of its main model may generate, thinking included
   request_timeout_s?: number | null;  // deadline in seconds for one request to its main model
+  request_timeout_auto?: boolean;     // deadline from the model's measured speed (request_timeout_s: starting value)
   max_requests?: number | null;       // most model requests one run may make (blank = 50)
   goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
   goal_team_size?: number; // parallel next actions per goal: itself + its agents and sub-agents (needs delegates or sub-agents)

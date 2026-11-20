@@ -138,6 +138,10 @@ class AgentDef(SQLModel, table=True):
     # model request, every SDK retry included (None = the client's default).
     max_output_tokens: int | None = None
     request_timeout_s: int | None = None
+    # Automatic request time limit: each request's deadline comes from the model's measured
+    # speed (reading the prompt plus writing max_output_tokens, with headroom; app/speed.py).
+    # request_timeout_s is then only the starting value, until the speed is known.
+    request_timeout_auto: bool = False
     # The most model requests one run may make (None = PydanticAI's default, 50). A coding
     # agent working through a big task makes many small ones (write, run, read, edit).
     max_requests: int | None = None

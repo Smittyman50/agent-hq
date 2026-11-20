@@ -48,6 +48,7 @@ class AgentIn(BaseModel):
     # Guardrails for its main model; None = no limit of Agent HQ's own.
     max_output_tokens: int | None = Field(default=None, ge=256, le=262_144)
     request_timeout_s: int | None = Field(default=None, ge=10, le=7200)
+    request_timeout_auto: bool = False  # deadline from the model's measured speed
     max_requests: int | None = Field(default=None, ge=5, le=1000)
     # Standing goals it works on at once (its WIP limit); 0 = it takes no goals.
     goal_wip: int = Field(default=1, ge=0, le=10)

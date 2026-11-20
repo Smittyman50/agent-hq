@@ -96,9 +96,14 @@ import { Avatar } from './avatar';
         <label class="narrow">Max output tokens <small>per response, thinking included; blank = no limit</small>
           <input name="maxout" type="number" min="256" step="1024" [(ngModel)]="d.max_output_tokens"
             placeholder="No limit"></label>
-        <label class="narrow">Request time limit <small>seconds per model request; blank = no limit</small>
+        <label class="narrow">Request time limit <small>{{ d.request_timeout_auto
+            ? 'seconds to allow until its speed is measured; blank = 1800'
+            : 'seconds per model request; blank = no limit' }}</small>
           <input name="reqtimeout" type="number" min="10" step="30" [(ngModel)]="d.request_timeout_s"
-            placeholder="No limit"></label>
+            [placeholder]="d.request_timeout_auto ? '1800' : 'No limit'"></label>
+        <label class="check" title="Work out each request's limit from how fast its model reads and writes">
+          <input type="checkbox" name="reqtimeoutauto" [(ngModel)]="d.request_timeout_auto">
+          Automatic time limit</label>
         <label class="narrow">Model requests per run <small>blank = 50</small>
           <input name="maxreq" type="number" min="5" max="1000" step="10" [(ngModel)]="d.max_requests"
             placeholder="50"></label>
@@ -108,7 +113,10 @@ import { Avatar } from './avatar';
           fallback model. They don't apply to the fallback. Leave room for big files: one response can
           hold a whole file the agent writes. Model requests per run stops a model that loops on tool
           calls; a coding agent on a big task needs more than 50 (try 150). The retry and the
-          fallback each get that many again.
+          fallback each get that many again. With Automatic time limit, each request gets as long
+          as its model needs to read the prompt and write a full answer (Max output tokens, or
+          16,384 if blank) at the speed measured on earlier requests, plus headroom, so it follows
+          the model when you change it.
         </p>
         <label>Worker pool <small>which workers run this agent, e.g. default · gpu · desktop</small>
           <input name="pool" [(ngModel)]="d.pool" list="pools"></label>

@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import resources, workitems
+from . import resources, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -640,9 +640,10 @@ def limit_settings(agent: AgentDef, *, on_fallback: bool = False) -> dict[str, A
         # quietly send again (another 5 minutes on a local GPU, the same cut-off likely).
         # Make one attempt and let _run_agent retry knowing why: see CUT_OFF_NOTE.
         out["max_retries"] = 0
-    if agent.request_timeout_s:
+    if agent.request_timeout_s and not agent.request_timeout_auto:
         # One deadline for the whole request, SDK retries included: a stuck local model
-        # gets cut off once, not retried until three timeouts have passed.
+        # gets cut off once, not retried until three timeouts have passed. (Automatic:
+        # speed.TimedModel sets each request's deadline from the model's measured speed.)
         out["request_timeout"] = float(agent.request_timeout_s)
     return out
 
@@ -1576,6 +1577,14 @@ class Runtime:
         model = (build_model_for(agent.fallback_provider_id, agent.fallback_model,
                                  f"{agent.name} (fallback)")
                  if on_fallback else build_agent_model(agent))
+        if not on_fallback:
+            # Time the main model's requests: its speed is measured either way (and shows
+            # on each request's trace span); with the Automatic time limit, each request
+            # also gets the deadline that speed allows.
+            model = speed.TimedModel(model, redis=self.broker.r, provider_id=agent.provider_id,
+                                     model=agent.model, max_output_tokens=agent.max_output_tokens,
+                                     starting=agent.request_timeout_s,
+                                     enforce=bool(agent.request_timeout_auto))
         text = "\n\n".join(instructions)
         used = context.tokens(text)
         reserve = int(context.get_settings()["reserve_tokens"])
