@@ -54,7 +54,7 @@ from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (IncompleteToolCall, ModelHTTPError, ModelRequestTimeout,
                                     ModelTimeoutError, OutputTokenLimitExceeded, UsageLimitExceeded)
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import (ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart,
+from pydantic_ai.messages import (BinaryContent, ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart,
                                   UserPromptPart)
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
@@ -69,7 +69,8 @@ from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
 from . import memory
-from .telemetry import current_traceparent, job_span, set_output
+from .telemetry import TRACER, current_traceparent, job_span, set_output
+from opentelemetry import trace
 from .models import (
     AgentDef,
     Job,
@@ -351,8 +352,9 @@ def build_tool_toolsets(agent: AgentDef, wrap=None, chat: str | None = None) -> 
         shown = set(srv.shown_tools or [])
         ts = ts.filtered(lambda ctx, td, shown=shown: not td.name.startswith("ahq_")
                          and (not shown or td.name in shown))
-        out.append((PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts,
-                    srv.id if srv.desktop else None))
+        final = PrefixedToolset(ts, srv.name) if srv.prefix_tools else ts
+        final.ahq_server = srv  # which server it is (run_with_tools needs its rules)
+        out.append((final, srv.id if srv.desktop else None))
     return out
 
 
@@ -781,6 +783,42 @@ def with_budget_note(messages: list, requests_done: int, limit: int) -> list:
     return out
 
 
+SCRIPT_RULES = """Scripts with tools: when a job takes many tool calls (check each of 40 VMs, gather
+and summarise), write one Python script and run it with `run_with_tools` instead of calling
+the tools one by one. In it, `tools.<tool_name>(...)` calls your tool-server tools by the
+names and arguments you already know; a failed or denied call raises `tools.ToolError`.
+Only what the script prints (and `tools.result(...)`) comes back to you, so print a short
+summary, not the raw results. Approvals still apply to every call it makes."""
+SCRIPT_POLL_WAIT = 10  # seconds one poll of the workbench may wait for the script
+# While a script's tool call is in progress (an approval card can wait 30 minutes), tell the
+# workbench every so often, or it takes the script for abandoned and kills it.
+SCRIPT_KEEPALIVE_S = 30.0
+
+
+def script_value(value: Any) -> Any:
+    """A tool's result as plain JSON for a script."""
+    if isinstance(value, ToolReturn):
+        value = value.return_value
+    if isinstance(value, BinaryContent):
+        return f"[binary content: {value.media_type}, {len(value.data)} bytes]"
+    try:
+        return _json_safe(value)
+    except Exception:
+        return str(value)
+
+
+def script_result(step: dict) -> dict:
+    """What run_with_tools hands the model: the output, and only what's worth knowing."""
+    out: dict[str, Any] = {"exit_code": step.get("exit_code"), "stdout": step.get("stdout", ""),
+                           "tool_calls": step.get("tool_calls", 0), "seconds": step.get("seconds")}
+    for k in ("stderr", "result", "stopped"):
+        if step.get(k) not in (None, ""):
+            out[k] = step[k]
+    if step.get("timed_out"):
+        out["timed_out"] = True
+    return out
+
+
 DESKTOP_BUSY = ("This desktop is shared and {agent} is still using it, so it isn't free yet. "
                 "Do not retry now. Report that the shared desktop is busy, or ask whoever you "
                 "report to to try again later.")
@@ -967,6 +1005,11 @@ get around it (no other tool or wording for the same thing): adapt, or report th
 needs the user's approval. If a tool is blocked, it isn't available to you."""
 
 
+class Refusal(str):
+    """A tool call that didn't run: blocked, denied or not approved in time. To the model
+    it is the same text as before; a script (run_with_tools) gets it as an error."""
+
+
 @dataclass
 class ApprovalToolset(WrapperToolset):
     """Applies the server's approval rules to each call: allow, ask the user, or block."""
@@ -991,8 +1034,8 @@ class ApprovalToolset(WrapperToolset):
             ctx.deps.replay.went_live(name)
             return await super().call_tool(name, tool_args, ctx, tool)
         if mode == "block":
-            return (f"Not allowed: the user has blocked {name} on {self.server_name}. "
-                    "Don't try to do the same thing another way; say what you needed it for.")
+            return Refusal(f"Not allowed: the user has blocked {name} on {self.server_name}. "
+                           "Don't try to do the same thing another way; say what you needed it for.")
         reason = ""
         if mode == "allow" and ctx.deps.cautious and not read_only:
             mode = "ask"
@@ -1002,7 +1045,7 @@ class ApprovalToolset(WrapperToolset):
             decision = await self.rt.ask_approval(ctx.deps, self.server_id, self.server_name,
                                                   name, tool_args, reason=reason)
             if decision["status"] != "approved":
-                return decision["message"]
+                return Refusal(decision["message"])
         return await super().call_tool(name, tool_args, ctx, tool)
 
 
@@ -1556,6 +1599,10 @@ class Runtime:
         instructions.append(att.rules(files_here, workbench, on_desktop))
         instructions.append(WORK_RULES)
         toolsets.append((self._attachments_toolset(files_here, workbench, on_desktop), None))
+        script_targets: list = []  # filled once the toolsets are wrapped, below
+        if agent.scripts_with_tools and workbench:
+            instructions.append(SCRIPT_RULES)
+            toolsets.append((self._script_toolset(script_targets), None))
         mode = subagents.mode_of(agent)
         if mode != SubagentMode.off:
             instructions.append(subagent_rules(agent, mode))
@@ -1601,6 +1648,12 @@ class Runtime:
                 out = with_budget_note(out, ctx.usage.requests, request_budget)
             return out
         shared = resources.shared_desktops([desk for _, desk in toolsets if desk])
+        observed = [ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
+                                    lease_resource_id=shared.get(desk) if desk else None,
+                                    source="mcp" if i < mcp_count else "internal")
+                    for i, (t, desk) in enumerate(toolsets)]
+        script_targets[:] = [(getattr(t, "ahq_server", None), observed[i])
+                             for i, (t, _) in enumerate(toolsets[:mcp_count])]
         built = Agent(
             model,
             name=agent.name,
@@ -1613,10 +1666,7 @@ class Runtime:
             capabilities=[ProcessHistory(process_history)],
             # The agent's thinking level, translated for its model (app/thinking.py).
             model_settings=model_settings,
-            toolsets=[ObservedToolset(t, agent_name=agent.name, broker=self.broker, desktop_server_id=desk,
-                                      lease_resource_id=shared.get(desk) if desk else None,
-                                      source="mcp" if i < mcp_count else "internal")
-                      for i, (t, desk) in enumerate(toolsets)],
+            toolsets=observed,
         )
         built.ahq_instruction_tokens = used  # for fitting the history around them
         built.ahq_request_clock = request_clock
@@ -2316,6 +2366,154 @@ class Runtime:
             if files_here:
                 tools.append(attachment_to_desktop)
         return FunctionToolset(tools, id="attachments")
+
+    def _script_toolset(self, targets: list) -> FunctionToolset:
+        """run_with_tools: a script on the agent's workbench that calls its other tools.
+
+        targets is filled in once the agent's toolsets exist: (server, toolset) for each
+        tool server, the toolset being the one the model's own calls go through
+        (ApprovalToolset inside ObservedToolset). The script's calls take that same path,
+        so approval cards, blocked tools, the webhook ask-first rule, live activity and the
+        run's trace all apply. The workbench never reaches Agent HQ: this tool collects the
+        script's calls over the workbench's own MCP connection (see workbench_mcp.py)."""
+        rt = self
+
+        async def run_with_tools(ctx: RunContext[RunDeps], code: str, timeout: int = 120) -> dict:
+            """Run a Python script on your workbench that can call your other tools, and get
+            back only what it prints (and tools.result(...)). Use it for work that would take
+            many tool calls: list 40 VMs and check each one's backups, then print a summary.
+
+            In the script, `tools.<tool_name>(...)` calls one of your tool-server tools with the
+            same name and arguments you would use directly (not workbench or desktop tools).
+            A call that fails or is denied raises tools.ToolError. Print a short summary:
+            the tool results themselves don't come back to you. Approvals apply to every call.
+
+            Args:
+                code: the Python script (the tools module is already imported).
+                timeout: seconds the script may run, not counting time spent waiting on tools
+                    or approvals (max 1800).
+            """
+            d = ctx.deps
+            if d.replay is not None:
+                return {"error": "run_with_tools isn't available in test runs; call the tools directly."}
+            agent = load_agent(d.agent_id)
+            wb = await att.workbench_server(agent)
+            if wb is None:
+                return {"error": "you have no workbench that can run scripts with tools (or it isn't reachable)."}
+            # The script is code on the workbench: it needs what running code there needs.
+            refusal = await rt._script_allowed(d, wb, code)
+            if refusal:
+                return {"error": refusal}
+            callable_tools: dict[str, tuple[Any, Any]] = {}
+            specs: list[dict] = []
+            for srv, ts in targets:
+                if srv is None or srv.desktop or srv.id == wb.id:
+                    continue
+                try:
+                    found = await ts.get_tools(ctx)
+                except Exception as e:  # a server that's down: its tools just aren't there
+                    log.warning("run_with_tools: no tools from %s: %s", srv.name, e)
+                    continue
+                for name, tool in found.items():
+                    raw = name[len(srv.name) + 1:] if srv.prefix_tools and name.startswith(f"{srv.name}_") else name
+                    meta = ((tool.tool_def.metadata or {}).get("meta"))
+                    if approvals.mode_for(srv.approval_rules, raw, meta) == "block":
+                        continue  # blocked tools aren't in the script's tools module either
+                    callable_tools[name] = (ts, tool)
+                    specs.append({"name": name, "description": tool.tool_def.description or "",
+                                  "parameters": tool.tool_def.parameters_json_schema or {}})
+            tracer = trace.get_tracer(TRACER)
+            mcp = mcp_toolset(wb, d.thread_id)
+            run_id: str | None = None
+            finished = False
+            async with mcp:
+                async def call(tool: str, args: dict) -> dict:
+                    r = await mcp.client.call_tool(tool, args)
+                    text = " ".join(getattr(p, "text", "") for p in r.content).strip()
+                    if getattr(r, "isError", False) or getattr(r, "is_error", False):
+                        raise RuntimeError(text or f"{tool} failed")
+                    return json.loads(text) if text else {}
+
+                try:
+                    try:
+                        started = await call("ahq_script_start", {
+                            "code": code, "tools": specs, "timeout": int(timeout or 120)})
+                    except Exception as e:
+                        finished = True
+                        return {"error": f"the workbench couldn't start the script ({e}). If it says the "
+                                         "tool is unknown, its image predates scripts with tools: rebuild "
+                                         "it and recreate the workbench."}
+                    run_id = started["run_id"]
+                    while True:
+                        step = await call("ahq_script_poll", {"run_id": run_id, "wait": SCRIPT_POLL_WAIT})
+                        state = step.get("state")
+                        if state == "running":
+                            continue
+                        if state == "done":
+                            finished = True
+                            return script_result(step)
+                        if state != "call":
+                            finished = True
+                            return {"error": step.get("error") or f"the script run was lost ({state})"}
+                        name, args = step.get("tool") or "", step.get("args") or {}
+                        reply: dict[str, Any] = {"run_id": run_id, "call_id": step.get("call_id")}
+                        with tracer.start_as_current_span(f"script_tool {name}", attributes={
+                                "openinference.span.kind": "TOOL", "tool.name": name,
+                                "agent_hq.script.run_id": run_id,
+                                "input.value": _brief(args, 4000)}) as span:
+                            if name not in callable_tools:
+                                reply.update(ok=False, error=(
+                                    f"no tool named {name} here: blocked tools and workbench or "
+                                    "desktop tools can't be called from a script"))
+                            else:
+                                ts, tool = callable_tools[name]
+
+                                async def keepalive(rid: str = run_id) -> None:
+                                    while True:
+                                        await asyncio.sleep(SCRIPT_KEEPALIVE_S)
+                                        with contextlib.suppress(Exception):
+                                            await call("ahq_script_ping", {"run_id": rid})
+
+                                alive = asyncio.create_task(keepalive())
+                                try:
+                                    value = await ts.call_tool(name, args, ctx, tool)
+                                except Exception as e:
+                                    reply.update(ok=False, error=f"{type(e).__name__}: {e}")
+                                else:
+                                    if isinstance(value, Refusal):
+                                        reply.update(ok=False, error=str(value))
+                                    else:
+                                        reply.update(ok=True, value=script_value(value))
+                                finally:
+                                    alive.cancel()
+                            span.set_attribute("output.value", _brief(reply.get("value", reply.get("error")), 4000))
+                            if not reply["ok"]:
+                                span.set_status(trace.Status(trace.StatusCode.ERROR, reply.get("error", "")[:200]))
+                        await call("ahq_script_reply", reply)
+                finally:
+                    if run_id and not finished:  # the turn was stopped, or this loop failed
+                        with contextlib.suppress(Exception):
+                            await asyncio.shield(call("ahq_script_cancel", {"run_id": run_id}))
+
+        return FunctionToolset([run_with_tools], id="scripts")
+
+    async def _script_allowed(self, deps: RunDeps, wb: ToolServer, code: str) -> str:
+        """'' if the script may run, else why not: it follows the workbench's rule for
+        run_python (blocked, ask, allow; ask first when a webhook started the work)."""
+        mode = approvals.mode_for(wb.approval_rules, "run_python", {approvals.META_KEY: "ask"})
+        if mode == "block":
+            return (f"Not allowed: the user has blocked running code on {wb.name}, so scripts "
+                    "can't run either.")
+        reason = ""
+        if mode == "allow" and deps.cautious:
+            mode = "ask"
+            reason = "This work was started by a webhook, so running code asks first."
+        if mode == "ask" and not approvals.remembered(deps.agent_id, deps.thread_id, wb.id, "run_with_tools"):
+            decision = await self.ask_approval(deps, wb.id, wb.name, "run_with_tools", {"code": code},
+                                               reason=reason)
+            if decision["status"] != "approved":
+                return decision["message"]
+        return ""
 
     def _escalate_toolset(self) -> FunctionToolset:
         async def escalate(ctx: RunContext[RunDeps], reason: str) -> str:

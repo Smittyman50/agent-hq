@@ -435,6 +435,36 @@ The proxy carries HTTPS (CONNECT) and plain HTTP, which covers tools that use `H
 2. Under **Settings → Desktops & workbenches**, click **+ Workbench**, or **+ Its own workbench** on the agent's page. See [Desktops and workbenches](#desktops-and-workbenches).
 3. Its code tools already ask for approval (see the table above). Change that per tool under its server's **Approvals** on **Settings → Tools**.
 
+### Scripts with tools: many tool calls in one step
+
+Some jobs take many tool calls: list 40 VMs, check each one's backups, summarise. Done call by call, that's 40-odd model requests, and every result piles into the model's context window, which on a small local model means slow turns and trimmed history. With **Scripts with tools** ticked on an agent (Settings → Agents → Desktops & workbenches), the agent can instead write one Python script and run it with `run_with_tools`. The script calls the agent's tools as functions, the loop runs on the workbench, and only what the script prints (plus anything it hands to `tools.result(...)`) comes back to the model.
+
+```python
+vms = tools.labtools_proxmox_list_vms()
+stale = [v["name"] for v in vms if tools.labtools_backup_status(vm=v["name"])["age_days"] > 7]
+print(f"{len(vms)} VMs, {len(stale)} without a backup this week: {', '.join(stale)}")
+```
+
+**What the script can call.** The `tools` module has a function for each tool on the agent's tool servers, with the names and arguments the agent already sees (`tools.list_tools()` prints them). Workbench and desktop tools aren't in it: the script runs on the workbench already, so it reads and writes files with plain Python. A call that fails or is denied raises `tools.ToolError`.
+
+**Same rules as a direct call.** Each call from the script goes through Agent HQ exactly as if the agent had made it:
+- **Approvals:** a tool set to Ask me raises the usual approval card, and the script waits for your decision. Denied, it gets a `ToolError`.
+- **Blocked tools** aren't in the `tools` module, and a call to one is refused.
+- **Work started by a webhook** asks before any tool not marked read-only, as usual.
+- **The script itself** is code on the workbench, so it follows that workbench's rule for `run_python`: Ask me by default (one approval card for the script), Allow, or Block, which turns scripts off too.
+- **Visibility:** every call shows in live activity and the run's trace. In Phoenix, each one is a `script_tool <name>` span under the `run_with_tools` tool span.
+- **The network:** the script's own code runs in the workbench container under its network rules (see above); only its tool calls leave it, through Agent HQ.
+
+**How it works.** The workbench has no route to Agent HQ, and doesn't get one. Its script's tool calls wait in a queue on the workbench, and the Agent HQ worker running the turn collects them over the workbench's own MCP connection (`ahq_script_poll`), runs each one through the agent's toolsets, and sends back the result (`ahq_script_reply`). These `ahq_*` tools are hidden from agents.
+
+**Limits.**
+- **Run time:** the `timeout` the agent gives (default 120 seconds, up to the workbench's `WORKBENCH_MAX_TIMEOUT`, 1800). It counts only the script's own time, not time spent waiting on tools or on you to approve something. At the limit, the script and its processes are killed and the agent is told.
+- **Tool calls per script:** 200 (`WORKBENCH_SCRIPT_MAX_CALLS`). Past that, each call raises `ToolError`.
+- **Output:** 20,000 characters (`WORKBENCH_MAX_OUTPUT`), for printed output and for the structured result.
+- **Stopping the turn** stops the script. If Agent HQ stops collecting a script's calls for 3 minutes (`WORKBENCH_SCRIPT_ABANDON`), say because a worker died, the workbench kills it. While a call is waiting on you or on a slow tool, Agent HQ keeps pinging the workbench, so a long wait doesn't count.
+
+Scripts can't do anything the agent couldn't do itself. Rebuild the workbench image (`docker compose --profile images build`, then **Recreate** each workbench) to get the new `ahq_script_*` tools.
+
 ### Skills: know-how agents write down and improve
 
 A **skill** is a short, named procedure. It has a title, a line saying *when to use it*, the steps in markdown (including what to check and the pitfalls), the tools it relies on, and optionally the name of a saved workbench script that does the mechanical part. A skill is either shared by every agent or belongs to one agent. You can write and edit skills under **Settings → Skills**. Every change is a new version, with who made it and why, and you can restore any earlier version.

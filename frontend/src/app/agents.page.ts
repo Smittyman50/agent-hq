@@ -149,6 +149,10 @@ import { Avatar } from './avatar';
           </div>
           <p class="hint inline-hint">@if (!d.id) { Save the agent first to give it its own. }
             Shared ones and containers are on <a routerLink="/settings/resources">Desktops &amp; workbenches</a>.</p>
+          <label class="check"><input type="checkbox" name="scriptstools" [(ngModel)]="d.scripts_with_tools">
+            Scripts with tools <small>let it run a script on its workbench that calls its other tools, so a job
+            of many tool calls takes one step and only the script's output comes back. Each call still needs
+            the approvals it would need directly; the script itself follows the workbench's rule for run_python.</small></label>
         </fieldset>
 
         <fieldset>

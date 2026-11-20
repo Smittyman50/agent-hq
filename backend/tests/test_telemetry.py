@@ -186,3 +186,27 @@ async def test_real_mcp_tool_call_exports_only_the_tool_span(hq):
     assert not [s for s in exported if telemetry._scope(s) in telemetry.MCP_SCOPES]
     names = [s.name for s in exported]
     assert any("tool" in n and "add" in n for n in names), names
+
+
+async def test_a_scripts_tool_calls_are_child_spans_of_run_with_tools(hq, tmp_path):
+    from .test_scripts_with_tools import CODE, setup
+
+    CODE.update(timeout="120", code="for v in tools.{list_vms}():\n    print(tools.{restart_vm}(name=v))\n")
+    (tmp_path / "bench").mkdir()
+    (tmp_path / "lab").mkdir()
+    await hq.start_worker()
+    a, t = await setup(hq, (tmp_path / "bench", tmp_path / "lab"))
+    await hq.say(t["id"], "restart them")
+    await hq.wait_agent_replies(t["id"], 1, timeout=60)
+    pool = await settle(hq)
+    by_id = {s.context.span_id: s for s in spans()}
+    children = [s for s in spans() if s.name.startswith("script_tool ")]
+    assert sorted(s.name for s in children) == ["script_tool lab_list_vms", "script_tool lab_restart_vm",
+                                                "script_tool lab_restart_vm"]
+    for s in children:
+        parent = by_id[s.parent.span_id]
+        assert "run_with_tools" in parent.name, parent.name  # the execute_tool span
+        assert s.attributes["openinference.span.kind"] == "TOOL" and s.attributes["tool.name"] in s.name
+    assert any(s in pool for s in children)  # same job, same trace
+    restart = next(s for s in children if s.attributes["tool.name"] == "lab_restart_vm")
+    assert "restarted" in restart.attributes["output.value"]
