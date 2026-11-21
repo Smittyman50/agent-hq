@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import huddles, notifications, resources, speed, workitems
+from . import huddles, notifications, resources, scratchpad, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -144,6 +144,8 @@ class RunDeps:
     # Work started by an outside event (a webhook): tools that aren't marked read-only ask
     # first, even where the rules say allow. Passed on to delegated work and report-backs.
     cautious: bool = False
+    # Scratch-pad notes of a run with no job (a test run): kept here, not in Valkey.
+    pad: list[str] = field(default_factory=list)
 
 
 def _brief(value: Any, n: int = 300) -> str:
@@ -430,8 +432,8 @@ TRUNCATED_NUDGE = (
     "the end of your context window). That reply has been thrown away and nobody will see any "
     "of it, so don't continue where it stopped. Think less, then either take the next step now "
     "with a tool call, or write your whole answer again from the beginning, shorter: keep every "
-    "finding and its source, drop the rest. Write big files in parts (one file per module, or "
-    "append) rather than all at once.")
+    "finding and its source, drop the rest. If you kept notes, call read_notes and write from "
+    "them. Write big files in parts (one file per module, or append) rather than all at once.")
 MAX_CONTINUE_NUDGES = 2  # under the agent's output retries (3), so a stubborn model still answers
 
 
@@ -968,13 +970,16 @@ def trim_old_tool_results(messages: list[ModelMessage], window: int | None = Non
     return out
 
 
-def attributed(name: str, result: dict, pronouns: str = "", *, posted: bool = False) -> dict:
+def attributed(name: str, result: dict, pronouns: str = "", *, posted: bool = False,
+               notes: str = "") -> dict:
     """A delegate's result, labelled so the delegator relays it as theirs, not its own.
-    `posted`: the delegate already posted it in the huddle under its own name."""
+    `posted`: the delegate already posted it in the huddle under its own name. `notes`:
+    where its scratch-pad notes are (app/scratchpad.py)."""
     refer = f" Refer to {name} as {pronouns.strip()}." if pronouns.strip() else ""
+    extra = {"notes": notes} if notes else {}
     if posted:
-        return {"from": name, **result, "note": huddles.posted_note(name) + refer}
-    return {"from": name, **result,
+        return {"from": name, **result, **extra, "note": huddles.posted_note(name) + refer}
+    return {"from": name, **result, **extra,
             "note": f"This is {name}'s report to you, not your own work. Tell whoever asked "
                     f"you that you delegated this to {name} and what {name} reported.{refer}"}
 
@@ -1465,6 +1470,7 @@ class Runtime:
         result = WorkResult(status="failed", summary=self.STOPPED)
         update_job(job.id, status=JobStatus.failed, error=self.STOPPED,
                    result=result.model_dump(), finished_at=_now())
+        await self._pad_done(job.id)
         skills.finish_job(job.id, "stopped")
         learning.job_finished(job.id, "stopped")  # not a failure worth reflecting on
         await self.broker.publish(job.origin_thread_id, "job_stopped", job_id=job.id,
@@ -1571,6 +1577,7 @@ class Runtime:
             titles.title_soon(thread_id, self.broker)  # a chat still called "Chat with …" gets a name
             skills.finish_job(job.id, "done")
             learning.job_finished(job.id, "done")
+            await self._pad_done(job.id)
             if (job.meta or {}).get("kind") in ("mqtt", "webhook"):
                 await self._capture_event(job, reply)
             await self._huddle_continue(job, reply)
@@ -1583,6 +1590,7 @@ class Runtime:
             update_job(job.id, status=JobStatus.failed, error=str(e), finished_at=_now())
             skills.finish_job(job.id, "failed")
             learning.job_finished(job.id, "failed")
+            await self._pad_done(job.id)
             await self._huddle_continue(job, None)  # the other agents you asked still answer
         finally:
             keeper.cancel()
@@ -1656,6 +1664,7 @@ class Runtime:
             workitems.team_result(job, result.status, result.summary, result.details)
         skills.finish_job(job.id, result.status)
         learning.job_finished(job.id, result.status)
+        await self._pad_done(job.id)  # after team_result: nothing may await before it
         assignee = load_agent(job.assignee_agent_id)
         requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
         await self.broker.publish(job.origin_thread_id, "delegation_finished", job_id=job.id,
@@ -1690,7 +1699,10 @@ class Runtime:
         # Background jobs (including waits that timed out) report into the origin thread.
         # Goal team results don't: the board is where the goal's agent reads them.
         if load_job(job.id).background and not team:
-            await self.enqueue_turn(job.origin_thread_id, self._report_prompt(job, assignee, result),
+            pointer = await self._pad_pointer(job.id, assignee.name)
+            await self.enqueue_turn(job.origin_thread_id,
+                                    self._report_prompt(job, assignee, result)
+                                    + (f"\n{pointer}" if pointer else ""),
                                     from_user=False, report_for=job.id,
                                     agent_id=(job.chain or [None])[0],
                                     **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
@@ -1821,7 +1833,9 @@ class Runtime:
         on_desktop = any(desk for _, desk in toolsets[:mcp_count])
         instructions.append(att.rules(files_here, workbench, on_desktop))
         instructions.append(WORK_RULES)
+        instructions.append(scratchpad.RULES)
         toolsets.append((self._attachments_toolset(files_here, workbench, on_desktop), None))
+        toolsets.append((self._scratchpad_toolset(), None))
         script_targets: list = []  # filled once the toolsets are wrapped, below
         if agent.scripts_with_tools and workbench:
             instructions.append(SCRIPT_RULES)
@@ -2817,6 +2831,80 @@ class Runtime:
 
         return FunctionToolset([ask_user_to_take_over], id="handoff")
 
+    # ------------------------------------------------------------ scratch pads
+
+    def _scratchpad_toolset(self) -> FunctionToolset:
+        rt = self
+
+        async def note(ctx: RunContext[RunDeps], text: str) -> dict:
+            """Write a finding on your scratch pad, kept outside your context window.
+
+            Args:
+                text: one finding in a line or two, with its source (title, date, link, or
+                    the command and host it came from).
+            """
+            if not text.strip():
+                return {"error": "empty note"}
+            if ctx.deps.job_id is None or ctx.deps.replay is not None:
+                ctx.deps.pad.append(text.strip())
+                return {"saved": True, "n": len(ctx.deps.pad)}
+            me = load_agent(ctx.deps.agent_id)
+            try:
+                r = await scratchpad.add(rt.broker.r, ctx.deps.job_id, text,
+                                         thread_id=ctx.deps.thread_id, agent_id=me.id)
+            except scratchpad.PadFull as e:
+                return {"error": str(e)}
+            await rt.broker.publish(ctx.deps.thread_id, "note", job_id=ctx.deps.job_id,
+                                    agent=me.name, agent_id=me.id, n=r["n"],
+                                    text=text.strip()[:2000], depth=ctx.deps.depth)
+            return {"saved": True, "n": r["n"], "room_bytes": r["room"]}
+
+        async def read_notes(ctx: RunContext[RunDeps], job_id: str | None = None,
+                             offset: int = 0) -> dict:
+            """Read a scratch pad back, numbered, a page at a time.
+
+            Args:
+                job_id: leave empty for your own notes; or the job ID of work delegated in
+                    this conversation, to read that agent's notes.
+                offset: how many notes to skip (use next_offset from the previous page).
+            """
+            if job_id in (None, "", ctx.deps.job_id) and (ctx.deps.job_id is None
+                                                          or ctx.deps.replay is not None):
+                lines = [f"{i}. {t}" for i, t in enumerate(ctx.deps.pad, 1)][max(0, offset):]
+                return {"count": len(ctx.deps.pad), "notes": "\n".join(lines) or "(no notes)"}
+            target = job_id or ctx.deps.job_id
+            info = await scratchpad.info(rt.broker.r, target)
+            if info is None:
+                return {"count": 0, "notes": "(no notes)" if target == ctx.deps.job_id
+                        else "No notes for that job: it kept none, or they expired."}
+            if info["thread"] != ctx.deps.thread_id:
+                return {"error": "that job isn't in this conversation"}
+            out = await scratchpad.page(rt.broker.r, target, offset)
+            if target != ctx.deps.job_id:
+                out["by"] = _agent_name(info["agent"]) or "an agent"
+            return out
+
+        return FunctionToolset([note, read_notes], id="scratchpad")
+
+    async def _pad_pointer(self, job_id: str, name: str) -> str:
+        """For a delegator: where the delegate's notes are, if it kept any."""
+        try:
+            info = await scratchpad.info(self.broker.r, job_id)
+        except Exception:
+            return ""
+        if not info or not info["count"]:
+            return ""
+        hours = settings.pad_ttl_hours
+        return (f"{name} kept {info['count']} notes while working (sources included). Read them "
+                f"with read_notes(job_id=\"{job_id}\") if you need the evidence behind the "
+                f"result; they're kept about {hours:g} hours.")
+
+    async def _pad_done(self, job_id: str) -> None:
+        try:
+            await scratchpad.finished(self.broker.r, job_id)
+        except Exception as e:  # Valkey hiccup: the pad still expires on its running TTL
+            log.warning("scratch pad for %s: %s", job_id, e)
+
     # ------------------------------------------------------------ delegation tools
 
     def _delegation_toolset(self) -> FunctionToolset:
@@ -2881,11 +2969,13 @@ class Runtime:
             async with released_slot():
                 result = await rt.broker.wait_result(job.id, settings.delegate_wait_timeout)
             if result is not None:
-                return attributed(target.name, result, target.pronouns, posted=in_huddle)
+                return attributed(target.name, result, target.pronouns, posted=in_huddle,
+                                  notes=await rt._pad_pointer(job.id, target.name))
             # Taking too long: convert to a background job so the result still gets reported.
             job = update_job(job.id, background=True)
             if job.status in (JobStatus.done, JobStatus.failed) and job.result:
-                return attributed(target.name, job.result, target.pronouns, posted=in_huddle)
+                return attributed(target.name, job.result, target.pronouns, posted=in_huddle,
+                                  notes=await rt._pad_pointer(job.id, target.name))
             return {"status": "queued", "job_id": job.id,
                     "summary": f"{target.name} is still working after "
                     f"{int(settings.delegate_wait_timeout)}s. It now runs in the background; you "

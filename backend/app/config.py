@@ -115,6 +115,10 @@ class Settings:
     max_delegation_depth: int = field(default_factory=lambda: int(_env("MAX_DELEGATION_DEPTH", "4")))
     # A waiting delegation switches to background mode after this many seconds.
     delegate_wait_timeout: float = field(default_factory=lambda: float(_env("DELEGATE_WAIT_TIMEOUT", "1800")))
+    # Scratch pads (app/scratchpad.py): hours a job's notes are kept after it finishes, and
+    # the most a pad may hold, in bytes. They live in Valkey only.
+    pad_ttl_hours: float = field(default_factory=lambda: float(_env("PAD_TTL_HOURS", "24")))
+    pad_max_bytes: int = field(default_factory=lambda: int(_env("PAD_MAX_BYTES", "65536")))
     # Largest avatar upload accepted, in bytes.
     avatar_max_bytes: int = field(default_factory=lambda: int(_env("AVATAR_MAX_BYTES", str(3 * 1024 * 1024))))
     # Chat attachments: largest file, and most files on one message.

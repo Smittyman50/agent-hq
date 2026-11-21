@@ -268,6 +268,13 @@ export interface Thread {
   huddle?: boolean;
 }
 
+export interface PadNote { n: number; text: string; at?: string }
+export interface JobNotes {
+  job_id: string; count: number; notes: PadNote[];
+  /** Seconds until the notes expire (null: gone, or still being written with no end set). */
+  expires_in: number | null; gone: boolean; agent_id?: string;
+}
+
 /** Agents in a conversation, the one it started with first. */
 export function threadMembers(t: Thread | null | undefined): string[] {
   if (!t) return [];
@@ -953,6 +960,10 @@ export class Api {
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }
   deleteThread(id: string) { return this.http.delete<void>(`/api/threads/${id}`); }
+  /** A job's scratch-pad notes while they're kept (Valkey only; they expire). */
+  jobNotes(jobId: string) { return this.http.get<JobNotes>(`/api/jobs/${jobId}/notes`); }
+  /** Save a job's notes as a Markdown file on its delegation card. */
+  keepNotes(jobId: string) { return this.http.post<Attachment>(`/api/jobs/${jobId}/notes/keep`, {}); }
   addMember(threadId: string, agent_id: string) {
     return this.http.post<Thread>(`/api/threads/${threadId}/members`, { agent_id });
   }

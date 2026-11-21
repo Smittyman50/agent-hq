@@ -14,6 +14,7 @@ Key layout (all prefixed "ahq:"):
   ahq:desktop:<server_id>:request   an agent's pending "please take over" request
   ahq:desktop:<server_id>:blocked   an agent tried the desktop while you had control
   ahq:desktop:<server_id>:handback  list a waiting agent blocks on until you hand back
+  ahq:pad:<job_id>, ahq:padinfo:<job_id>  a job's scratch-pad notes (app/scratchpad.py)
 """
 
 from __future__ import annotations

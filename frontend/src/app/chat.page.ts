@@ -4,7 +4,7 @@ import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { AgentDef, Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback, Thread, attachmentUrl, threadLead, threadMembers } from './api.service';
+import { AgentDef, Api, Attachment, DesktopState, HqEvent, JobNotes, Message, MessageFeedback, PadNote, Thread, attachmentUrl, threadLead, threadMembers } from './api.service';
 import { FileView, Files, fileSize, isArchive, isViewable } from './files';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
@@ -173,6 +173,29 @@ const outputsClosedAt = new Map<string, number>();
                           <div class="crumb-step act {{ a.kind }}"><span class="ts">{{ a.ts | date:'HH:mm:ss' }}</span> {{ a.text }}</div>
                         } @empty { <div class="crumb-step muted">Waiting for the first step…</div> }
                       </div>
+                    }
+                    @if (x.jobId && padOf(x.jobId); as pad) {
+                      @if (pad.notes.length || !x.finished) {
+                        <details class="pad" [open]="!x.finished">
+                          <summary>
+                            <hq-icon name="notes" [size]="13" /> Scratch pad
+                            <span class="muted">· {{ pad.notes.length }} note{{ pad.notes.length === 1 ? '' : 's' }}
+                              @if (pad.expiresIn && x.finished) { · kept {{ hoursLeft(pad.expiresIn) }} more }</span>
+                          </summary>
+                          @for (n of pad.notes; track n.n) {
+                            <div class="pad-note"><span class="pad-n">{{ n.n }}</span><hq-md [text]="n.text" /></div>
+                          } @empty { <div class="pad-note muted">No notes yet.</div> }
+                          @if (pad.notes.length && x.finished) {
+                            <div class="pad-actions">
+                              @if (pad.kept || keptFile(x.files, x.jobId)) { <span class="muted">Saved as a file on this card.</span> }
+                              @else { <button type="button" class="mini" (click)="keepPad(x.jobId)" [disabled]="pad.saving">Keep as file</button> }
+                              @if (pad.error) { <span class="upload-note err">{{ pad.error }}</span> }
+                            </div>
+                          }
+                        </details>
+                      }
+                    } @else if (x.jobId && x.finished && padGone(x.jobId)) {
+                      <div class="crumb-note muted pad-gone">Scratch-pad notes have expired.</div>
                     }
                   </div>
                 }
@@ -554,7 +577,52 @@ export class ChatPage implements OnInit, OnDestroy {
       files: (meta['attachments'] ?? []) as Attachment[],
       background: !!meta['background'],
       depth: Math.max(1, Number(meta['depth'] ?? 1)),
+      jobId: (meta['job_id'] ?? null) as string | null,
     };
+  }
+
+  // ---- scratch pads: notes a delegate keeps while it works (app/scratchpad.py)
+  private pads = signal<Record<string, { notes: PadNote[]; expiresIn: number | null; kept?: boolean; saving?: boolean; error?: string }>>({});
+  private padsGone = signal<Set<string>>(new Set());
+  private padsAsked = new Set<string>();
+
+  /** A job's pad, fetched the first time its card is drawn open; null if none (yet). */
+  padOf(jobId: string) {
+    if (!this.padsAsked.has(jobId)) {
+      this.padsAsked.add(jobId);
+      this.api.jobNotes(jobId).subscribe({
+        next: (r: JobNotes) => {
+          if (r.gone) { this.padsGone.update(s => new Set(s).add(jobId)); return; }
+          this.pads.update(p => {
+            const live = p[jobId]?.notes ?? [];
+            const seen = new Set(r.notes.map(n => n.n));
+            return { ...p, [jobId]: { ...(p[jobId] ?? {}), notes: [...r.notes, ...live.filter(n => !seen.has(n.n))].sort((a, b) => a.n - b.n), expiresIn: r.expires_in } };
+          });
+        },
+        error: () => {},
+      });
+    }
+    return this.pads()[jobId] ?? null;
+  }
+  keptFile(files: Attachment[], jobId: string) { return files.some(f => f.name.endsWith(`-notes-${jobId}.md`)); }
+  padGone(jobId: string) { return this.padsGone().has(jobId); }
+  hoursLeft(s: number) { const h = Math.round(s / 3600); return h >= 1 ? `${h} h` : `${Math.max(1, Math.round(s / 60))} min`; }
+
+  private addNote(jobId: string, n: PadNote) {
+    this.pads.update(p => {
+      const cur = p[jobId] ?? { notes: [], expiresIn: null };
+      if (cur.notes.some(x => x.n === n.n)) return p;
+      return { ...p, [jobId]: { ...cur, notes: [...cur.notes, n].sort((a, b) => a.n - b.n) } };
+    });
+  }
+
+  keepPad(jobId: string) {
+    const set = (patch: object) => this.pads.update(p => ({ ...p, [jobId]: { ...p[jobId], ...patch } }));
+    set({ saving: true, error: '' });
+    this.api.keepNotes(jobId).subscribe({
+      next: () => set({ saving: false, kept: true }),
+      error: e => set({ saving: false, error: e.error?.detail ?? 'Could not save the notes' }),
+    });
   }
 
   // The message box's height: drag the line above it to resize; remembered per browser.
@@ -745,6 +813,10 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'subagent_request': this.log(ev, `${ev['agent']} asked you for sub-agents`, 'queue'); if (!replay) this.ws.refreshPending(); break;
       case 'memory_recall': this.log(ev, `${ev['agent']} recalled ${ev['count']} memor${ev['count'] === 1 ? 'y' : 'ies'}`, 'queue'); break;
       case 'model_fallback': this.log(ev, `${ev['agent']} → fallback model ${ev['to_model']}: ${ev['reason']}`, 'err'); break;
+      case 'note':
+        // The tool call itself is already in the activity log; this fills the card's pad.
+        if (ev['job_id']) this.addNote(String(ev['job_id']), { n: Number(ev['n']), text: String(ev['text'] ?? '') });
+        break;
       case 'delegation_finished': {
         const r = ev['result'] ?? {};
         const why = r.status !== 'done' && r.summary ? `: ${String(r.summary).slice(0, 300)}` : '';

@@ -868,6 +868,20 @@ The agent editor shows the window it's using, where the number came from, how ma
 
 The thresholds, the summary length, the room kept for tools and the reply, and the default windows are under **Settings → System → Long conversations**.
 
+## Scratch pads: notes outside the context window
+
+Long research runs used to lose their early findings. As tool results piled up they were trimmed to fit the window, and a final report too long for what was left got cut off. Now every job, whether a turn or a delegated task, has a **scratch pad**: notes the agent keeps outside its context window.
+
+- **`note(text)`** writes one finding as soon as the agent has it, with its source: title, date, link, or the command and host it came from. Agents are told to note anything they'll need later, because older tool results get shortened.
+- **`read_notes(offset)`** reads the pad back, numbered, a page at a time. When the agent has finished gathering, it reads its notes and writes its answer from them.
+- **Delegators can read a delegate's notes.** The delegate's result says how many notes it kept, and `read_notes(job_id="…")` gives the delegator the evidence behind a short summary. This also works when the result comes back later as a report. Any agent in the same conversation can read a pad, but not one from another conversation.
+- **On the delegation card,** the pad fills live as the delegate works, and stays readable afterwards until it expires. **Keep as file** saves it as a Markdown file on the card.
+- **A cut-off reply no longer takes the work with it.** The notes stay on the pad, and the retry tells the agent to write its answer again from them.
+
+**Pads live in Valkey only,** not in Postgres, so they don't grow the database. A pad is kept while its job runs, then `AHQ_PAD_TTL_HOURS` (24) hours after it finishes, and then it expires. It holds at most `AHQ_PAD_MAX_BYTES` (64 KB). When it's full, the agent is told to read its notes and answer. Keep as file is the only way a pad reaches the database. A pad survives a worker crash, since the job and its notes are picked up on another worker, but not a Valkey restart unless Valkey keeps its data on disk.
+
+**API:** `GET /api/jobs/{id}/notes` returns a job's notes and how long they're kept (`gone: true` once they've expired). `POST /api/jobs/{id}/notes/keep` saves them as a file (`410` once they've expired).
+
 ## File attachments
 
 Attach files in the chat: the 📎 button, drag and drop onto the conversation, or paste (a pasted screenshot becomes `pasted-<time>.png`). They upload as soon as you pick them, show as chips above the message box (✕ removes one), and go with your message when you send it. A message can be just files.
@@ -1363,6 +1377,7 @@ backend/app/
                      reflections, feedback, profile suggestions, knowledge, eval cases and runs…
   runtime.py         builds agents from rows; turns; delegation; report-back; Stop
   huddles.py         huddles: members, lead, @mentions, per-agent checkpoints, catch-up
+  scratchpad.py      scratch pads: per-job notes in Valkey, outside the context window
   clock.py           the current date and time every agent is told (AHQ_TIMEZONE)
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: job streams, results, live-event log, locks, cooldowns, stop flags

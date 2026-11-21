@@ -735,3 +735,13 @@ button.output-main { background: transparent; border: 0; border-radius: 8px; tex
 .mention-menu .menu-item.on { background: var(--panel2); }
 .mention-menu .muted { margin-left: auto; font-size: 11px; }
 .who .finding-for { font-size: 11px; margin-left: 2px; }
+
+/* Scratch pads on delegation cards */
+.crumb-body .pad { margin: 8px 0 2px; border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
+.crumb-body .pad summary { cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.pad-note { display: flex; gap: 8px; font-size: 13px; padding: 3px 0; border-top: 1px solid var(--line); }
+.pad-note:first-of-type { border-top: 0; }
+.pad-note hq-md p { margin: 0; }
+.pad-n { color: var(--muted); min-width: 18px; text-align: right; font-variant-numeric: tabular-nums; }
+.pad-actions { display: flex; gap: 8px; align-items: center; padding-top: 6px; font-size: 12px; }
+.pad-gone { font-size: 12px; margin-top: 6px; }
