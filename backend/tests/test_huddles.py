@@ -32,7 +32,8 @@ def recorder(tag: str, reply: str | None = None):
 SCRIPTS.update({"h-duke": recorder("duke"), "h-scarlett": recorder("scarlett"),
                 "h-snake": recorder("snake"),
                 "h-alpha": recorder("alpha", "Over to @Bravo for a check"),
-                "h-bravo": recorder("bravo", "Back to @Alpha, looks right")})
+                "h-bravo": recorder("bravo", "Back to @Alpha, looks right"),
+                "h-asker": recorder("asker", "Here's my answer.\n\nDuke, want to weigh in on the hardware side?")})
 
 
 async def _crew(hq):
@@ -68,6 +69,23 @@ def test_mentions_match_names_loosely_in_order():
     assert huddles.mentions("mail duke@example.com", agents) == []    # not a mention
     assert huddles.mentions("@Dukes are not @Duke's", agents) == ["a"]
     assert huddles.mentions("no mentions here", agents) == []
+
+
+def test_names_addressed_without_the_at_at_the_end_of_a_reply():
+    duke = AgentDef(id="d", name="Duke")
+    snake = AgentDef(id="s", name="Snake Eyes")
+    agents = [duke, snake]
+    long_reply = ("Quick read on this week.\n\nMy read: confidence is bifurcating.\n\n"
+                  "Duke, want to weigh in from a network/hardware angle on the datacenter capex side?")
+    assert huddles.addressed(long_reply, agents) == ["d"]
+    assert huddles.addressed("Done. **Snake Eyes:** can you check the page?", agents) == ["s"]
+    assert huddles.addressed("That's my take. What do you think, Duke?", agents) == ["d"]
+    assert huddles.addressed("Hey Duke, over to you.", agents) == ["d"]
+    # A name in passing, or anywhere but the last paragraph, isn't a hand-off.
+    assert huddles.addressed("Duke said the backups ran fine.", agents) == []
+    assert huddles.addressed("Duke: owns backups\nSnake Eyes: browsing\n\nAll set.", agents) == []
+    assert huddles.addressed("I agree with Duke's plan.", agents) == []
+    assert huddles.addressed("Ask the Dukes of Hazzard, really.", agents) == []
 
 
 def test_checkpoint_keys():
@@ -257,3 +275,17 @@ async def test_deleting_a_member_keeps_the_huddle(hq):
     await hq.http.put(f"/api/agents/{snake['id']}", json=snake)
     assert (await hq.http.delete(f"/api/agents/{snake['id']}/permanent")).status_code in (200, 204)
     assert _thread(t2["id"]) is None
+
+
+async def test_an_agent_addressing_a_member_by_name_hands_off(hq):
+    await hq.start_worker()
+    SEEN.clear()
+    asker = await hq.agent(name="Hi-Tech", model="fake:h-asker")
+    duke = await hq.agent(name="Duke", model="fake:h-duke")
+    t = await hq.thread(asker["id"])
+    await hq.http.post(f"/api/threads/{t['id']}/members", json={"agent_id": duke["id"]})
+    await hq.say(t["id"], "What do you all think about the market?")
+    await hq.wait_agent_replies(t["id"], 2)
+    assert _agents_replying(hq, t["id"]) == [asker["id"], duke["id"]]
+    assert "Hi-Tech mentioned you" in SEEN["duke"][0]["prompt"]
+    assert "@Duke, can you check this?" in SEEN["asker"][0]["instructions"]

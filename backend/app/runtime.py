@@ -1301,8 +1301,10 @@ class Runtime:
             limit = int(context.get_settings().get("huddle_agent_turns", 3))
             here = [a for a in huddles.candidates() if huddles.is_member(thread, a.id)]
             pending = set(then) | {x[0] for x in asked}
-            new = [a for a in huddles.mentions(reply, here)
-                   if a != job.assignee_agent_id and a not in pending]
+            # @mentions, and members it spoke to by name at the end ("Duke, your view?")
+            said = huddles.mentions(reply, here)
+            said += [a for a in huddles.addressed(reply, here) if a not in said]
+            new = [a for a in said if a != job.assignee_agent_id and a not in pending]
             room = max(0, limit - hops - len(asked))
             me = _agent_name(job.assignee_agent_id)
             asked += [[a, me] for a in new[:room]]

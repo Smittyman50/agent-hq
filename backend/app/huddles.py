@@ -121,6 +121,38 @@ def mentions(text: str, agents: list[AgentDef] | None = None) -> list[str]:
     return out
 
 
+def addressed(text: str, agents: list[AgentDef]) -> list[str]:
+    """Agents an agent's reply speaks to by name without the @, in its last paragraph:
+    "Duke, want to weigh in?", "Duke: can you check this?" or "What do you think, Duke?".
+    Models often hand off that way even when told to write @Name. Only the last paragraph
+    counts, where a hand-off goes, so a name used in passing ("Duke said…", a "Duke: …"
+    line in a list earlier on) isn't read as one. Same order and matching as mentions()."""
+    paras = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    if not paras:
+        return []
+    last = re.sub(r"[*_`]+", "", paras[-1])  # **Duke**, want to… → Duke, want to…
+    found: list[tuple[int, str]] = []
+    for a in sorted(agents, key=lambda a: len(a.name), reverse=True):
+        words = [w for w in re.split(r"[\s_\-.]+", a.name.strip()) if w]
+        if not words:
+            continue
+        name = r"[\s_\-.]?".join(re.escape(w) for w in words)
+        lead_in = r"(?:^|(?<=[.!?])\s+|\n\s*)(?:(?:hey|so|and|ok|okay|over to you),?\s+)?"
+        pats = [rf"{lead_in}({name})\s*[,:\u2014\u2013]",          # Duke, … / Duke: …
+                rf",\s*({name})\s*[?!.]?\s*$",                       # …, Duke?
+                rf",\s*({name})\s*[?!]"]                             # …, Duke? More text
+        for pat in pats:
+            m = re.search(pat, last, re.I | re.M)
+            if m and not re.match(r"[\w@]", last[m.start(1) - 1: m.start(1)] or " "):
+                found.append((m.start(1), a.id))
+                break
+    out: list[str] = []
+    for _, aid in sorted(found):
+        if aid not in out:
+            out.append(aid)
+    return out
+
+
 # --------------------------------------------------------------------------- changes
 
 
@@ -218,12 +250,14 @@ def roster_note(agent: AgentDef, thread: Thread) -> str:
     listed = ", ".join(names.get(a, "a removed agent") + (" (lead)" if a == lead_id else "")
                        for a in others)
     you_lead = " You lead it: you answer messages that mention nobody." if lead_id == agent.id else ""
+    example = names.get(others[0], "Name")
     return ("This conversation is a huddle: the user and several agents in one chat. "
             f"The other agents here: {listed}.{you_lead} Your replies are shown with your name, "
             "and what the others said since you last spoke is given to you at the start of "
             "your turn. Answer what is asked of you; don't repeat what another agent already "
-            "said. To hand a question to another agent here, @mention them by name in your "
-            "reply (for example to ask them to check your work); they answer next. Only "
+            "said. To hand a question to another agent here, @mention them in your reply, "
+            f"with the @ sign: write @Name (for example \"@{example}, can you check this?\"), not "
+            "just the name. They answer next; without the @ they may never see it. Only "
             "mention someone when you want them to respond. Delegating works as usual.")
 
 
