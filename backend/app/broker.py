@@ -6,7 +6,9 @@ Key layout (all prefixed "ahq:"):
   ahq:events:<thread_id> stream of a conversation's live activity for the UI: the last
                          EVENTLOG_MAX events, kept EVENTLOG_TTL seconds after the latest, so
                          a page that comes back mid-run can show what it missed
-  ahq:lock:thread:<id>   lock so turns of one conversation never overlap, across machines
+  ahq:lock:thread:<key>  lock so turns on one checkpoint never overlap, across machines (a
+                         conversation's ID; "<ID>:<agent>" for a huddle member's own turns)
+  ahq:huddle:turns:<id>  turns agents started by mentioning each other after one message
   ahq:stop:<job_id>      set when you press Stop; the job's worker cancels it (see Runtime)
   ahq:worker:<name>      heartbeat key of a live worker (expires if it dies)
   ahq:cooldown:<sub_id>  MQTT subscription cooldown marker
@@ -182,6 +184,19 @@ class Broker:
 
     def thread_lock(self, thread_id: str, ttl: float):
         return self.r.lock(f"ahq:lock:thread:{thread_id}", timeout=ttl, blocking_timeout=None)
+
+    async def reserve_turns(self, root: str, wanted: int, limit: int) -> int:
+        """Reserve up to `wanted` agent-started huddle turns for the message `root`, within
+        `limit` in all. Atomic, so agents answering at once share the cap. Returns how many."""
+        if wanted <= 0:
+            return 0
+        key = f"ahq:huddle:turns:{root}"
+        total = int(await self.r.incrby(key, wanted))
+        await self.r.expire(key, 24 * 3600)
+        over = max(0, total - limit)
+        if over:
+            await self.r.decrby(key, min(over, wanted))
+        return max(0, wanted - over)
 
     async def first_seen(self, key: str, seconds: int) -> bool:
         """True the first time `key` is seen within `seconds` (webhook duplicate check)."""

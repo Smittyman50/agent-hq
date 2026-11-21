@@ -6,6 +6,8 @@
 * An @mention addresses an agent; several mentions get answers in the order you wrote them,
   each agent seeing the replies before its own. A message that mentions nobody goes to the
   lead (Thread.lead_agent_id, else the agent the conversation started with).
+* @huddle (or @all) addresses every member at once. They answer at the same time, each as
+  soon as it has an answer, so they don't see each other's replies to that message.
 * Agents can @mention other members in their replies, which gives that member the next
   turn. The conversations settings cap how many such turns one message of yours can set
   off (huddle_agent_turns), so two agents can't keep handing the floor to each other.
@@ -151,6 +153,20 @@ def addressed(text: str, agents: list[AgentDef]) -> list[str]:
         if aid not in out:
             out.append(aid)
     return out
+
+
+EVERYONE = ("huddle", "all")  # @huddle / @all: every member, unless an agent has that name
+
+
+def everyone(text: str, agents: list[AgentDef] | None = None) -> bool:
+    """Whether text addresses the whole huddle with @huddle or @all."""
+    if "@" not in text:
+        return False
+    agents = candidates() if agents is None else agents
+    taken = {_norm(a.name) for a in agents}
+    words = [w for w in EVERYONE if w not in taken]
+    return bool(words) and re.search(
+        rf"(?<![\w@])@(?:{'|'.join(words)})(?![\w])", text, re.I) is not None
 
 
 # --------------------------------------------------------------------------- changes

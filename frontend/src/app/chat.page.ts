@@ -24,6 +24,8 @@ interface Output { file: Attachment; messageId: string; who: string; at: string 
 interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachment[]; }
 /** Per chat: how many outputs it had when you closed the panel. It opens again only when more arrive. */
 const outputsClosedAt = new Map<string, number>();
+/** The @huddle entry in the mention list: every member at once (app/huddles.py). */
+const EVERYONE = '__huddle__';
 
 @Component({
   selector: 'hq-chat',
@@ -75,7 +77,7 @@ const outputsClosedAt = new Map<string, number>();
             }
           </span>
           @if (memberError()) { <span class="upload-note err">{{ memberError() }}</span> }
-          @if (working()) { <span class="pill live">{{ workingName() ? workingName() + ' is working…' : 'working…' }}</span> }
+          @if (working()) { <span class="pill live">{{ workingName() ? workingName() + ' working…' : 'working…' }}</span> }
           <span class="spacer"></span>
           <button type="button" class="ghost outputs-toggle" [class.on]="showOutputs()" (click)="toggleOutputs()"
                   [title]="showOutputs() ? 'Hide the Outputs panel' : 'Show the files made in this chat'">
@@ -289,8 +291,13 @@ const outputsClosedAt = new Map<string, number>();
               @for (a of mentionOptions(); track a.id; let i = $index) {
                 <button type="button" class="menu-item" role="option" [class.on]="i === mentionIndex()"
                         (mousedown)="$event.preventDefault(); pickMention(a)">
-                  <hq-avatar [agent]="a" [size]="20" /> <span>{{ a.name }}</span>
-                  @if (!isMember(a.id)) { <span class="muted">joins the huddle</span> }
+                  @if (a.id === EVERYONE) {
+                    <span class="huddle-stack small">@for (id of members().slice(0, 3); track id) { <hq-avatar [agent]="agentById(id)" [size]="18" /> }</span>
+                    <span>huddle</span> <span class="muted">everyone answers</span>
+                  } @else {
+                    <hq-avatar [agent]="a" [size]="20" /> <span>{{ a.name }}</span>
+                    @if (!isMember(a.id)) { <span class="muted">joins the huddle</span> }
+                  }
                 </button>
               }
             </div>
@@ -738,7 +745,7 @@ export class ChatPage implements OnInit, OnDestroy {
   /** Agents seen doing something in the last few seconds animate in "while working" mode. */
   isActive(id: string | null | undefined) {
     if (!id) return false;
-    if (this.busy() && (this.workingAgent() ?? this.thread()?.agent_id) === id) return true;
+    if (this.busy() && (this.workingAgents().size ? this.workingAgents().has(id!) : this.thread()?.agent_id === id)) return true;
     return this.ws.isActive(id);
   }
 
@@ -774,8 +781,16 @@ export class ChatPage implements OnInit, OnDestroy {
         break;
       case 'status':
         if (!replay) {
-          this.busy.set(ev['state'] === 'thinking');
-          this.workingAgent.set(ev['state'] === 'thinking' ? ev['agent_id'] ?? null : null);
+          // Several huddle members can work at once: busy until the last one is done.
+          const who = ev['agent_id'] as string | undefined;
+          this.workingAgents.update(set => {
+            const next = new Set(set);
+            if (ev['state'] === 'thinking') { if (who) next.add(who); }
+            else if (who) next.delete(who);
+            else next.clear();  // stopped: nobody is working
+            return next;
+          });
+          this.busy.set(ev['state'] === 'thinking' || this.workingAgents().size > 0);
         }
         break;
       case 'huddle':  // someone joined, left, or now leads
@@ -839,17 +854,23 @@ export class ChatPage implements OnInit, OnDestroy {
   // ---- huddles: several agents in one chat; @mention addresses one (app/huddles.py)
   private draftBox = viewChild<ElementRef<HTMLTextAreaElement>>('draftBox');
   members = computed(() => threadMembers(this.thread()));
+  readonly EVERYONE = EVERYONE;
   lead = computed(() => threadLead(this.thread()));
   isMember(id: string | null | undefined) { return !!id && this.members().includes(id); }
   memberMenu = signal<string | null>(null);
   addMenu = signal(false);
   memberError = signal('');
   /** The agent whose turn is running, from the live "thinking" status. */
-  workingAgent = signal<string | null>(null);
-  workingName = computed(() => this.thread()?.huddle && this.workingAgent() ? this.agentName(this.workingAgent()) : '');
+  workingAgents = signal<Set<string>>(new Set());
+  workingName = computed(() => {
+    const ids = [...this.workingAgents()];
+    if (!this.thread()?.huddle || !ids.length) return '';
+    const names = ids.map(id => this.agentName(id));
+    return names.length === 1 ? `${names[0]} is` : `${names.slice(0, -1).join(', ')} and ${names.at(-1)} are`;
+  });
   addable = computed(() => this.ws.enabledAgents().filter(a => !this.isMember(a.id)));
   placeholder = computed(() => this.thread()?.huddle
-    ? `Message the huddle… @name to address an agent; otherwise ${this.agentName(this.lead())} answers`
+    ? `Message the huddle… @name for one agent, @huddle for everyone; otherwise ${this.agentName(this.lead())} answers`
     : 'Message…  (Enter to send, Shift+Enter for a new line, @name brings in another agent)');
 
   private applyThread(t: Thread | undefined | null) {
@@ -902,7 +923,10 @@ export class ChatPage implements OnInit, OnDestroy {
     const norm = (n: string) => n.toLowerCase().replace(/[\s_\-.]+/g, '');
     const hits = this.ws.enabledAgents().filter(a => norm(a.name).startsWith(q));
     // Members first, then the rest, each alphabetically.
-    return hits.sort((a, b) => Number(this.isMember(b.id)) - Number(this.isMember(a.id)) || a.name.localeCompare(b.name)).slice(0, 8);
+    const agents = hits.sort((a, b) => Number(this.isMember(b.id)) - Number(this.isMember(a.id)) || a.name.localeCompare(b.name)).slice(0, 8);
+    // @huddle: every member at once (only in a huddle, and only if no agent is called that).
+    const everyone = this.thread()?.huddle && 'huddle'.startsWith(q) && !this.ws.enabledAgents().some(a => norm(a.name) === 'huddle');
+    return everyone ? [{ id: EVERYONE, name: 'huddle' } as AgentDef, ...agents] : agents;
   });
 
   onDraftInput() {

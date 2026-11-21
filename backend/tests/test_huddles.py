@@ -365,3 +365,84 @@ async def test_delegating_outside_a_huddle_stays_in_the_background(hq):
     th = _thread(t["id"])
     assert not th.huddle and huddles.members(th) == [duke["id"]]
     assert [m.agent_id for m in hq.messages(t["id"]) if m.role == Role.agent] == [duke["id"]]
+
+
+# --------------------------------------------------------------------------- @huddle
+
+
+def slow(tag: str, seconds: float = 0.6):
+    import time
+
+    async def fn(messages, info):
+        start = time.monotonic()
+        await asyncio.sleep(seconds)
+        SEEN.setdefault(tag, []).append({"prompt": _last_prompt(messages), "start": start,
+                                         "end": time.monotonic()})
+        return ModelResponse(parts=[TextPart(f"{tag} here")])
+    return fn
+
+
+SCRIPTS.update({"h-slow-a": slow("a"), "h-slow-b": slow("b"), "h-slow-c": slow("c")})
+
+
+def test_everyone_words():
+    agents = [AgentDef(id="d", name="Duke")]
+    assert huddles.everyone("@huddle what do you all think?", agents)
+    assert huddles.everyone("thoughts, @All?", agents)
+    assert not huddles.everyone("the huddle@example.com list", agents)
+    assert not huddles.everyone("@huddlers", agents)
+    # An agent called All keeps its name: @all is that agent, @huddle is still everyone.
+    agents.append(AgentDef(id="x", name="All"))
+    assert not huddles.everyone("@all hi", agents) and huddles.everyone("@huddle hi", agents)
+
+
+async def test_at_huddle_asks_every_member_at_once(hq):
+    await hq.start_worker(concurrency=4)
+    SEEN.clear()
+    a = await hq.agent(name="Ann", model="fake:h-slow-a")
+    b = await hq.agent(name="Ben", model="fake:h-slow-b")
+    c = await hq.agent(name="Cal", model="fake:h-slow-c")
+    t = await hq.thread(a["id"])
+    for x in (b, c):
+        await hq.http.post(f"/api/threads/{t['id']}/members", json={"agent_id": x["id"]})
+    await hq.say(t["id"], "first, hello")  # Ann (lead) answers alone
+    await hq.wait_agent_replies(t["id"], 1)
+    await hq.say(t["id"], "@huddle what's your view?")
+    await hq.wait_agent_replies(t["id"], 4)
+    who = [m.agent_id for m in hq.messages(t["id"]) if m.role == Role.agent][1:]
+    assert sorted(who) == sorted([a["id"], b["id"], c["id"]])
+    # They ran at the same time: every turn started before any of them finished.
+    runs = [SEEN["a"][-1], SEEN["b"][-1], SEEN["c"][-1]]
+    assert max(r["start"] for r in runs) < min(r["end"] for r in runs)
+    for r in runs:
+        assert "addressed everyone in the huddle" in r["prompt"]
+        assert "what's your view?" in r["prompt"]
+        # They hear the earlier reply, not each other's answers to this message.
+        assert "b here" not in r["prompt"] and "c here" not in r["prompt"]
+    assert "Ann: a here" in SEEN["b"][-1]["prompt"]
+    turns = [j for j in hq.jobs() if j.kind == "turn"]
+    assert len({(j.meta or {}).get("root") for j in turns[-3:]}) == 1
+
+
+async def test_at_huddle_in_a_one_agent_chat_is_just_the_agent(hq):
+    await hq.start_worker()
+    SEEN.clear()
+    duke = await hq.agent(name="Duke", model="fake:h-duke")
+    t = await hq.thread(duke["id"])
+    await hq.say(t["id"], "@huddle anyone?")
+    assert await hq.wait_agent_replies(t["id"], 1) == ["duke here"]
+    assert not _thread(t["id"]).huddle
+
+
+async def test_hand_offs_after_at_huddle_share_one_cap(hq):
+    await hq.start_worker(concurrency=4)
+    SEEN.clear()
+    alpha = await hq.agent(name="Alpha", model="fake:h-alpha")
+    bravo = await hq.agent(name="Bravo", model="fake:h-bravo")
+    t = await hq.thread(alpha["id"])
+    await hq.http.post(f"/api/threads/{t['id']}/members", json={"agent_id": bravo["id"]})
+    await hq.say(t["id"], "@huddle draft the plan")
+    # Both answer (2), then at most 3 hand-off turns between them in all (not 3 each).
+    await hq.wait_agent_replies(t["id"], 5)
+    await asyncio.sleep(0.6)
+    assert len([m for m in hq.messages(t["id"]) if m.role == Role.agent]) == 5

@@ -92,6 +92,7 @@ from .models import (
     ToolServer,
     Transport,
 )
+from .models import _id as _new_id
 
 log = logging.getLogger("agent_hq.runtime")
 
@@ -1254,8 +1255,13 @@ class Runtime:
         if thread is None:
             raise LookupError(f"thread {thread_id} not found")
         targets: list[str] = []
+        broadcast = False
+        if from_user and thread.huddle and huddles.everyone(prompt):
+            # @huddle: every member answers, all at once (one turn each, not chained).
+            broadcast = True
+            targets = list(huddles.members(thread))
         if from_user:
-            for aid in huddles.mentions(prompt):
+            for aid in ([] if broadcast else huddles.mentions(prompt)):
                 try:
                     thread, joined = huddles.add_member(thread_id, aid)
                 except huddles.HuddleError:
@@ -1283,6 +1289,19 @@ class Runtime:
             task = ((prompt.strip() or "(The user sent these files without a message.)")
                     + "\n\n" + att.manifest(files, sees_images=owner.sees_images))
             meta = {**meta, "attachments": [a.id for a in files]}
+        meta = {**meta, "root": meta.get("message_id") or meta.get("root") or _new_id()}
+        if broadcast:
+            jobs = []
+            for aid in targets:
+                agent = load_agent(aid)
+                t = task if aid == owner.id or not files else (
+                    (prompt.strip() or "(The user sent these files without a message.)")
+                    + "\n\n" + att.manifest(files, sees_images=agent.sees_images))
+                jobs.append(await self._submit(Job(
+                    kind=JobKind.turn, origin_thread_id=thread_id, assignee_agent_id=aid,
+                    task=t, depth=0, chain=[aid], pool=agent.pool,
+                    meta={**meta, "everyone": True})))
+            return jobs
         if len(targets) > 1:
             meta = {**meta, "then": targets[1:], "prompt": prompt}
         job = Job(kind=JobKind.turn, origin_thread_id=thread_id, assignee_agent_id=owner.id,
@@ -1310,7 +1329,7 @@ class Runtime:
             return
         then = [a for a in meta.get("then") or [] if huddles.is_member(thread, a)]
         asked = [x for x in meta.get("asked") or [] if huddles.is_member(thread, x[0])]
-        hops = int(meta.get("hops") or 0)
+        root = meta.get("root") or meta.get("message_id") or job.id
         if reply:
             limit = int(context.get_settings().get("huddle_agent_turns", 3))
             here = [a for a in huddles.candidates() if huddles.is_member(thread, a.id)]
@@ -1319,7 +1338,9 @@ class Runtime:
             said = huddles.mentions(reply, here)
             said += [a for a in huddles.addressed(reply, here) if a not in said]
             new = [a for a in said if a != job.assignee_agent_id and a not in pending]
-            room = max(0, limit - hops - len(asked))
+            # The cap is shared by every turn that follows one message of yours, including
+            # agents answering an @huddle at the same time (reserved atomically in Valkey).
+            room = await self.broker.reserve_turns(root, len(new), limit)
             me = _agent_name(job.assignee_agent_id)
             asked += [[a, me] for a in new[:room]]
             if new[room:]:
@@ -1330,7 +1351,7 @@ class Runtime:
                     "mention them yourself to continue.", kind="huddle_limit")
         keep = {k: v for k, v in meta.items()
                 if k in ("message_id", "attachments", "channel_id", "chat_id",
-                         "channel_message_id", "via", "prompt", "cautious")}
+                         "channel_message_id", "via", "prompt", "cautious", "root")}
         if then:
             nxt = load_agent(then[0])
             task = meta.get("prompt") or job.task
@@ -1338,14 +1359,14 @@ class Runtime:
             if files:
                 task = ((task.strip() or "(The user sent these files without a message.)")
                         + "\n\n" + att.manifest(files, sees_images=nxt.sees_images))
-            new_meta = {**keep, "then": then[1:], "asked": asked, "hops": hops}
+            new_meta = {**keep, "then": then[1:], "asked": asked}
         elif asked:
             (aid, by), asked = asked[0], asked[1:]
             nxt = load_agent(aid)
             task = (f"[{by} mentioned you in the huddle.] Read what {by} said in the catch-up "
                     "above and answer it.")
             keep.pop("attachments", None)
-            new_meta = {**keep, "asked": asked, "hops": hops + 1, "mentioned_by": by}
+            new_meta = {**keep, "asked": asked, "mentioned_by": by}
         else:
             return
         nj = Job(kind=JobKind.turn, origin_thread_id=thread.id, assignee_agent_id=nxt.id,
@@ -1533,6 +1554,10 @@ class Runtime:
             heard = huddles.catch_up(thread, agent.id,
                                      exclude_message_id=(job.meta or {}).get("message_id") if job else None,
                                      budget_chars=max(2000, int(window * 3.5 * 0.3)))
+            if job and (job.meta or {}).get("everyone"):
+                prompt = ("[The user addressed everyone in the huddle with this message. The other "
+                          "members are answering at the same time, so give your own answer.]\n"
+                          + prompt)
             if heard:
                 prompt = heard + "\n\n" + prompt
         try:
@@ -1546,16 +1571,18 @@ class Runtime:
         if self.graph is None:
             raise RuntimeError("this process has no checkpointer; it cannot run turns")
         thread_id = job.origin_thread_id
-        lock = self.broker.thread_lock(thread_id, ttl=60)
+        with db.session() as s:
+            thread = s.get(Thread, thread_id)
+        key = huddles.checkpoint_key(thread, job.assignee_agent_id) if thread else thread_id
+        # One turn at a time per checkpoint: per conversation, or per member in a huddle, so
+        # huddle members can answer at the same time (each has its own history).
+        lock = self.broker.thread_lock(key, ttl=60)
         async with released_slot():  # don't hold a slot while queued behind another turn
             await lock.acquire()
         keeper = asyncio.create_task(self._keep_lock(lock))
         try:
             await self.broker.publish(thread_id, "status", state="thinking",
                                       agent_id=job.assignee_agent_id, job_id=job.id)
-            with db.session() as s:
-                thread = s.get(Thread, thread_id)
-            key = huddles.checkpoint_key(thread, job.assignee_agent_id) if thread else thread_id
             out = await self.graph.ainvoke(
                 # attachments always set: graph state carries over between turns otherwise
                 {"agent_id": job.assignee_agent_id, "prompt": job.task, "job_id": job.id,
