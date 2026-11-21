@@ -1,6 +1,6 @@
 # Agent HQ
 
-A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Standing goals on a Kanban board keep agents working an outcome, one next action at a time, until it's done. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own. Requests and alerts reach your phone on Telegram or Discord, where you can decide them, answer agents and chat with them.
+A self-hosted multi-agent system. You add model providers (your Ollama servers, OpenAI, Anthropic, any OpenAI-compatible server, your ChatGPT Plus/Pro plan, or your SuperGrok plan) and create agents in the web UI, giving each one instructions, a provider and one of its models, tools, delegation rights and a **worker pool** that decides which machines run it. Supervisors delegate to other agents; delegated work always reports back to the conversation it came from. Standing goals on a Kanban board keep agents working an outcome, one next action at a time, until it's done. Jobs survive crashes and restarts, and MQTT events from your homelab can wake agents on their own. Requests and alerts reach your phone on Telegram or Discord, where you can decide them, answer agents and chat with them. Bring several agents into one chat with @mentions (a huddle) and they answer in turn, each seeing what the others said.
 
 - **Backend:** FastAPI, LangGraph (conversation graph + checkpointing), PydanticAI (agents, typed results, MCP tools)
 - **Frontend:** Angular 22 (signals, standalone components)
@@ -820,6 +820,28 @@ Changing the embedding model re-embeds existing memories in the background.
 - **On Postgres:** the infrastructure compose file uses the `pgvector/pgvector:pg17` image, and Agent HQ enables the extension, adds the vector column and creates the full-text index on startup.
 - **On SQLite (single-machine dev):** search runs in Python instead. It's fine for thousands of memories.
 
+## Huddles: several agents in one chat
+
+A conversation starts with one agent. **@mention another agent** in a message, or add one with the **+** in the chat header, and it joins: the chat becomes a **huddle** and moves to the sidebar's **Huddles** section, under Conversations, with its history and address unchanged. The sidebar shows each huddle with its members' avatars.
+
+**Who answers:**
+- **@mention an agent** to address it. Typing `@` in the message box suggests agents (members first); an agent not in the huddle yet joins when you send.
+- **No mention:** the huddle's **lead** answers. That's the agent the chat started with, until you pick another. Click a member's avatar in the header to mention it, make it lead, or remove it.
+- **Several mentions** answer one after another in the order you wrote them, so each sees the replies before its own: `@Scarlett find the release notes, then @Snake Eyes check the page`.
+- **Agents can @mention each other** in their replies, for example to ask another member to check their work. The member they mention answers next. **Settings → System → Long conversations → Huddles** caps how many turns agents can start that way after one message of yours (3 by default; 0 turns it off), so two agents can't keep passing the floor back and forth. The chat notes when the cap stops a hand-off.
+- **Reports and events** go to the member they belong to: a background delegation reports to whoever delegated it, a sub-agent decision goes to the agent that asked, and a desktop handback goes to that desktop's agent if it's in the huddle. Otherwise the lead takes them.
+
+**What each agent sees:**
+- **Its own model history.** Each member has its own LangGraph checkpoint for the conversation (the starting agent keeps the conversation's own key, so chats from before huddles carry on as they were). One agent never sees another's tool calls or thinking as its own, and agents on different providers can share a huddle.
+- **A catch-up at the start of its turn:** what you and the others said since it last spoke, as plain text. It's read when the turn runs, so it includes the replies of agents that answered just before. An agent that joins later gets the conversation so far, trimmed from the oldest end to fit its context window.
+- **Who's in the huddle,** in its instructions: the other members, who leads, and how mentions work.
+
+**Unchanged:** each answer is an ordinary turn by that agent. It runs on that agent's model and pool, with its tools, delegation rights, tool approvals and sub-agent limits. Memory recall uses that agent's own scope, plus team memories and the conversation's memories, which every member shares. In Phoenix, each answer is a `turn <agent>` span in the conversation's session. Stop halts whoever is working, and the agents still waiting for their turn.
+
+**Leaving and deleting:** removing a member keeps its earlier replies in the chat, and the chat stays a huddle. If the lead leaves, the next member in join order leads. A huddle always keeps at least one agent. Deleting an agent removes the huddles it started, and takes it out of the huddles it joined. Those stay, along with the other agents' work.
+
+**API:** `POST /api/threads/{id}/members` `{"agent_id"}` adds a member, `DELETE /api/threads/{id}/members/{agent_id}` removes one, and `PUT /api/threads/{id}/lead` `{"agent_id"}` picks the lead. Threads carry `members`, `lead_agent_id` and `huddle`. `GET /api/threads?agent_id=` lists the chats an agent started and the huddles it's in. Posting a message returns the agent that answers first and the thread as it is now.
+
 ## Long conversations
 
 Every model call has to fit the agent's **context window**, and Ollama silently drops whatever doesn't. Agent HQ works out each agent's window and fits the conversation into it.
@@ -1212,7 +1234,7 @@ Removing an agent takes two deliberate steps on the **Settings → Agents** page
 
 Deleting an agent removes:
 
-- its conversations: messages, files, jobs, traces and model history
+- its conversations: messages, files, jobs, traces and model history, including huddles it started (it leaves the huddles it joined, which stay)
 - its schedules and event subscriptions
 - its own memories and skills, test cases, proposals, ratings, reflections, tool approvals and sub-agent requests
 - its avatar and any sub-agents it made
@@ -1322,7 +1344,7 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry Collector, for example `
 
 - **Phoenix's native span types.** The OpenInference span processor reshapes PydanticAI's spans into the agent, LLM and tool spans Phoenix understands, with inputs, outputs and token counts.
 - **One trace per conversation turn, across machines.** Each job carries the W3C `traceparent` of whatever queued it, through Valkey to the worker. A turn, its delegations on other workers and any background report all form one tree: `turn` → `invoke_agent` → `execute_tool delegate` → `task` → `invoke_agent` → `chat`.
-- **Sessions.** Every span inside a job has `session.id` set to the conversation ID, so Phoenix's **View Session** shows a whole conversation, every turn included. Job spans also carry agent, job ID, pool, worker and attempt, as attributes and as metadata.
+- **Sessions.** Every span inside a job has `session.id` set to the conversation ID, so Phoenix's **View Session** shows a whole conversation, every turn included. Job spans also carry agent, agent ID, job ID, pool, worker and attempt, as attributes and as metadata. In a huddle each agent's answer is its own `turn <agent>` span in the same session.
 - **No screenshots in traces.** Images sent to vision models are never recorded. `AHQ_TRACE_CONTENT=0` also leaves prompts and replies out.
 - **No HTTP noise.** FastAPI's own request tracing is turned off, so the UI's background polling doesn't bury agent traces.
 - **No MCP protocol noise.** The MCP Python SDK and FastMCP add their own spans for every tool listing and call (`MCP send tools/call …`, `server/discover`, `tools/list`). These have no OpenInference kind, so Phoenix shows them as *unknown*, and they repeat what the `execute_tool` span already shows: the tool's name, arguments and result. They're left out by default. Set `AHQ_TRACE_MCP=1` to keep them, labelled as tool or chain spans, when you're debugging an MCP server.
@@ -1338,6 +1360,7 @@ backend/app/
   models.py          all the tables: providers, agents, tools, threads, messages, jobs, skills,
                      reflections, feedback, profile suggestions, knowledge, eval cases and runs…
   runtime.py         builds agents from rows; turns; delegation; report-back; Stop
+  huddles.py         huddles: members, lead, @mentions, per-agent checkpoints, catch-up
   clock.py           the current date and time every agent is told (AHQ_TIMEZONE)
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: job streams, results, live-event log, locks, cooldowns, stop flags

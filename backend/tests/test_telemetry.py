@@ -210,3 +210,19 @@ async def test_a_scripts_tool_calls_are_child_spans_of_run_with_tools(hq, tmp_pa
     assert any(s in pool for s in children)  # same job, same trace
     restart = next(s for s in children if s.attributes["tool.name"] == "lab_restart_vm")
     assert "restarted" in restart.attributes["output.value"]
+
+
+async def test_huddle_turns_are_traced_per_agent_in_one_session(hq):
+    await hq.start_worker(name="m1", pools=["default", "gpu"])
+    duke = await hq.agent(name="Duke", model="fake:echo")
+    scarlett = await hq.agent(name="Scarlett", model="fake:echo", pool="gpu")
+    t = await hq.thread(duke["id"])
+    await hq.say(t["id"], "hello")
+    await hq.say(t["id"], "@Scarlett your view?")
+    await hq.wait_agent_replies(t["id"], 2)
+    turns = job_spans("turn", await settle(hq))
+    assert sorted(s.name for s in turns) == ["turn Duke", "turn Scarlett"]
+    assert {s.attributes["session.id"] for s in turns} == {t["id"]}
+    by_name = {s.name: s.attributes for s in turns}
+    assert by_name["turn Scarlett"]["agent_hq.agent_id"] == scarlett["id"]
+    assert by_name["turn Scarlett"]["agent_hq.pool"] == "gpu"

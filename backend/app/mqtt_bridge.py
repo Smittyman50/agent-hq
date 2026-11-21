@@ -183,7 +183,7 @@ async def route_event(rt: Runtime, topic: str, raw: bytes, source: str = "mqtt",
             log.info("subscription %s: fields not in the payload: %s", sub.name, ", ".join(missing))
         thread_id = ensure_thread(sub)
         job = await rt.enqueue_turn(
-            thread_id, prompt, from_user=False,
+            thread_id, prompt, from_user=False, agent_id=sub.agent_id,
             event_text=f"{label} {topic}: {payload[:500]}", kind=source, topic=topic,
             subscription=sub.name, **({"cautious": True} if cautious else {}))
         out.update(result="queued", job_id=job.id, thread_id=thread_id, missing=missing,

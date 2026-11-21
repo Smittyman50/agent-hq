@@ -4,7 +4,7 @@ import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback, attachmentUrl } from './api.service';
+import { AgentDef, Api, Attachment, DesktopState, HqEvent, Message, MessageFeedback, Thread, attachmentUrl, threadLead, threadMembers } from './api.service';
 import { FileView, Files, fileSize, isArchive, isViewable } from './files';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
@@ -35,9 +35,47 @@ const outputsClosedAt = new Map<string, number>();
              (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
       @if (threadId()) {
         <header class="conv-head">
-          <hq-avatar [agent]="agentById(thread()?.agent_id)" [size]="30" [active]="isActive(thread()?.agent_id)" />
-          <strong>{{ agentName(thread()?.agent_id) }}</strong>
-          @if (working()) { <span class="pill live">working…</span> }
+          @if (thread()?.huddle) {
+            <span class="huddle-members">
+              @for (id of members(); track id) {
+                <button type="button" class="member" [class.lead]="id === lead()" (click)="memberMenu.set(memberMenu() === id ? null : id)"
+                        [title]="agentName(id) + (id === lead() ? ' (lead: answers messages that mention nobody)' : '')">
+                  <hq-avatar [agent]="agentById(id)" [size]="28" [active]="isActive(id)" />
+                </button>
+                @if (memberMenu() === id) {
+                  <div class="backdrop" (click)="memberMenu.set(null)"></div>
+                  <div class="member-menu">
+                    <div class="menu-label">{{ agentName(id) }}{{ id === lead() ? ' · lead' : '' }}</div>
+                    <button class="menu-item" (click)="mention(id)">Mention in my message</button>
+                    @if (id !== lead()) { <button class="menu-item" (click)="makeLead(id)">Make lead</button> }
+                    @if (members().length > 1) { <button class="menu-item danger" (click)="removeMember(id)">Remove from huddle</button> }
+                  </div>
+                }
+              }
+            </span>
+            <strong>Huddle</strong>
+            <span class="muted huddle-lead">{{ agentName(lead()) }} leads</span>
+          } @else {
+            <hq-avatar [agent]="agentById(thread()?.agent_id)" [size]="30" [active]="isActive(thread()?.agent_id)" />
+            <strong>{{ agentName(thread()?.agent_id) }}</strong>
+          }
+          <span class="add-member">
+            <button type="button" class="icon-btn" (click)="addMenu.set(!addMenu())"
+                    [title]="thread()?.huddle ? 'Add an agent to this huddle' : 'Add an agent: this chat becomes a huddle'">
+              <hq-icon name="plus" [size]="15" /></button>
+            @if (addMenu()) {
+              <div class="backdrop" (click)="addMenu.set(false)"></div>
+              <div class="member-menu">
+                <div class="menu-label">Add to {{ thread()?.huddle ? 'huddle' : 'this chat (makes it a huddle)' }}</div>
+                @for (a of addable(); track a.id) {
+                  <button class="menu-item" (click)="addMember(a.id!)">
+                    <hq-avatar [agent]="a" [size]="22" /> <span>{{ a.name }}</span></button>
+                } @empty { <p class="hint">Every agent is already here.</p> }
+              </div>
+            }
+          </span>
+          @if (memberError()) { <span class="upload-note err">{{ memberError() }}</span> }
+          @if (working()) { <span class="pill live">{{ workingName() ? workingName() + ' is working…' : 'working…' }}</span> }
           <span class="spacer"></span>
           <button type="button" class="ghost outputs-toggle" [class.on]="showOutputs()" (click)="toggleOutputs()"
                   [title]="showOutputs() ? 'Hide the Outputs panel' : 'Show the files made in this chat'">
@@ -222,8 +260,20 @@ const outputsClosedAt = new Map<string, number>();
             <hq-icon name="paperclip" [size]="17" />
             <input type="file" multiple hidden (change)="pick($event)">
           </label>
-          <textarea name="draft" [(ngModel)]="draft" placeholder="Message…  (Enter to send, Shift+Enter for a new line)"
-            (keydown.enter)="onEnter($event)" (paste)="onPaste($event)"></textarea>
+          @if (mentionOptions().length) {
+            <div class="mention-menu" role="listbox">
+              @for (a of mentionOptions(); track a.id; let i = $index) {
+                <button type="button" class="menu-item" role="option" [class.on]="i === mentionIndex()"
+                        (mousedown)="$event.preventDefault(); pickMention(a)">
+                  <hq-avatar [agent]="a" [size]="20" /> <span>{{ a.name }}</span>
+                  @if (!isMember(a.id)) { <span class="muted">joins the huddle</span> }
+                </button>
+              }
+            </div>
+          }
+          <textarea #draftBox name="draft" [(ngModel)]="draft" [placeholder]="placeholder()"
+            (keydown)="onDraftKey($event)" (input)="onDraftInput()" (click)="onDraftInput()" (blur)="mentionAt.set(null)"
+            (paste)="onPaste($event)"></textarea>
           @if (working()) {
             <button type="button" class="danger stop" (click)="stop()" [disabled]="stopping()"
                     title="Stop this turn and everything it delegated">{{ stopping() ? 'Stopping…' : 'Stop' }}</button>
@@ -619,7 +669,7 @@ export class ChatPage implements OnInit, OnDestroy {
   /** Agents seen doing something in the last few seconds animate in "while working" mode. */
   isActive(id: string | null | undefined) {
     if (!id) return false;
-    if (this.busy() && this.thread()?.agent_id === id) return true;
+    if (this.busy() && (this.workingAgent() ?? this.thread()?.agent_id) === id) return true;
     return this.ws.isActive(id);
   }
 
@@ -653,7 +703,18 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'message_updated':  // e.g. a delegation thread going from working to done
         if (!replay) this.messages.update(ms => ms.map(m => m.id === ev['message'].id ? ev['message'] : m));
         break;
-      case 'status': if (!replay) this.busy.set(ev['state'] === 'thinking'); break;
+      case 'status':
+        if (!replay) {
+          this.busy.set(ev['state'] === 'thinking');
+          this.workingAgent.set(ev['state'] === 'thinking' ? ev['agent_id'] ?? null : null);
+        }
+        break;
+      case 'huddle':  // someone joined, left, or now leads
+        if (!replay) {
+          const t = this.thread();
+          if (t) this.ws.upsertThread({ ...t, members: ev['members'], lead_agent_id: ev['lead'], huddle: true });
+        }
+        break;
       case 'tool_call': this.log(ev, `${ev['agent']} → ${ev['tool']}(${JSON.stringify(ev['args'])})`, 'call'); break;
       case 'tool_result': this.log(ev, `${ev['agent']} ← ${ev['tool']}: ${ev['error'] ?? ev['preview']}`, ev['error'] ? 'err' : 'result'); break;
       case 'job_queued': {
@@ -702,6 +763,118 @@ export class ChatPage implements OnInit, OnDestroy {
     if (!k.shiftKey) { k.preventDefault(); this.send(); }
   }
 
+  // ---- huddles: several agents in one chat; @mention addresses one (app/huddles.py)
+  private draftBox = viewChild<ElementRef<HTMLTextAreaElement>>('draftBox');
+  members = computed(() => threadMembers(this.thread()));
+  lead = computed(() => threadLead(this.thread()));
+  isMember(id: string | null | undefined) { return !!id && this.members().includes(id); }
+  memberMenu = signal<string | null>(null);
+  addMenu = signal(false);
+  memberError = signal('');
+  /** The agent whose turn is running, from the live "thinking" status. */
+  workingAgent = signal<string | null>(null);
+  workingName = computed(() => this.thread()?.huddle && this.workingAgent() ? this.agentName(this.workingAgent()) : '');
+  addable = computed(() => this.ws.enabledAgents().filter(a => !this.isMember(a.id)));
+  placeholder = computed(() => this.thread()?.huddle
+    ? `Message the huddle… @name to address an agent; otherwise ${this.agentName(this.lead())} answers`
+    : 'Message…  (Enter to send, Shift+Enter for a new line, @name brings in another agent)');
+
+  private applyThread(t: Thread | undefined | null) {
+    if (t?.id) this.ws.upsertThread(t);
+  }
+
+  addMember(agentId: string) {
+    const id = this.threadId(); if (!id) return;
+    this.addMenu.set(false);
+    this.api.addMember(id, agentId).subscribe({
+      next: t => { this.memberError.set(''); this.applyThread(t); },
+      error: e => this.memberError.set(e.error?.detail ?? 'Could not add the agent'),
+    });
+  }
+
+  removeMember(agentId: string) {
+    const id = this.threadId(); if (!id) return;
+    this.memberMenu.set(null);
+    this.api.removeMember(id, agentId).subscribe({
+      next: t => { this.memberError.set(''); this.applyThread(t); },
+      error: e => this.memberError.set(e.error?.detail ?? 'Could not remove the agent'),
+    });
+  }
+
+  makeLead(agentId: string) {
+    const id = this.threadId(); if (!id) return;
+    this.memberMenu.set(null);
+    this.api.setLead(id, agentId).subscribe({
+      next: t => { this.memberError.set(''); this.applyThread(t); },
+      error: e => this.memberError.set(e.error?.detail ?? 'Could not change the lead'),
+    });
+  }
+
+  /** Put "@Name " in the message box. */
+  mention(agentId: string) {
+    this.memberMenu.set(null);
+    const name = this.agentName(agentId);
+    const sep = this.draft && !/\s$/.test(this.draft) ? ' ' : '';
+    this.draft = `${this.draft}${sep}@${name} `;
+    setTimeout(() => this.draftBox()?.nativeElement.focus());
+  }
+
+  /** Where the "@…" being typed starts, and what's typed after it (null: not typing one). */
+  mentionAt = signal<{ start: number; query: string } | null>(null);
+  mentionIndex = signal(0);
+  mentionOptions = computed<AgentDef[]>(() => {
+    const at = this.mentionAt();
+    if (!at) return [];
+    const q = at.query.toLowerCase().replace(/[\s_\-.]+/g, '');
+    const norm = (n: string) => n.toLowerCase().replace(/[\s_\-.]+/g, '');
+    const hits = this.ws.enabledAgents().filter(a => norm(a.name).startsWith(q));
+    // Members first, then the rest, each alphabetically.
+    return hits.sort((a, b) => Number(this.isMember(b.id)) - Number(this.isMember(a.id)) || a.name.localeCompare(b.name)).slice(0, 8);
+  });
+
+  onDraftInput() {
+    const box = this.draftBox()?.nativeElement;
+    if (!box) return;
+    const before = box.value.slice(0, box.selectionStart ?? box.value.length);
+    // An @ at the start or after a space, then up to two words of a name.
+    const m = /(?:^|[\s(])@([\w.\-]*(?: [\w.\-]*)?)$/.exec(before);
+    if (!m) { this.mentionAt.set(null); return; }
+    const prev = this.mentionAt();
+    this.mentionAt.set({ start: before.length - m[1].length - 1, query: m[1] });
+    if (!prev || prev.query !== m[1]) this.mentionIndex.set(0);
+  }
+
+  onDraftKey(e: KeyboardEvent) {
+    const opts = this.mentionOptions();
+    if (opts.length) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const n = opts.length;
+        this.mentionIndex.update(i => (i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n);
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault();
+        this.pickMention(opts[Math.min(this.mentionIndex(), opts.length - 1)]);
+        return;
+      }
+      if (e.key === 'Escape') { e.preventDefault(); this.mentionAt.set(null); return; }
+    }
+    if (e.key === 'Enter') this.onEnter(e);
+  }
+
+  pickMention(a: AgentDef) {
+    const at = this.mentionAt();
+    const box = this.draftBox()?.nativeElement;
+    if (!at || !box) return;
+    const end = box.selectionStart ?? this.draft.length;
+    const insert = `@${a.name} `;
+    this.draft = this.draft.slice(0, at.start) + insert + this.draft.slice(end).replace(/^ /, '');
+    this.mentionAt.set(null);
+    const caret = at.start + insert.length;
+    setTimeout(() => { box.value = this.draft; box.focus(); box.setSelectionRange(caret, caret); });
+  }
+
   send() {
     const id = this.threadId(); const text = this.draft.trim();
     const files = this.pending();
@@ -710,7 +883,9 @@ export class ChatPage implements OnInit, OnDestroy {
     this.pending.set([]);
     this.uploadError.set('');
     this.busy.set(true);
+    this.mentionAt.set(null);
     this.api.send(id, text, files.map(f => f.id)).subscribe({
+      next: r => this.applyThread(r?.thread),  // a mention may have made it a huddle
       error: e => {
         this.busy.set(false);
         this.draft = text;

@@ -96,7 +96,7 @@ async def release_control(agent_id: str, body: ControlIn, request: Request):
                           + " If work was waiting on that desktop, continue it now; delegate "
                             "again if needed. Otherwise acknowledge briefly.")
                 job = await rt.enqueue_turn(tid, prompt, from_user=False, event_text=msg,
-                                            kind="desktop_release")
+                                            agent_id=agent.id, kind="desktop_release")
                 woke.append({"queued_turn": job.id, "thread_id": tid})
         elif _thread_ok(body.thread_id):
             await rt.save_message(body.thread_id, Role.event, msg, kind="desktop_release",

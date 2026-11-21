@@ -1,7 +1,8 @@
 """Permanently deleting an agent, and everything that belongs only to it.
 
 Only a disabled agent can be deleted (disable first, then delete: two deliberate steps).
-What goes: its conversations (messages, files, jobs, traces and checkpoints), schedules,
+What goes: its conversations (messages, files, jobs, traces and checkpoints; huddles it
+started too, and it leaves the huddles it joined), schedules,
 event subscriptions, avatar, its own memories and skills, its proposals, test cases,
 feedback, reflections, tool approvals and sub-agent requests, and its sub-agents.
 What stays: the usage ledger (cost history), team memories and skills, and knowledge.
@@ -87,12 +88,19 @@ def _rm(s: Session, model, *where) -> None:
 
 
 def purge(s: Session, agent: AgentDef) -> list[str]:
-    """Delete the agent. Returns the deleted conversation IDs (their checkpoints are
-    removed separately, see forget_checkpoints). Raises PurgeRefused."""
+    """Delete the agent. Returns the checkpoint keys to drop: those of the conversations it
+    started (every member's, for a huddle) and its own in huddles it joined (it leaves
+    those; the huddle and the others' work stay). They're removed separately, see
+    forget_checkpoints. Raises PurgeRefused."""
     ids = _ids(s, agent)
     tids = list(s.exec(select(Thread.id).where(Thread.agent_id.in_(ids))).all())
     _check(s, agent, ids, tids)
     name = agent.name
+    from . import huddles
+
+    keys = [k for t in s.exec(select(Thread).where(Thread.id.in_(tids))).all()
+            for k in huddles.checkpoint_keys(t)]
+    keys += huddles.forget_agent(s, ids)
 
     # Board: goals go back to your backlog, unowned; actions it worked go back to Ready.
     for g in s.exec(select(WorkItem).where(WorkItem.owner_agent_id.in_(ids))).all():
@@ -176,11 +184,12 @@ def purge(s: Session, agent: AgentDef) -> list[str]:
     _rm(s, AgentDef, AgentDef.id.in_(ids))
     s.commit()
     log.info("deleted agent %s (%s) with %d conversations", name, agent.id, len(tids))
-    return tids
+    return keys
 
 
 async def forget_checkpoints(runtime, thread_ids: list[str]) -> None:
-    """Drop the model-level history LangGraph keeps for these conversations."""
+    """Drop the model-level history LangGraph keeps under these checkpoint keys (a
+    conversation's ID, or "<ID>:<agent>" for a huddle member, see huddles.checkpoint_key)."""
     if not thread_ids:
         return
     graph = getattr(runtime, "graph", None)

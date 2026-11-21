@@ -260,6 +260,26 @@ export interface Thread {
   id: string; agent_id: string; title: string; created_at: string;
   /** When you or the agent last said something (null: nothing since it was made). */
   updated_at?: string | null;
+  /** Agents in the conversation, in the order they joined (empty: just agent_id). */
+  members?: string[] | null;
+  /** Who answers a message that mentions nobody (null: agent_id). */
+  lead_agent_id?: string | null;
+  /** Several agents have been in it: it's listed under Huddles. */
+  huddle?: boolean;
+}
+
+/** Agents in a conversation, the one it started with first. */
+export function threadMembers(t: Thread | null | undefined): string[] {
+  if (!t) return [];
+  return t.members?.length ? t.members : [t.agent_id];
+}
+
+/** Who answers a message in the conversation that mentions nobody. */
+export function threadLead(t: Thread | null | undefined): string | null {
+  if (!t) return null;
+  const m = threadMembers(t);
+  if (t.lead_agent_id && m.includes(t.lead_agent_id)) return t.lead_agent_id;
+  return m.includes(t.agent_id) ? t.agent_id : m[0] ?? null;
 }
 
 export interface Message {
@@ -509,6 +529,8 @@ export interface ConversationSettings {
   compaction: boolean; trigger_ratio: number; keep_ratio: number; summary_max_tokens: number;
   reserve_tokens: number; local_window: number; cloud_window: number;
   provider_id: string | null; model: string; warn_overflow: boolean;
+  /** Huddles: turns agents may start by @mentioning each other, per message of yours. */
+  huddle_agent_turns: number;
 }
 export type ThinkingLevel = '' | 'off' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -931,9 +953,19 @@ export class Api {
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }
   deleteThread(id: string) { return this.http.delete<void>(`/api/threads/${id}`); }
+  addMember(threadId: string, agent_id: string) {
+    return this.http.post<Thread>(`/api/threads/${threadId}/members`, { agent_id });
+  }
+  removeMember(threadId: string, agentId: string) {
+    return this.http.delete<Thread>(`/api/threads/${threadId}/members/${agentId}`);
+  }
+  setLead(threadId: string, agent_id: string) {
+    return this.http.put<Thread>(`/api/threads/${threadId}/lead`, { agent_id });
+  }
   messages(threadId: string) { return this.http.get<Message[]>(`/api/threads/${threadId}/messages`); }
   send(threadId: string, content: string, attachmentIds: string[] = []) {
-    return this.http.post(`/api/threads/${threadId}/messages`, { content, attachment_ids: attachmentIds });
+    return this.http.post<{ accepted: boolean; job_id: string; agent_id: string; thread: Thread }>(
+      `/api/threads/${threadId}/messages`, { content, attachment_ids: attachmentIds });
   }
   uploadAttachments(threadId: string, files: File[]) {
     const form = new FormData();

@@ -710,3 +710,27 @@ button.output-main { background: transparent; border: 0; border-radius: 8px; tex
 .file-view-note { padding: 10px 12px; font-size: 12.5px; }
 .file-view-note.err { color: var(--bad); }
 .file-view-more { display: block; width: 100%; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: var(--panel); color: var(--accent); font-size: 12px; padding: 5px; }
+
+/* Huddles: several agents in one chat (sidebar section, chat header, @mentions) */
+.huddles-label { margin-top: 10px; padding-left: 10px; }
+.thread.huddle-row { margin-left: 4px; }
+.huddle-stack { display: inline-flex; flex: none; }
+.huddle-stack hq-avatar + hq-avatar { margin-left: -7px; }
+.huddle-stack hq-avatar .avatar { box-shadow: 0 0 0 2px var(--bg, #111); border-radius: 50%; }
+.huddle-stack.small hq-avatar + hq-avatar { margin-left: -12px; }
+.huddle-more { font-size: 11px; color: var(--muted); margin-left: 3px; align-self: center; }
+.huddle-more-toggle { margin-left: 8px; }
+.huddle-members { display: inline-flex; align-items: center; position: relative; }
+.huddle-members .member { padding: 0; border: 0; background: transparent; border-radius: 50%; cursor: pointer; }
+.huddle-members .member + .member { margin-left: -6px; }
+.huddle-members .member.lead { outline: 2px solid var(--accent, #4f8cff); outline-offset: 1px; z-index: 1; }
+.huddle-lead { font-size: 12px; }
+.add-member { position: relative; display: inline-flex; }
+.member-menu { position: absolute; z-index: 10; top: 110%; left: 0; width: 240px; max-height: 50vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.huddle-members .member-menu { top: 34px; }
+.member-menu .menu-item.danger { color: #e5534b; }
+.composer { position: relative; }
+.mention-menu { position: absolute; z-index: 10; bottom: 100%; left: 44px; width: 260px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; box-shadow: 0 -6px 24px rgba(0,0,0,.4); }
+.mention-menu .menu-item { padding: 5px 8px; gap: 8px; }
+.mention-menu .menu-item.on { background: var(--panel2); }
+.mention-menu .muted { margin-left: auto; font-size: 11px; }

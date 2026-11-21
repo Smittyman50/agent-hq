@@ -13,10 +13,10 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from .. import attachments
+from .. import attachments, huddles
 from ..config import settings
 from ..db import get_session
-from ..models import AgentDef, Job, Message, Thread
+from ..models import AgentDef, Job, Message, Role, Thread
 
 router = APIRouter(tags=["threads"])
 
@@ -24,6 +24,10 @@ router = APIRouter(tags=["threads"])
 class ThreadIn(BaseModel):
     agent_id: str
     title: str | None = None
+
+
+class MemberIn(BaseModel):
+    agent_id: str
 
 
 class MessageIn(BaseModel):
@@ -36,9 +40,10 @@ class MessageIn(BaseModel):
 def list_threads(agent_id: str | None = None, s: Session = Depends(get_session)):
     q = (select(Thread).where(Thread.deleted_at.is_(None))
          .order_by(func.coalesce(Thread.updated_at, Thread.created_at).desc()))
-    if agent_id:
-        q = q.where(Thread.agent_id == agent_id)
-    return s.exec(q).all()
+    rows = s.exec(q).all()
+    if agent_id:  # conversations it started, and huddles it's in
+        rows = [t for t in rows if t.agent_id == agent_id or huddles.is_member(t, agent_id)]
+    return rows
 
 
 @router.post("/api/threads", response_model=Thread, status_code=201)
@@ -88,9 +93,79 @@ async def post_message(thread_id: str, body: MessageIn, request: Request,
         raise HTTPException(422, str(e)) from None
     if any(a.message_id is not None or a.source != "user" for a in files):
         raise HTTPException(409, "a file was already sent; attach it again")
-    job = await request.app.state.runtime.enqueue_turn(thread_id, body.content,
-                                                       attachments=[a.id for a in files])
-    return {"accepted": True, "job_id": job.id, "pool": job.pool}
+    jobs = await request.app.state.runtime.enqueue_turns(thread_id, body.content,
+                                                         attachments=[a.id for a in files])
+    job = jobs[0]
+    return {"accepted": True, "job_id": job.id, "pool": job.pool,
+            "agent_id": job.assignee_agent_id, "thread": _fresh(thread_id)}
+
+
+def _fresh(thread_id: str) -> dict:
+    """The conversation as it is now (members may have changed), for the UI."""
+    from .. import db
+
+    with db.session() as s:
+        t = s.get(Thread, thread_id)
+        return t.model_dump(mode="json") if t else {}
+
+
+def _live(s: Session, thread_id: str) -> Thread:
+    t = s.get(Thread, thread_id)
+    if not t or t.deleted_at is not None:
+        raise HTTPException(404)
+    return t
+
+
+# ------------------------------------------------------------------ huddles
+
+
+@router.post("/api/threads/{thread_id}/members", response_model=Thread)
+async def add_member(thread_id: str, body: MemberIn, request: Request,
+                     s: Session = Depends(get_session)):
+    """Add an agent to the conversation; with a second agent it becomes a huddle."""
+    _live(s, thread_id)
+    try:
+        t, joined = huddles.add_member(thread_id, body.agent_id)
+    except huddles.HuddleError as e:
+        raise HTTPException(422, str(e)) from None
+    if joined:
+        await request.app.state.runtime.member_joined(t, body.agent_id)
+    return t
+
+
+@router.delete("/api/threads/{thread_id}/members/{agent_id}", response_model=Thread)
+async def remove_member(thread_id: str, agent_id: str, request: Request,
+                        s: Session = Depends(get_session)):
+    """Take an agent out of the conversation (it stays a huddle). Its work there stays."""
+    _live(s, thread_id)
+    try:
+        t = huddles.remove_member(thread_id, agent_id)
+    except huddles.HuddleError as e:
+        raise HTTPException(422, str(e)) from None
+    rt = request.app.state.runtime
+    agent = s.get(AgentDef, agent_id)
+    name = agent.name if agent else "An agent"
+    await rt.save_message(thread_id, Role.event, f"{name} left the huddle.", kind="huddle_leave",
+                          agent_id=agent_id)
+    await rt.broker.publish(thread_id, "huddle", members=huddles.members(t), lead=huddles.lead(t))
+    return t
+
+
+@router.put("/api/threads/{thread_id}/lead", response_model=Thread)
+async def set_lead(thread_id: str, body: MemberIn, request: Request,
+                   s: Session = Depends(get_session)):
+    """Choose who answers messages that mention nobody."""
+    _live(s, thread_id)
+    try:
+        t = huddles.set_lead(thread_id, body.agent_id)
+    except huddles.HuddleError as e:
+        raise HTTPException(422, str(e)) from None
+    rt = request.app.state.runtime
+    agent = s.get(AgentDef, body.agent_id)
+    await rt.save_message(thread_id, Role.event, f"{agent.name} leads the huddle now.",
+                          kind="huddle_lead", agent_id=agent.id)
+    await rt.broker.publish(thread_id, "huddle", members=huddles.members(t), lead=huddles.lead(t))
+    return t
 
 
 @router.post("/api/threads/{thread_id}/stop")

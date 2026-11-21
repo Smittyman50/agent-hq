@@ -56,6 +56,9 @@ DEFAULTS: dict[str, Any] = {
     "provider_id": None,         # summary model (none = the agent's own model)
     "model": "",
     "warn_overflow": True,
+    # Huddles (app/huddles.py): turns agents may set off by @mentioning each other after
+    # one message of yours (0 = agents' mentions don't start turns).
+    "huddle_agent_turns": 3,
 }
 
 SUMMARY_PREFIX = "[Summary of our earlier conversation, written to save space. It replaces the older messages.]\n"
@@ -75,7 +78,8 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     merged["trigger_ratio"] = min(0.95, max(0.3, float(merged["trigger_ratio"])))
     merged["keep_ratio"] = min(0.8, max(0.1, float(merged["keep_ratio"])))
     for k, lo, hi in (("summary_max_tokens", 200, 8000), ("reserve_tokens", 0, 32000),
-                      ("local_window", 1024, 1_048_576), ("cloud_window", 4096, 4_000_000)):
+                      ("local_window", 1024, 1_048_576), ("cloud_window", 4096, 4_000_000),
+                      ("huddle_agent_turns", 0, 10)):
         merged[k] = min(hi, max(lo, int(merged[k])))
     with db.session() as s:
         row = s.get(SystemSetting, "conversations") or SystemSetting(key="conversations")

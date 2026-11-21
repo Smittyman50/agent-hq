@@ -1009,6 +1009,7 @@ async def _queue_turn(rt, g: WorkItem) -> Job:
         s.commit()
         s.refresh(row)
     job = await rt.enqueue_turn(row.thread_id, card_prompt(row), from_user=False,
+                                agent_id=row.owner_agent_id,
                                 event_text=f"Goal turn {row.turns}: {row.title}",
                                 kind="goal", goal_id=row.id)
     with db.session() as s:

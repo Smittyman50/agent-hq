@@ -221,7 +221,7 @@ async def fire(rt, s: Schedule, *, trigger: str = "schedule", due: datetime | No
         note += f" (was due {aware(due).astimezone(zone(s.timezone)):%a %H:%M}; " \
                 "Agent HQ was offline then)"
     job = await rt.enqueue_turn(thread_id, _prompt(s, due if trigger == "schedule" else None),
-                                from_user=False, event_text=note, kind="schedule",
+                                from_user=False, agent_id=s.agent_id, event_text=note, kind="schedule",
                                 schedule_id=s.id, schedule=s.name, trigger=trigger)
     entry = {"at": now.isoformat(), "job_id": job.id, "trigger": trigger, "thread_id": thread_id}
     if late:

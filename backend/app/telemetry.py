@@ -146,6 +146,7 @@ def job_span(job, agent_name: str, worker: str):
     attrs = {
         "session.id": job.origin_thread_id,
         "agent_hq.agent": agent_name,
+        "agent_hq.agent_id": job.assignee_agent_id,
         "agent_hq.job_id": job.id,
         "agent_hq.job_kind": str(getattr(job.kind, "value", job.kind)),
         "agent_hq.pool": job.pool,

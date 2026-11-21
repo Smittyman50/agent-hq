@@ -622,10 +622,19 @@ class ToolApproval(SQLModel, table=True):
 
 
 class Thread(SQLModel, table=True):
-    """A conversation between you and one agent (the thread's owner)."""
+    """A conversation between you and one agent (the thread's owner), or a huddle: you and
+    several agents (app/huddles.py)."""
 
     id: str = Field(default_factory=_id, primary_key=True)
+    # The agent the conversation was started with. It never changes: its model-level
+    # history stays under the conversation's own checkpoint key.
     agent_id: str = Field(foreign_key="agentdef.id", index=True)
+    # Agents in the conversation, in the order they joined ([] = just agent_id).
+    members: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Who answers a message that mentions nobody (None = agent_id).
+    lead_agent_id: str | None = None
+    # Set once a second agent joins, and kept: a huddle stays a huddle in the sidebar.
+    huddle: bool = Field(default=False, index=True)
     title: str = "New conversation"
     created_at: datetime = Field(default_factory=_now)
     # When you or the agent last said something in it (None: nothing since it was made).

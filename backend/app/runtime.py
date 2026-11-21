@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import notifications, resources, speed, workitems
+from . import huddles, notifications, resources, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -1148,6 +1148,7 @@ class ObservedToolset(WrapperToolset):
 
 
 class TurnState(TypedDict, total=False):
+    thread_id: str  # the conversation (the checkpoint key differs for huddle members)
     agent_id: str
     prompt: str
     attachments: list[str]
@@ -1212,21 +1213,53 @@ class Runtime:
 
     async def enqueue_turn(self, thread_id: str, prompt: str, *, from_user: bool = True,
                            event_text: str | None = None, attachments: list[str] | None = None,
-                           **meta: Any) -> Job:
-        """Queue one turn of a conversation for its owner agent.
+                           agent_id: str | None = None, **meta: Any) -> Job:
+        """Queue one turn of a conversation; returns the first job (see enqueue_turns)."""
+        jobs = await self.enqueue_turns(thread_id, prompt, from_user=from_user,
+                                        event_text=event_text, attachments=attachments,
+                                        agent_id=agent_id, **meta)
+        return jobs[0]
+
+    async def enqueue_turns(self, thread_id: str, prompt: str, *, from_user: bool = True,
+                            event_text: str | None = None, attachments: list[str] | None = None,
+                            agent_id: str | None = None, **meta: Any) -> list[Job]:
+        """Queue a turn of a conversation.
+
+        Your message goes to the agents it @mentions (agents not in the conversation yet
+        join it, making it a huddle), else to the lead (app/huddles.py). Several mentions
+        answer one after another: this queues the first, and each finished turn queues the
+        next (meta["then"]), so every agent sees the replies before its own. Turns that
+        aren't from you (reports, decisions, events) go to `agent_id` if it's in the
+        conversation, else to the lead.
 
         `attachments`: IDs of files you uploaded to this conversation for this message.
+        Returns the queued job (a list, for the API; only the first is queued now).
         """
         with db.session() as s:
             thread = s.get(Thread, thread_id)
         if thread is None:
             raise LookupError(f"thread {thread_id} not found")
-        owner = load_agent(thread.agent_id)
+        targets: list[str] = []
+        if from_user:
+            for aid in huddles.mentions(prompt):
+                try:
+                    thread, joined = huddles.add_member(thread_id, aid)
+                except huddles.HuddleError:
+                    continue
+                if joined:
+                    await self.member_joined(thread, aid)
+                targets.append(aid)
+        elif huddles.is_member(thread, agent_id):
+            targets = [agent_id]
+        if not targets:
+            targets = [huddles.lead(thread)]
+        owner = load_agent(targets[0])
         files = att.in_thread(thread_id, attachments or [])
         if from_user:
             learning.user_said(thread_id, prompt)  # a correction? the last job gets a look
             extra = {"attachments": [att.summary(a) for a in files]} if files else {}
             msg = await self.save_message(thread_id, Role.user, prompt, **extra)
+            meta = {**meta, "message_id": msg.id}
             if files:
                 att.link([a.id for a in files], msg.id)
         elif event_text:
@@ -1236,10 +1269,72 @@ class Runtime:
             task = ((prompt.strip() or "(The user sent these files without a message.)")
                     + "\n\n" + att.manifest(files, sees_images=owner.sees_images))
             meta = {**meta, "attachments": [a.id for a in files]}
+        if len(targets) > 1:
+            meta = {**meta, "then": targets[1:], "prompt": prompt}
         job = Job(kind=JobKind.turn, origin_thread_id=thread_id, assignee_agent_id=owner.id,
                   task=task, depth=0, chain=[owner.id], pool=owner.pool,
                   meta={**meta, **({"event": event_text} if event_text else {})})
-        return await self._submit(job)
+        return [await self._submit(job)]
+
+    async def member_joined(self, thread: Thread, agent_id: str) -> None:
+        """Note in the transcript that an agent joined, and tell the sidebar."""
+        name = _agent_name(agent_id) or "An agent"
+        await self.save_message(thread.id, Role.event, f"{name} joined the huddle.",
+                                kind="huddle_join", agent_id=agent_id)
+        await self.broker.publish(thread.id, "huddle", members=huddles.members(thread),
+                                  lead=huddles.lead(thread))
+
+    async def _next_in_huddle(self, job: Job, reply: str | None) -> None:
+        """After a turn in a huddle: queue the next agent, if any. First the rest of the
+        agents you mentioned (meta["then"]), then members agents @mentioned in their replies
+        (meta["asked"]), within the conversations setting huddle_agent_turns: how many turns
+        agents may set off after one message of yours."""
+        meta = job.meta or {}
+        with db.session() as s:
+            thread = s.get(Thread, job.origin_thread_id)
+        if thread is None or thread.deleted_at is not None or not thread.huddle:
+            return
+        then = [a for a in meta.get("then") or [] if huddles.is_member(thread, a)]
+        asked = [x for x in meta.get("asked") or [] if huddles.is_member(thread, x[0])]
+        hops = int(meta.get("hops") or 0)
+        if reply:
+            limit = int(context.get_settings().get("huddle_agent_turns", 3))
+            here = [a for a in huddles.candidates() if huddles.is_member(thread, a.id)]
+            pending = set(then) | {x[0] for x in asked}
+            new = [a for a in huddles.mentions(reply, here)
+                   if a != job.assignee_agent_id and a not in pending]
+            room = max(0, limit - hops - len(asked))
+            me = _agent_name(job.assignee_agent_id)
+            asked += [[a, me] for a in new[:room]]
+            if new[room:]:
+                await self.save_message(
+                    thread.id, Role.event,
+                    f"{me} mentioned " + ", ".join(_agent_name(a) or "?" for a in new[room:])
+                    + f", but agents can take only {limit} turn(s) after a message of yours; "
+                    "mention them yourself to continue.", kind="huddle_limit")
+        keep = {k: v for k, v in meta.items()
+                if k in ("message_id", "attachments", "channel_id", "chat_id",
+                         "channel_message_id", "via", "prompt", "cautious")}
+        if then:
+            nxt = load_agent(then[0])
+            task = meta.get("prompt") or job.task
+            files = att.in_thread(thread.id, list(meta.get("attachments") or []))
+            if files:
+                task = ((task.strip() or "(The user sent these files without a message.)")
+                        + "\n\n" + att.manifest(files, sees_images=nxt.sees_images))
+            new_meta = {**keep, "then": then[1:], "asked": asked, "hops": hops}
+        elif asked:
+            (aid, by), asked = asked[0], asked[1:]
+            nxt = load_agent(aid)
+            task = (f"[{by} mentioned you in the huddle.] Read what {by} said in the catch-up "
+                    "above and answer it.")
+            keep.pop("attachments", None)
+            new_meta = {**keep, "asked": asked, "hops": hops + 1, "mentioned_by": by}
+        else:
+            return
+        nj = Job(kind=JobKind.turn, origin_thread_id=thread.id, assignee_agent_id=nxt.id,
+                 task=task, depth=0, chain=[nxt.id], pool=nxt.pool, meta=new_meta)
+        await self._submit(nj)
 
     async def _submit(self, job: Job) -> Job:
         job.trace_parent = job.trace_parent or current_traceparent()
@@ -1399,15 +1494,32 @@ class Runtime:
     # ------------------------------------------------------------ turns
 
     async def _node_run_agent(self, state: TurnState, config) -> TurnState:
-        thread_id = config["configurable"]["thread_id"]
+        # The checkpoint key is the conversation's ID, or "<ID>:<agent>" for a huddle
+        # member other than the one it started with (huddles.checkpoint_key).
+        thread_id = state.get("thread_id") or config["configurable"]["thread_id"]
         agent = load_agent(state["agent_id"])
         history = ModelMessagesTypeAdapter.validate_python(state.get("history") or [])
         job = load_job(state["job_id"]) if state.get("job_id") else None
         deps = RunDeps(thread_id=thread_id, agent_id=agent.id, depth=0, chain=[agent.id],
                        job_id=state.get("job_id"), attachment_ids=list(state.get("attachments") or []),
                        cautious=bool(job and (job.meta or {}).get("cautious")))
+        prompt = state["prompt"]
+        with db.session() as s:
+            thread = s.get(Thread, thread_id)
+        if thread is not None and thread.huddle:
+            # What the others said since this agent last spoke: read now, when the turn
+            # runs, so it includes the replies of the agents that answered before it.
+            try:
+                window, _ = await context.window_for(agent)
+            except Exception:
+                window = 8192
+            heard = huddles.catch_up(thread, agent.id,
+                                     exclude_message_id=(job.meta or {}).get("message_id") if job else None,
+                                     budget_chars=max(2000, int(window * 3.5 * 0.3)))
+            if heard:
+                prompt = heard + "\n\n" + prompt
         try:
-            reply, messages = await self.run_agent(agent, state["prompt"], deps, history=history)
+            reply, messages = await self.run_agent(agent, prompt, deps, history=history)
         finally:
             save_trace(deps.job_id, deps.trace)
         return {"reply": reply,
@@ -1424,11 +1536,15 @@ class Runtime:
         try:
             await self.broker.publish(thread_id, "status", state="thinking",
                                       agent_id=job.assignee_agent_id, job_id=job.id)
+            with db.session() as s:
+                thread = s.get(Thread, thread_id)
+            key = huddles.checkpoint_key(thread, job.assignee_agent_id) if thread else thread_id
             out = await self.graph.ainvoke(
                 # attachments always set: graph state carries over between turns otherwise
                 {"agent_id": job.assignee_agent_id, "prompt": job.task, "job_id": job.id,
-                 "attachments": list((job.meta or {}).get("attachments") or [])},
-                config={"configurable": {"thread_id": thread_id}})
+                 "attachments": list((job.meta or {}).get("attachments") or []),
+                 "thread_id": thread_id},
+                config={"configurable": {"thread_id": key}})
             reply = out["reply"]
             if await self._stop_pending(job.id):
                 # You pressed Stop while the reply was being written: a delegate stopped a
@@ -1446,6 +1562,7 @@ class Runtime:
             learning.job_finished(job.id, "done")
             if (job.meta or {}).get("kind") in ("mqtt", "webhook"):
                 await self._capture_event(job, reply)
+            await self._huddle_continue(job, reply)
         except Exception as e:
             log.exception("turn %s failed", job.id)
             await self.save_message(thread_id, Role.event, f"Error: {e}", kind="error")
@@ -1455,12 +1572,19 @@ class Runtime:
             update_job(job.id, status=JobStatus.failed, error=str(e), finished_at=_now())
             skills.finish_job(job.id, "failed")
             learning.job_finished(job.id, "failed")
+            await self._huddle_continue(job, None)  # the other agents you asked still answer
         finally:
             keeper.cancel()
             with contextlib.suppress(LockError):
                 await lock.release()
             await self.broker.publish(thread_id, "status", state="idle",
                                       agent_id=job.assignee_agent_id)
+
+    async def _huddle_continue(self, job: Job, reply: str | None) -> None:
+        try:
+            await self._next_in_huddle(job, reply)
+        except Exception:  # the reply is saved; a missing next turn mustn't fail this one
+            log.exception("huddle: couldn't queue the next turn after %s", job.id)
 
     @staticmethod
     async def _keep_lock(lock) -> None:
@@ -1555,6 +1679,7 @@ class Runtime:
         if load_job(job.id).background and not team:
             await self.enqueue_turn(job.origin_thread_id, self._report_prompt(job, assignee, result),
                                     from_user=False, report_for=job.id,
+                                    agent_id=(job.chain or [None])[0],
                                     **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
 
     @staticmethod
@@ -1580,6 +1705,13 @@ class Runtime:
         about_user = profile.context_for(agent)
         if about_user:
             instructions.append(about_user)
+        if thread_id and not as_worker:
+            with db.session() as s:
+                thread = s.get(Thread, thread_id)
+            if thread is not None and thread.huddle and huddles.is_member(thread, agent.id):
+                note = huddles.roster_note(agent, thread)
+                if note:
+                    instructions.append(note)
         roster = team_roster(agent)
         if roster:
             instructions.append(roster)
@@ -3427,7 +3559,7 @@ class Runtime:
                                 "agent": agent.name, "status": req.status, "grant": req.grant,
                                 "note": req.note, "thread_id": req.thread_id})
         await self.enqueue_turn(req.thread_id, self._decision_prompt(req, agent, thread, origin),
-                                from_user=False,
+                                from_user=False, agent_id=agent.id,
                                 event_text=f"You {req.status} {agent.name}'s sub-agent request"
                                 + (f": {req.note}" if req.note else "."),
                                 kind="subagent_decision", request_id=req.id)
@@ -3436,7 +3568,7 @@ class Runtime:
     @staticmethod
     def _decision_prompt(req: SubagentRequest, agent: AgentDef, thread: Thread | None,
                          origin: Job | None) -> str:
-        own = thread is not None and thread.agent_id == agent.id
+        own = thread is not None and huddles.is_member(thread, agent.id)
         note = f"\nThe user's note: {req.note}" if req.note else ""
         if req.status == "approved":
             g = req.grant or {}

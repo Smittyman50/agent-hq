@@ -7,7 +7,7 @@ import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Workspace } from './workspace';
 import { Session } from './session';
-import { Thread } from './api.service';
+import { Thread, threadMembers } from './api.service';
 
 /** The app shell: conversations in the sidebar, Settings at its foot. */
 @Component({
@@ -101,7 +101,47 @@ import { Thread } from './api.service';
             </div>
           }
         } @empty {
-          @if (!collapsed()) { <p class="hint">{{ query() ? 'No matches.' : 'No conversations yet.' }}</p> }
+          @if (!collapsed() && !huddles().length) { <p class="hint">{{ query() ? 'No matches.' : 'No conversations yet.' }}</p> }
+        }
+
+        @if (huddles().length) {
+          @if (!collapsed()) { <div class="side-label huddles-label">Huddles</div> }
+          @for (t of visibleHuddles(); track t.id) {
+            @if (collapsed()) {
+              <a class="thread" [routerLink]="['/chat', t.id]" routerLinkActive="on"
+                 [title]="'Huddle: ' + memberNames(t) + ' · ' + title(t)">
+                <span class="huddle-stack small">
+                  @for (id of members(t).slice(0, 2); track id) { <hq-avatar [agent]="ws.agent(id)" [size]="20" [active]="ws.isActive(id)" /> }
+                </span>
+              </a>
+            } @else if (confirming() === t.id) {
+              <div class="thread child confirm huddle-row">
+                <span class="row-text label"><span class="name">Delete this huddle?</span>
+                  <span class="sub">{{ title(t) }} · {{ ws.lastUpdated(t) | date:'MMM d, h:mm a' }}</span></span>
+                <button class="mini danger" (click)="remove(t.id)">Delete</button>
+                <button class="mini" (click)="confirming.set(null)">Cancel</button>
+              </div>
+            } @else {
+              <a class="thread child huddle-row" [routerLink]="['/chat', t.id]" routerLinkActive="on"
+                 [title]="memberNames(t) + ' · ' + title(t)">
+                <span class="huddle-stack">
+                  @for (id of members(t).slice(0, 3); track id) { <hq-avatar [agent]="ws.agent(id)" [size]="22" [active]="ws.isActive(id)" /> }
+                  @if (members(t).length > 3) { <span class="huddle-more">+{{ members(t).length - 3 }}</span> }
+                </span>
+                <span class="row-text label">
+                  <span class="name" [class.untitled]="isDefault(t)">{{ title(t) }}</span>
+                  <span class="sub">{{ memberNames(t) }} · {{ ws.lastUpdated(t) | date:'MMM d' }}</span>
+                </span>
+                <button class="icon-btn thread-del" title="Delete huddle"
+                        (click)="$event.preventDefault(); $event.stopPropagation(); confirming.set(t.id)">
+                  <hq-icon name="trash" [size]="14" /></button>
+              </a>
+            }
+          }
+          @if (!collapsed() && huddles().length > PAGE) {
+            <button class="more-toggle huddle-more-toggle" (click)="allHuddles.set(!allHuddles())">
+              {{ showingAllHuddles() ? 'Show less' : (huddles().length - PAGE) + ' more' }}</button>
+          }
         }
       </nav>
 
@@ -136,13 +176,29 @@ export class App {
     const q = this.query().trim().toLowerCase();
     if (!q) return this.ws.threads();
     return this.ws.threads().filter(t =>
-      `${this.ws.agentName(t.agent_id)} ${t.title}`.toLowerCase().includes(q));
+      `${this.memberNames(t)} ${t.title}`.toLowerCase().includes(q));
   });
 
-  /** Threads grouped by agent; groups ordered by their most recent chat. */
+  /** Conversations with several agents, newest first (their own sidebar section). */
+  huddles = computed(() => {
+    const at = (t: Thread) => Date.parse(this.ws.lastUpdated(t)) || 0;
+    return this.threads().filter(t => t.huddle).sort((a, b) => at(b) - at(a));
+  });
+  allHuddles = signal(false);
+  showingAllHuddles() {
+    if (this.query().trim() || this.allHuddles()) return true;
+    return this.huddles().findIndex(t => t.id === this.activeThreadId()) >= this.PAGE;
+  }
+  visibleHuddles() { return this.showingAllHuddles() ? this.huddles() : this.huddles().slice(0, this.PAGE); }
+
+  members(t: Thread) { return threadMembers(t); }
+  memberNames(t: Thread) { return this.members(t).map(id => this.ws.agentName(id)).join(', '); }
+
+  /** One-agent threads grouped by agent; groups ordered by their most recent chat. */
   groups = computed(() => {
     const by = new Map<string, Thread[]>();
     for (const t of this.threads()) {
+      if (t.huddle) continue;
       const list = by.get(t.agent_id) ?? [];
       list.push(t);
       by.set(t.agent_id, list);
@@ -166,7 +222,8 @@ export class App {
   activeThreadId = computed(() => /^\/chat\/([^/?#]+)/.exec(this.url())?.[1] ?? null);
   activeAgentId = computed(() => {
     const id = this.activeThreadId();
-    return id ? this.ws.threads().find(t => t.id === id)?.agent_id ?? null : null;
+    const t = id ? this.ws.threads().find(x => x.id === id) : null;
+    return t && !t.huddle ? t.agent_id : null;  // huddles aren't in an agent's group
   });
 
   /** Agents whose chat lists are expanded (remembered across reloads). */

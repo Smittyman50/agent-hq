@@ -59,6 +59,11 @@ import { ModelPicker } from './model-picker';
         instructions alone don't fit its window</label>
       <p class="hint inline-hint">Ollama's window is set on the server (OLLAMA_CONTEXT_LENGTH, or num_ctx in a Modelfile;
         otherwise 4K, 32K or 256K depending on GPU memory). Agent HQ can't change it per request, only fit into it.</p>
+      <label class="narrow">Huddles: turns agents may start per message of yours <small>0–10</small>
+        <input type="number" min="0" max="10" [(ngModel)]="c.huddle_agent_turns"></label>
+      <p class="hint inline-hint">In a huddle an agent can @mention another member to hand them the question (say, to
+        check its work); that member answers next. This caps how many such turns follow one message of yours, so two agents
+        can't keep passing the floor back and forth. 0 means agents' mentions start nothing.</p>
       <div class="actions"><button type="button" (click)="saveConv()">Save</button> @if (convNote()) { <span class="hint">{{ convNote() }}</span> }</div>
     }
 
