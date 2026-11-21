@@ -734,3 +734,4 @@ button.output-main { background: transparent; border: 0; border-radius: 8px; tex
 .mention-menu .menu-item { padding: 5px 8px; gap: 8px; }
 .mention-menu .menu-item.on { background: var(--panel2); }
 .mention-menu .muted { margin-left: auto; font-size: 11px; }
+.who .finding-for { font-size: 11px; margin-left: 2px; }

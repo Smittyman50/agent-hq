@@ -197,3 +197,11 @@ async def test_an_agents_request_limit_replaces_the_default(hq):
     assert await hq.wait_agent_replies(t["id"], 1, timeout=30) == ["answered by the fallback model"]
     switched = [m.content for m in hq.messages(t["id"]) if (m.meta or {}).get("kind") == "model_fallback"]
     assert switched and "request_limit of 7" in switched[0]
+
+
+def test_truncated_nudge_asks_for_the_whole_answer_again():
+    # Regression (2026-11-21): a delegate cut off mid-report kept the cut-off text in view,
+    # wrote only the missing tail on the retry, and its first findings never reached anyone.
+    assert "thrown away" in TRUNCATED_NUDGE
+    assert "from the beginning" in TRUNCATED_NUDGE
+    assert "don't continue where it stopped" in TRUNCATED_NUDGE

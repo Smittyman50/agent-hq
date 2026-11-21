@@ -180,7 +180,8 @@ const outputsClosedAt = new Map<string, number>();
             } @else {
             <div class="msg {{ m.role }}" [id]="'msg-' + m.id">
               @if (m.role === 'agent') {
-                <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}</div>
+                <div class="who"><hq-avatar [agent]="agentById(m.agent_id)" [size]="24" [active]="isActive(m.agent_id)" /> {{ agentName(m.agent_id) }}
+                  @if (m.meta?.['kind'] === 'huddle_finding') { <span class="muted finding-for">· findings for {{ m.meta?.['requester'] ?? 'the huddle' }}</span> }</div>
               } @else if (m.role === 'event') { <div class="who">activity</div> }
               @if (m.role === 'agent') {
                 <div class="body rich"><hq-md [text]="m.content" /></div>

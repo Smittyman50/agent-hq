@@ -422,10 +422,16 @@ CONTINUE_NUDGE = (
     "You said what you are going to do but made no tool call, so none of it has happened and "
     "the turn would end here. Do the work now by calling your tools. Reply in text only when "
     "it is finished, you are blocked, or you need the user to answer a question.")
+# The cut-off reply stays in the history the model sees on the retry. Told only to be
+# "shorter", models took it as already delivered and wrote just the rest: a delegate's
+# WorkResult then held only its last sections, and the first ones were lost.
 TRUNCATED_NUDGE = (
-    "Your reply was cut off: it reached the output limit for one response. Think less and "
-    "take the next step now with a tool call, or give a shorter answer. Write big files in "
-    "parts (one file per module, or append) rather than all at once.")
+    "Your reply was cut off: it hit the length limit for one response (your output limit, or "
+    "the end of your context window). That reply has been thrown away and nobody will see any "
+    "of it, so don't continue where it stopped. Think less, then either take the next step now "
+    "with a tool call, or write your whole answer again from the beginning, shorter: keep every "
+    "finding and its source, drop the rest. Write big files in parts (one file per module, or "
+    "append) rather than all at once.")
 MAX_CONTINUE_NUDGES = 2  # under the agent's output retries (3), so a stubborn model still answers
 
 
@@ -962,9 +968,12 @@ def trim_old_tool_results(messages: list[ModelMessage], window: int | None = Non
     return out
 
 
-def attributed(name: str, result: dict, pronouns: str = "") -> dict:
-    """A delegate's result, labelled so the delegator relays it as theirs, not its own."""
+def attributed(name: str, result: dict, pronouns: str = "", *, posted: bool = False) -> dict:
+    """A delegate's result, labelled so the delegator relays it as theirs, not its own.
+    `posted`: the delegate already posted it in the huddle under its own name."""
     refer = f" Refer to {name} as {pronouns.strip()}." if pronouns.strip() else ""
+    if posted:
+        return {"from": name, **result, "note": huddles.posted_note(name) + refer}
     return {"from": name, **result,
             "note": f"This is {name}'s report to you, not your own work. Tell whoever asked "
                     f"you that you delegated this to {name} and what {name} reported.{refer}"}
@@ -1671,6 +1680,8 @@ class Runtime:
                 requester=requester.name if requester else None, assignee=assignee.name,
                 background=job.background, depth=job.depth,
                 started_at=job.created_at.isoformat() if job.created_at else None)
+        if (job.meta or {}).get("huddle") and not team:
+            await self._post_finding(job, assignee, result)
         await self._capture_delegation(job, assignee, result)
         if assignee.is_subagent:
             subagents.retire(assignee.id)  # one task each; frees the slot for the next
@@ -1684,8 +1695,50 @@ class Runtime:
                                     agent_id=(job.chain or [None])[0],
                                     **({"cautious": True} if (job.meta or {}).get("cautious") else {}))
 
+    async def _join_for_delegation(self, deps: RunDeps, me: AgentDef, target: AgentDef) -> bool:
+        """Delegating from a huddle's chat (not from inside another task) to a full agent:
+        it joins the huddle. Returns whether its findings should be posted there."""
+        if deps.depth != 0 or target.is_subagent or me.is_subagent:
+            return False
+        with db.session() as s:
+            thread = s.get(Thread, deps.thread_id)
+        if thread is None or not thread.huddle or not huddles.is_member(thread, me.id):
+            return False
+        try:
+            thread, joined = huddles.add_member(thread.id, target.id)
+        except huddles.HuddleError:
+            return False
+        if joined:
+            await self.member_joined(thread, target.id)
+        return True
+
+    async def _post_finding(self, job: Job, assignee: AgentDef, result: WorkResult) -> None:
+        """A delegate in a huddle posts what it found as its own message."""
+        if result.summary == self.STOPPED:
+            return
+        requester = load_agent(job.requester_agent_id) if job.requester_agent_id else None
+        body = result.summary.strip()
+        if result.details.strip():
+            body += "\n\n" + result.details.strip()
+        if result.status == "failed":
+            body = "I couldn't finish this. " + body
+        elif result.status == "partial":
+            body = "I got partway. " + body
+        await self.save_message(job.origin_thread_id, Role.agent, body, agent_id=assignee.id,
+                                job_id=job.id, kind="huddle_finding", status=result.status,
+                                requester_id=requester.id if requester else None,
+                                requester=requester.name if requester else None)
+
     @staticmethod
     def _report_prompt(job: Job, assignee: AgentDef, result: WorkResult) -> str:
+        if (job.meta or {}).get("huddle"):
+            return (f"[Background job {job.id} finished]\n"
+                    f"{assignee.name} was asked: {job.task}\n"
+                    f"Result: {result.model_dump_json()}\n\n"
+                    + (f"({assignee.name}'s pronouns: {assignee.pronouns.strip()})\n"
+                       if assignee.pronouns.strip() else "")
+                    + huddles.posted_note(assignee.name)
+                    + " Do not start new work unless the result requires it.")
         return (f"[Background job {job.id} finished]\n"
                 f"{assignee.name} was asked: {job.task}\n"
                 f"Result: {result.model_dump_json()}\n\n"
@@ -2797,6 +2850,9 @@ class Runtime:
                 return {"status": "failed", "summary": f"{e}. See list_attachments for the IDs."}
             full_task = task + ("\n\n" + att.manifest(given, sees_images=target.sees_images,
                                                       heading="Files for this task") if given else "")
+            # In a huddle, an agent you delegate to from the chat joins it and posts what it
+            # found under its own name (app/huddles.py). Sub-agents stay in the background.
+            in_huddle = await rt._join_for_delegation(ctx.deps, me, target)
 
             job = Job(
                 kind=JobKind.task, origin_thread_id=ctx.deps.thread_id, requester_agent_id=me.id,
@@ -2804,7 +2860,8 @@ class Runtime:
                 background=background, depth=ctx.deps.depth + 1,
                 chain=[*ctx.deps.chain, target.id], pool=target.pool,
                 meta={**({"attachments": [a.id for a in given]} if given else {}),
-                      **({"cautious": True} if ctx.deps.cautious else {})})
+                      **({"cautious": True} if ctx.deps.cautious else {}),
+                      **({"huddle": True} if in_huddle else {})})
             # Show the exchange in the conversation right away; it's updated in place as the
             # task starts and finishes. Created before queueing, so a fast worker can't win.
             msg = await rt.save_message(
@@ -2818,20 +2875,22 @@ class Runtime:
             if background:
                 return {"status": "queued", "job_id": job.id,
                         "summary": f"{target.name} is working on it in the background. You will "
-                        "be woken in this conversation with the result. Tell the user it is underway."}
+                        "be woken in this conversation with the result. Tell the user it is underway."
+                        + (f" {target.name} will post the findings in the huddle." if in_huddle else "")}
 
             async with released_slot():
                 result = await rt.broker.wait_result(job.id, settings.delegate_wait_timeout)
             if result is not None:
-                return attributed(target.name, result, target.pronouns)
+                return attributed(target.name, result, target.pronouns, posted=in_huddle)
             # Taking too long: convert to a background job so the result still gets reported.
             job = update_job(job.id, background=True)
             if job.status in (JobStatus.done, JobStatus.failed) and job.result:
-                return attributed(target.name, job.result, target.pronouns)
+                return attributed(target.name, job.result, target.pronouns, posted=in_huddle)
             return {"status": "queued", "job_id": job.id,
                     "summary": f"{target.name} is still working after "
                     f"{int(settings.delegate_wait_timeout)}s. It now runs in the background; you "
-                    "will be woken in this conversation with the result. Tell the user."}
+                    "will be woken in this conversation with the result. Tell the user."
+                    + (f" {target.name} will post the findings in the huddle." if in_huddle else "")}
 
         async def job_status(ctx: RunContext[RunDeps], job_id: str) -> dict:
             """Check on a background job started in this conversation."""

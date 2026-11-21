@@ -289,3 +289,79 @@ async def test_an_agent_addressing_a_member_by_name_hands_off(hq):
     assert _agents_replying(hq, t["id"]) == [asker["id"], duke["id"]]
     assert "Hi-Tech mentioned you" in SEEN["duke"][0]["prompt"]
     assert "@Duke, can you check this?" in SEEN["asker"][0]["instructions"]
+
+
+# --------------------------------------------------------------------------- delegation
+
+
+def _recording_boss(background: bool):
+    from .conftest import _tool_returns, boss
+    inner = boss(background)
+
+    def fn(messages, info):
+        prompt = _last_prompt(messages)
+        SEEN.setdefault("boss", []).append({
+            "prompt": prompt, "returns": [r.content for r in _tool_returns(messages)]})
+        if "[Background job" in prompt:  # after the huddle catch-up, so not at the start
+            return ModelResponse(parts=[TextPart("Update: see Scarlett's findings above.")])
+        return inner(messages, info)
+    return fn
+
+
+SCRIPTS.update({"h-boss": _recording_boss(False), "h-boss-bg": _recording_boss(True)})
+
+
+async def test_delegating_from_a_huddle_brings_the_delegate_in(hq):
+    await hq.start_worker(concurrency=4)
+    SEEN.clear()
+    scarlett = await hq.agent(name="Scarlett", model="fake:worker")
+    duke = await hq.agent(name="Duke", model="fake:h-boss", delegates=[scarlett["id"]])
+    hitech = await hq.agent(name="Hi-Tech", model="fake:h-snake")
+    t = await hq.thread(hitech["id"])
+    await hq.http.post(f"/api/threads/{t['id']}/members", json={"agent_id": duke["id"]})
+    await hq.say(t["id"], "@Duke check the market claims")
+    await hq.wait_agent_replies(t["id"], 2)
+    msgs = hq.messages(t["id"])
+    agent_msgs = [m for m in msgs if m.role == Role.agent]
+    # Scarlett joined, posted her findings under her own name, then Duke answered.
+    assert [m.agent_id for m in agent_msgs] == [scarlett["id"], duke["id"]]
+    finding = agent_msgs[0]
+    assert finding.meta["kind"] == "huddle_finding" and finding.meta["requester"] == "Duke"
+    assert finding.content.startswith("Worker finished") and "Please handle" in finding.content
+    assert huddles.members(_thread(t["id"])) == [hitech["id"], duke["id"], scarlett["id"]]
+    assert "Scarlett joined the huddle." in [m.content for m in msgs if m.role == Role.event]
+    # Duke is told she already posted it: credit her, don't repeat it.
+    note = SEEN["boss"][-1]["returns"][-1]["note"]
+    assert "already posted these findings" in note and "Scarlett" in note
+    # Scarlett's own findings aren't in her model history, so her next turn hears them.
+    heard = huddles.catch_up(_thread(t["id"]), scarlett["id"])
+    assert "You (findings you posted from a task Duke delegated to you): Worker finished" in heard
+
+
+async def test_background_delegation_in_a_huddle_reports_without_repeating(hq):
+    await hq.start_worker(concurrency=4)
+    SEEN.clear()
+    scarlett = await hq.agent(name="Scarlett", model="fake:worker")
+    duke = await hq.agent(name="Duke", model="fake:h-boss-bg", delegates=[scarlett["id"]])
+    hitech = await hq.agent(name="Hi-Tech", model="fake:h-snake")
+    t = await hq.thread(hitech["id"])
+    await hq.http.post(f"/api/threads/{t['id']}/members", json={"agent_id": duke["id"]})
+    await hq.say(t["id"], "@Duke look into it")
+    # Duke's first reply, Scarlett's findings, Duke's report turn.
+    await hq.wait_agent_replies(t["id"], 3)
+    who = [m.agent_id for m in hq.messages(t["id"]) if m.role == Role.agent]
+    assert who.count(scarlett["id"]) == 1 and who[-1] == duke["id"]
+    report = [x["prompt"] for x in SEEN["boss"] if "[Background job" in x["prompt"]]
+    assert report and "already posted these findings" in report[0]
+
+
+async def test_delegating_outside_a_huddle_stays_in_the_background(hq):
+    await hq.start_worker(concurrency=4)
+    scarlett = await hq.agent(name="Scarlett", model="fake:worker")
+    duke = await hq.agent(name="Duke", model="fake:boss", delegates=[scarlett["id"]])
+    t = await hq.thread(duke["id"])
+    await hq.say(t["id"], "check it")
+    await hq.wait_agent_replies(t["id"], 1)
+    th = _thread(t["id"])
+    assert not th.huddle and huddles.members(th) == [duke["id"]]
+    assert [m.agent_id for m in hq.messages(t["id"]) if m.role == Role.agent] == [duke["id"]]

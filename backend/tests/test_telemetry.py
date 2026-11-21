@@ -214,8 +214,12 @@ async def test_a_scripts_tool_calls_are_child_spans_of_run_with_tools(hq, tmp_pa
 
 async def test_huddle_turns_are_traced_per_agent_in_one_session(hq):
     await hq.start_worker(name="m1", pools=["default", "gpu"])
-    duke = await hq.agent(name="Duke", model="fake:echo")
-    scarlett = await hq.agent(name="Scarlett", model="fake:echo", pool="gpu")
+    # Plain replies: an echo would repeat the huddle catch-up, mentions included.
+    from .conftest import SCRIPTS
+    from pydantic_ai import ModelResponse, TextPart
+    SCRIPTS["plain"] = lambda messages, info: ModelResponse(parts=[TextPart("Noted.")])
+    duke = await hq.agent(name="Duke", model="fake:plain")
+    scarlett = await hq.agent(name="Scarlett", model="fake:plain", pool="gpu")
     t = await hq.thread(duke["id"])
     await hq.say(t["id"], "hello")
     await hq.say(t["id"], "@Scarlett your view?")

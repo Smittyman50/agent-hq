@@ -258,7 +258,9 @@ def roster_note(agent: AgentDef, thread: Thread) -> str:
             "said. To hand a question to another agent here, @mention them in your reply, "
             f"with the @ sign: write @Name (for example \"@{example}, can you check this?\"), not "
             "just the name. They answer next; without the @ they may never see it. Only "
-            "mention someone when you want them to respond. Delegating works as usual.")
+            "mention someone when you want them to respond. Delegating works as usual, except "
+            "that an agent you delegate to joins the huddle and posts its findings itself "
+            "under its own name.")
 
 
 def catch_up(thread: Thread, agent_id: str, *, exclude_message_id: str | None = None,
@@ -268,9 +270,12 @@ def catch_up(thread: Thread, agent_id: str, *, exclude_message_id: str | None = 
     trimmed from the oldest end to `budget_chars`."""
     names = _names()
     with db.session() as s:
-        mine = s.exec(select(Message.created_at).where(
+        # Its last reply in a turn of its own (findings it posted from a delegated task
+        # aren't in its model history, so they still count as news for it).
+        mine = next((m.created_at for m in s.exec(select(Message).where(
             Message.thread_id == thread.id, Message.role == Role.agent,
-            Message.agent_id == agent_id).order_by(Message.created_at.desc())).first()
+            Message.agent_id == agent_id).order_by(Message.created_at.desc())).all()
+            if (m.meta or {}).get("kind") != "huddle_finding"), None)
         q = select(Message).where(Message.thread_id == thread.id,
                                   Message.role.in_([Role.user, Role.agent]))
         if mine is not None:
@@ -280,9 +285,14 @@ def catch_up(thread: Thread, agent_id: str, *, exclude_message_id: str | None = 
     for m in rows:
         if m.id == exclude_message_id:
             continue
-        if m.role == Role.agent and m.agent_id == agent_id:
+        finding = (m.meta or {}).get("kind") == "huddle_finding"
+        if m.role == Role.agent and m.agent_id == agent_id and not finding:
             continue
-        who = "The user" if m.role == Role.user else names.get(m.agent_id or "", "An agent")
+        if m.role == Role.agent and m.agent_id == agent_id:
+            who = ("You (findings you posted from a task "
+                   f"{(m.meta or {}).get('requester') or 'another agent'} delegated to you)")
+        else:
+            who = "The user" if m.role == Role.user else names.get(m.agent_id or "", "An agent")
         text = (m.content or "").strip()
         if (m.meta or {}).get("attachments"):
             text += f" [attached {len(m.meta['attachments'])} file(s)]"
@@ -302,6 +312,14 @@ def catch_up(thread: Thread, agent_id: str, *, exclude_message_id: str | None = 
         body.append(line)
         size += len(line) + 1
     return head + "\n" + "\n\n".join(reversed(body)) + "\n[End of huddle catch-up]"
+
+
+def posted_note(name: str) -> str:
+    """For a delegator in a huddle, whose delegate posted its own findings."""
+    return (f"{name} has already posted these findings in the huddle under their own name, "
+            "and the user has read them. This is their work, not yours: don't repeat or "
+            f"restate it. Briefly credit {name} if you refer to it, then add only your own "
+            "view, conclusions or next steps.")
 
 
 def addressed_note(agent: AgentDef, by: str | None) -> str:
