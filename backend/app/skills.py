@@ -19,6 +19,11 @@ How agents use them:
 
 Skills are instructions, so they never grant tools: approvals still apply to every call
 a skill leads to.
+
+Skills use the Agent Skills format (SKILL.md, agentskills.io) for import and export, and may
+carry files (scripts/, references/, assets/) that agents read with `read_skill_file`; see
+app/skills_io.py. Upkeep (usage, staleness, the scheduled review, archiving) is in
+app/skill_upkeep.py.
 """
 
 from __future__ import annotations
@@ -49,8 +54,15 @@ PROPOSE_RULES = """- When you work out how to do something that will come up aga
   `revise`. Don't propose one-off facts (those are memories) or trivial steps."""
 
 
+ARCHIVED = ("archived", "retired")  # "retired" is what older rows say
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def status_of(k: Skill) -> str:
+    return "archived" if k.status in ARCHIVED else k.status
 
 
 def mode_of(agent: AgentDef) -> LearningMode:
@@ -200,31 +212,40 @@ def check_fields(name: str, title: str, when_to_use: str, body: str) -> str | No
 
 def create(*, name: str, title: str, when_to_use: str, body: str, tools: list[str] | None = None,
            script: str | None = None, scope: str = "team", agent_id: str | None = None,
-           created_by: str = "", note: str = "") -> Skill:
+           created_by: str = "", note: str = "", files: list[dict] | None = None,
+           frontmatter: dict | None = None, origin: str = "") -> Skill:
     k = Skill(name=name, title=title.strip(), when_to_use=when_to_use.strip(), body=body.strip(),
               tools=list(tools or []), script=(script or None), scope=scope,
-              agent_id=agent_id if scope == "agent" else None, created_by=created_by)
+              agent_id=agent_id if scope == "agent" else None, created_by=created_by,
+              files=list(files or []), frontmatter=dict(frontmatter or {}), origin=origin)
     with db.session() as s:
         s.add(k)
         s.add(SkillVersion(skill_id=k.id, version=1, title=k.title, when_to_use=k.when_to_use,
-                           body=k.body, tools=k.tools, script=k.script, created_by=created_by,
-                           note=note or "created"))
+                           body=k.body, tools=k.tools, script=k.script, files=k.files,
+                           frontmatter=k.frontmatter, created_by=created_by, note=note or "created"))
         s.commit()
         s.refresh(k)
     return k
 
 
 def revise(skill_id: str, *, title: str, when_to_use: str, body: str, tools: list[str] | None,
-           script: str | None, created_by: str, note: str = "") -> Skill:
+           script: str | None, created_by: str, note: str = "", files: list[dict] | None = None,
+           frontmatter: dict | None = None) -> Skill:
+    """A new version. Files and frontmatter left as None stay as they are."""
     with db.session() as s:
         k = s.get(Skill, skill_id)
         k.version += 1
         k.title, k.when_to_use, k.body = title.strip(), when_to_use.strip(), body.strip()
         k.tools, k.script, k.updated_at = list(tools or []), (script or None), _now()
+        if files is not None:
+            k.files = list(files)
+        if frontmatter is not None:
+            k.frontmatter = dict(frontmatter)
         s.add(k)
         s.add(SkillVersion(skill_id=k.id, version=k.version, title=k.title,
                            when_to_use=k.when_to_use, body=k.body, tools=k.tools,
-                           script=k.script, created_by=created_by, note=note))
+                           script=k.script, files=list(k.files or []),
+                           frontmatter=dict(k.frontmatter or {}), created_by=created_by, note=note))
         s.commit()
         s.refresh(k)
     return k
@@ -237,7 +258,34 @@ def rollback(skill_id: str, version: int, by: str) -> Skill:
     if v is None:
         raise LookupError("no such version")
     return revise(skill_id, title=v.title, when_to_use=v.when_to_use, body=v.body, tools=v.tools,
-                  script=v.script, created_by=by, note=f"rolled back to version {version}")
+                  script=v.script, created_by=by, note=f"rolled back to version {version}",
+                  files=list(v.files or []), frontmatter=dict(v.frontmatter or {}))
+
+
+def archive(skill_id: str, *, reason: str = "", by: str = "") -> Skill:
+    """Agents stop seeing it; its history and usage are kept, and `restore` brings it back."""
+    with db.session() as s:
+        k = s.get(Skill, skill_id)
+        if k is None:
+            raise LookupError("no such skill")
+        k.status, k.archived_at = "archived", _now()
+        k.archived_reason = (reason or (f"archived by {by}" if by else "")).strip()[:1000]
+        s.add(k)
+        s.commit()
+        s.refresh(k)
+    return k
+
+
+def restore(skill_id: str) -> Skill:
+    with db.session() as s:
+        k = s.get(Skill, skill_id)
+        if k is None:
+            raise LookupError("no such skill")
+        k.status, k.archived_at, k.archived_reason = "active", None, ""
+        s.add(k)
+        s.commit()
+        s.refresh(k)
+    return k
 
 
 def diff(old: str, new: str) -> str:
@@ -246,18 +294,63 @@ def diff(old: str, new: str) -> str:
 
 
 def apply_proposal(p: SkillProposal, by: str) -> Skill:
-    """Turn a proposal into a new skill or a new version of one."""
-    note = f"proposed by {p.agent_name}: {p.reason}".strip()[:500]
+    """Carry out a proposal: a new skill or a new version of one, archiving a skill, or
+    merging skills into one (a new version of the kept skill; the others are archived)."""
+    who = f"imported from {p.origin}" if p.source == "import" and p.origin else f"proposed by {p.agent_name}"
+    note = f"{who}: {p.reason}".strip()[:500]
+    if p.action == "archive":
+        return archive(p.skill_id, reason=f"{p.agent_name}: {p.reason}".strip(), by=by)
+    files = list(p.files or []) if p.source == "import" or p.files else None
+    frontmatter = dict(p.frontmatter or {}) if p.source == "import" or p.frontmatter else None
     if p.skill_id:
-        return revise(p.skill_id, title=p.title, when_to_use=p.when_to_use, body=p.body,
-                      tools=p.tools, script=p.script, created_by=by, note=note)
-    if find(p.name) is not None:
-        raise ValueError(f"a skill named {p.name} already exists")
-    return create(name=p.name, title=p.title, when_to_use=p.when_to_use, body=p.body, tools=p.tools,
-                  script=p.script, scope=p.scope, agent_id=p.agent_id, created_by=by, note=note)
+        k = revise(p.skill_id, title=p.title, when_to_use=p.when_to_use, body=p.body,
+                   tools=p.tools, script=p.script, created_by=by, note=note, files=files,
+                   frontmatter=frontmatter)
+        if p.source == "import" and k.status in ARCHIVED:
+            k = restore(k.id)  # you imported it again: you want it back
+    else:
+        if find(p.name) is not None:
+            raise ValueError(f"a skill named {p.name} already exists")
+        scope = p.scope if p.scope != "agent" or p.agent_id else "team"  # no agent to give it to
+        k = create(name=p.name, title=p.title, when_to_use=p.when_to_use, body=p.body, tools=p.tools,
+                   script=p.script, scope=scope, agent_id=p.agent_id or None, created_by=by,
+                   note=note, files=files, frontmatter=frontmatter,
+                   origin=p.origin if p.source == "import" else "")
+    for other in p.merge_ids or []:
+        if other != k.id:
+            try:
+                archive(other, reason=f"merged into {k.name}", by=by)
+            except LookupError:
+                pass
+    return k
 
 
 def pending_count() -> int:
     with db.session() as s:
         return s.exec(select(func.count()).select_from(SkillProposal)
                       .where(SkillProposal.status == "pending")).one()
+
+
+def file_listing(k: Skill) -> list[dict[str, Any]]:
+    """The files that come with a skill: path and size, for agents and the UI."""
+    out = []
+    for f in k.files or []:
+        size = len(f.get("content", "")) * 3 // 4 if f.get("encoding") == "base64" else len(
+            f.get("content", "").encode())
+        out.append({"path": f.get("path", ""), "bytes": size, "text": f.get("encoding") != "base64"})
+    return out
+
+
+def read_file(k: Skill, path: str, limit: int = 40000) -> dict[str, Any]:
+    want = (path or "").strip().lstrip("./")
+    f = next((f for f in k.files or [] if f.get("path") == want), None)
+    if f is None:
+        return {"error": f"{k.name} has no file {path!r}",
+                "files": [x["path"] for x in file_listing(k)]}
+    if f.get("encoding") == "base64":
+        return {"path": want, "note": "a binary file; it can't be shown as text"}
+    text = f.get("content", "")
+    out = {"path": want, "content": text[:limit]}
+    if len(text) > limit:
+        out["note"] = f"cut at {limit} of {len(text)} characters"
+    return out

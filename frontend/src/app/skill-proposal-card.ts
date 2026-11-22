@@ -15,15 +15,26 @@ import { Workspace } from './workspace';
     @if (p(); as r) {
       <div class="req-card skill" [class.pending]="r.status === 'pending'">
         <div class="req-head">
-          <hq-avatar [agent]="ws.agent(r.agent_id)" [size]="24" [active]="r.status === 'pending'" />
+          @if (r.source === 'import' || r.source === 'curator') {
+            <span class="pill team">{{ r.source === 'import' ? 'import' : 'review' }}</span>
+          } @else {
+            <hq-avatar [agent]="ws.agent(r.agent_id)" [size]="24" [active]="r.status === 'pending'" />
+          }
           <strong>{{ r.agent_name }}</strong>
-          <span>{{ r.skill_id && r.status === 'pending' ? 'proposes an improvement to' : 'proposes a new skill:' }}
-            <code>{{ r.name }}</code></span>
+          <span>{{ headline(r) }} <code>{{ r.name }}</code></span>
           <span class="pill {{ cls(r.status) }}">{{ r.status }}</span>
           <span class="spacer"></span>
           <span class="muted small">{{ r.created_at | date:'MMM d, h:mm a' }}</span>
         </div>
-        <div class="req-why"><span class="k">Why</span>{{ r.reason }}</div>
+        <div class="req-why"><span class="k">{{ r.source === 'import' ? 'From' : 'Why' }}</span>{{ r.reason }}</div>
+        @if (r.merging?.length) {
+          <div class="req-why"><span class="k">Merges in</span>
+            @for (m of r.merging; track m.id) { <code>{{ m.name }}</code> ({{ m.title }})@if (!$last) {, } }
+            · those are archived when you approve</div>
+        }
+        @if (r.files?.length) {
+          <div class="req-why"><span class="k">Files</span>@for (f of r.files; track f) { <code>{{ f }}</code>@if (!$last) {, } }</div>
+        }
         @if (r.status === 'testing') { <div class="req-why eval-line"><span class="k">Testing</span>Auto mode: it's applied if it doesn't lower the pass rate; you can decide now instead.</div> }
         @if (r.eval_summary; as e) {
           @if (e.with) {
@@ -38,7 +49,11 @@ import { Workspace } from './workspace';
           }
         }
 
-        @if (r.status === 'pending' && editing()) {
+        @if (r.action === 'archive') {
+          <div class="req-why"><span class="k">Archive</span>{{ r.current?.title ?? r.title }}: agents stop seeing it;
+            you can restore it from Settings → Skills.</div>
+          <div class="skill-body muted small">Use when: {{ r.current?.when_to_use ?? r.when_to_use }}</div>
+        } @else if (r.status === 'pending' && editing()) {
           <label>Title<input [(ngModel)]="edit.title"></label>
           <label>When to use<textarea rows="2" [(ngModel)]="edit.when_to_use"></textarea></label>
           <label>Procedure <small>markdown</small><textarea rows="10" class="mono" [(ngModel)]="edit.body"></textarea></label>
@@ -55,7 +70,9 @@ import { Workspace } from './workspace';
         @if (r.status === 'pending' || r.status === 'testing') {
           <div class="approval-actions">
             <input [(ngModel)]="note" placeholder="Note (optional)">
-            <label class="check small"><input type="checkbox" [ngModel]="editing()" (ngModelChange)="startEdit($event)"> Edit first</label>
+            @if (r.action !== 'archive') {
+              <label class="check small"><input type="checkbox" [ngModel]="editing()" (ngModelChange)="startEdit($event)"> Edit first</label>
+            }
             <button type="button" (click)="decide(true)" [disabled]="busy()">Approve</button>
             <button type="button" class="danger" (click)="decide(false)" [disabled]="busy()">Reject</button>
           </div>
@@ -63,7 +80,7 @@ import { Workspace } from './workspace';
         } @else {
           <div class="req-decided">
             @switch (r.status) {
-              @case ('approved') { Approved {{ r.decided_at | date:'MMM d, h:mm a' }}: it's in Settings → Skills. }
+              @case ('approved') { Approved {{ r.decided_at | date:'MMM d, h:mm a' }}: {{ r.action === 'archive' ? 'archived (restore it any time in Settings → Skills)' : "it's in Settings → Skills" }}. }
               @case ('applied') { Saved automatically (learning mode: auto). Review or roll back in Settings → Skills. }
               @default { Rejected {{ r.decided_at | date:'MMM d, h:mm a' }}. }
             }
@@ -96,6 +113,15 @@ export class SkillProposalCard {
   }
 
   load(id: string) { this.api.skillProposal(id).subscribe({ next: r => this.p.set(r), error: () => this.error.set('Could not load the proposal.') }); }
+
+  headline(r: SkillProposal) {
+    const open = r.status === 'pending' || r.status === 'testing';
+    if (r.action === 'archive') return open ? 'proposes archiving' : 'archiving';
+    if (r.action === 'merge') return open ? 'proposes merging skills into' : 'merging into';
+    if (r.source === 'import') return r.skill_id ? 'brings an update to' : 'brings a new skill:';
+    if (r.source === 'curator') return open ? 'proposes a rewrite of' : 'rewrite of';
+    return r.skill_id && open ? 'proposes an improvement to' : 'proposes a new skill:';
+  }
 
   cls(s: string) { return s === 'approved' || s === 'applied' ? 'done' : s === 'rejected' ? 'failed' : 'working'; }
 

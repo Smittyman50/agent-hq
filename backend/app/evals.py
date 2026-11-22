@@ -70,7 +70,7 @@ DEFAULTS: dict[str, Any] = {
 CHECK_TYPES = ("rubric", "contains", "not_contains", "tool_called", "tool_not_called", "skill_loaded")
 
 # Agent HQ's own tools that only read: they run normally in tests.
-SAFE_INTERNAL = {"load_skill", "list_skills", "search_knowledge", "read_document", "recall", "board_view"}
+SAFE_INTERNAL = {"load_skill", "read_skill_file", "list_skills", "search_knowledge", "read_document", "recall", "board_view"}
 
 NOT_AVAILABLE = ("Not available in a test run: there's no recorded result for this call, and the "
                  "tool can't run for real in tests. Carry on without it.")
@@ -364,18 +364,27 @@ def _variant_overlay(variant: str, proposal: SkillProposal | None) -> dict[str, 
         if base is not None and proposal.base_version:
             base_ver = s.exec(select(SkillVersion).where(SkillVersion.skill_id == base.id,
                                                          SkillVersion.version == proposal.base_version)).first()
+        merged = [k.name for k in s.exec(select(Skill).where(Skill.id.in_(proposal.merge_ids))).all()] \
+            if proposal.merge_ids else []
     scope = "agent" if proposal.scope == "agent" else "team"
     if variant == "with":
-        return {proposal.name: Skill(id=f"eval-{proposal.id}", name=proposal.name, title=proposal.title,
-                                     when_to_use=proposal.when_to_use, body=proposal.body,
-                                     tools=proposal.tools or [], scope=scope, agent_id=proposal.agent_id,
-                                     version=(proposal.base_version or 0) + 1)}
+        if proposal.action == "archive":
+            return {proposal.name: None}
+        out: dict[str, Skill | None] = {name: None for name in merged}
+        out[proposal.name] = Skill(id=f"eval-{proposal.id}", name=proposal.name, title=proposal.title,
+                                   when_to_use=proposal.when_to_use, body=proposal.body,
+                                   tools=proposal.tools or [], files=list(proposal.files or []),
+                                   scope=scope, agent_id=proposal.agent_id or None,
+                                   version=(proposal.base_version or 0) + 1)
+        return out
     # without: the skill as it was when the change was proposed (or not there at all)
     if base_ver is not None:
         return {proposal.name: Skill(id=base.id, name=base.name, title=base_ver.title,
                                      when_to_use=base_ver.when_to_use, body=base_ver.body,
-                                     tools=base_ver.tools or [], scope=base.scope, agent_id=base.agent_id,
-                                     version=base_ver.version)}
+                                     tools=base_ver.tools or [], files=list(base_ver.files or []),
+                                     scope=base.scope, agent_id=base.agent_id, version=base_ver.version)}
+    if proposal.action == "archive" and base is not None:
+        return None  # as it is now
     return {proposal.name: None}
 
 
@@ -433,10 +442,35 @@ def cases_for_proposal(agent: AgentDef, skill_name: str) -> list[EvalCase]:
     return picked[: int(get_settings()["max_cases"])]
 
 
+def cases_for_change(p: SkillProposal) -> list[EvalCase]:
+    """Active cases an imported skill, or a change from the skill review, could affect: those
+    that name the skill (or a skill being merged into it), then those of the agents that have
+    used it; for a new skill every agent sees, the rest too (any agent might pick it up)."""
+    with db.session() as s:
+        rows = list(s.exec(select(EvalCase).where(EvalCase.status == "active")
+                           .order_by(EvalCase.updated_at.desc())).all())
+        names = {p.name}
+        ids = [i for i in ([p.skill_id] if p.skill_id else []) + list(p.merge_ids or [])]
+        if ids:
+            names |= {k.name for k in s.exec(select(Skill).where(Skill.id.in_(ids))).all()}
+            users = {u.agent_id for u in s.exec(select(SkillUse).where(SkillUse.skill_id.in_(ids))).all()}
+        else:
+            users = set()
+    if p.scope == "agent" and p.agent_id:
+        users.add(p.agent_id)
+    named = [c for c in rows if names & set(c.skill_names or [])]
+    rest = [c for c in rows if c not in named]
+    picked = named + [c for c in rest if c.agent_id in users]
+    if p.scope != "agent" and not p.skill_id:
+        picked += [c for c in rest if c.agent_id not in users]
+    return picked[: int(get_settings()["max_cases"])]
+
+
 def queue_proposal_run(p: SkillProposal, cases: list[EvalCase]) -> EvalRun:
+    what = {"archive": "archive", "merge": "merge into"}.get(p.action) or (
+        "improve" if p.base_version else "new skill")
     run = EvalRun(trigger="proposal", proposal_id=p.id, case_ids=[c.id for c in cases],
-                  variants=["without", "with"],
-                  label=f"{p.agent_name}: {'improve' if p.base_version else 'new skill'} {p.name}")
+                  variants=["without", "with"], label=f"{p.agent_name}: {what} {p.name}")
     with db.session() as s:
         s.add(run)
         row = s.get(SkillProposal, p.id) or p

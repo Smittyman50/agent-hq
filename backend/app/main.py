@@ -89,6 +89,9 @@ async def lifespan(app: FastAPI):
         from .evals import loop as evals_loop
 
         background.append(asyncio.create_task(evals_loop(rt)))
+        from .skill_upkeep import loop as skill_upkeep_loop
+
+        background.append(asyncio.create_task(skill_upkeep_loop(rt)))
         if settings.scheduler_enabled:
             from .scheduler import scheduler_loop
 

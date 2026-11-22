@@ -286,10 +286,22 @@ class Skill(SQLModel, table=True):
     body: str = Field(default="", sa_column=Column(Text, default=""))  # the procedure (markdown)
     tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # tools it relies on
     script: str | None = None  # a saved workbench script it uses, if any
+    # Files that come with it (Agent Skills folders: scripts/, references/, assets/):
+    # [{path, content, encoding: "utf-8" | "base64"}]. Agents read them with read_skill_file.
+    files: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    # SKILL.md frontmatter Agent HQ has no field for (license, compatibility, metadata, ...),
+    # kept so an imported skill exports unchanged.
+    frontmatter: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Where an imported skill came from (a file name, a Git URL); blank if written here.
+    origin: str = Field(default="", sa_column_kwargs={"server_default": ""})
     # team = every agent; agent = only agent_id
     scope: str = Field(default="team", index=True)
     agent_id: str | None = Field(default=None, index=True)
-    status: str = Field(default="active", index=True)  # active | retired
+    # active | archived (agents don't see it; restore it any time). Older rows say "retired",
+    # which means archived.
+    status: str = Field(default="active", index=True)
+    archived_at: datetime | None = None
+    archived_reason: str = Field(default="", sa_column=Column(Text, default=""))
     version: int = 1
     created_by: str = ""
     created_at: datetime = Field(default_factory=_now)
@@ -307,6 +319,8 @@ class SkillVersion(SQLModel, table=True):
     body: str = Field(default="", sa_column=Column(Text, default=""))
     tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     script: str | None = None
+    files: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    frontmatter: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_by: str = ""
     note: str = Field(default="", sa_column=Column(Text, default=""))  # why it changed
     created_at: datetime = Field(default_factory=_now)
@@ -323,9 +337,18 @@ class SkillProposal(SQLModel, table=True):
     body: str = Field(default="", sa_column=Column(Text, default=""))
     tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     script: str | None = None
+    files: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    frontmatter: dict = Field(default_factory=dict, sa_column=Column(JSON))
     scope: str = "team"
     reason: str = Field(default="", sa_column=Column(Text, default=""))
-    source: str = "agent"  # agent (propose_skill) | reflection | document
+    # agent (propose_skill) | reflection | document | import (a SKILL.md, folder, zip or Git
+    # repo you imported) | curator (the scheduled skill review)
+    source: str = "agent"
+    origin: str = ""  # import: where it came from
+    # save (a new skill or a new version) | archive (skill_id is archived) | merge (save into
+    # skill_id, then archive the skills in merge_ids)
+    action: str = "save"
+    merge_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # Evals: the run that tested this change, and its numbers.
     eval_run_id: str | None = None
     eval_summary: dict = Field(default_factory=dict, sa_column=Column(JSON))
@@ -340,6 +363,21 @@ class SkillProposal(SQLModel, table=True):
     message_id: str | None = None
     created_at: datetime = Field(default_factory=_now)
     decided_at: datetime | None = None
+
+
+class SkillReview(SQLModel, table=True):
+    """A run of the skill review (app/skill_upkeep.py): a model looks over every skill, how
+    much it's used and how it's rated, and proposes merges, rewrites and archiving."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    trigger: str = "schedule"  # schedule | manual
+    status: str = Field(default="running", index=True)  # running | done | failed
+    model: str = ""
+    summary: str = Field(default="", sa_column=Column(Text, default=""))
+    error: str | None = None
+    proposal_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    started_at: datetime = Field(default_factory=_now, index=True)
+    finished_at: datetime | None = None
 
 
 class SkillUse(SQLModel, table=True):

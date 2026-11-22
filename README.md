@@ -14,7 +14,7 @@ A self-hosted multi-agent system. You add model providers (your Ollama servers, 
 Nothing about specific agents or models is in the code. Providers, names, roles, instructions, models, tools, pools, delegation rights and event subscriptions are all database rows, so renaming or re-tasking an agent takes effect on its next job.
 
 **Agents get better with use, under your control:**
-- **Skills:** written-down procedures agents follow, propose and improve.
+- **Skills:** written-down procedures agents follow, propose and improve, in the Agent Skills (SKILL.md) format so you can import others' and export your own.
 - **The learning loop:** your 👍/👎 and corrections, and agents looking back at their work.
 - **Your profile:** what every agent always knows about you.
 - **A knowledge library:** your documents, runbooks, Obsidian vault and NAS shares, searchable with citations.
@@ -333,6 +333,8 @@ docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test
 - goal teams: your agents (delegate_action) and sub-agents (assign_action) working actions in parallel, dependencies, team slots, one action per agent per goal, results landing on actions with no report turns, a failed result blocking its action, waiting on the team, the done check, approval mode, duplicate refusals pointing to your agent, and Stop
 - workbenches and tool approvals: allow/ask/block per tool, waiting for a decision, "don't ask again", timeouts, and a real workbench over MCP
 - skills: matching, loading, outcomes, versions and rollback, proposals in propose/auto/off modes, diffs and stale warnings
+- Agent Skills import and export: the SKILL.md field mapping, render-then-parse giving back the same skill, export then import being unchanged (a lone SKILL.md, a folder with text and binary files, and export-all zips), zips holding many skills with the broken ones reported, Git repositories and links to folders in them, imports always arriving as proposals that run the evals (even in Auto mode), updates as revisions, re-importing an archived skill restoring it, and one-agent imports
+- skill upkeep: usage, last use, ratings and stale flags on the list, the thresholds, archive and restore (older rows that say "retired" too), the skill review proposing merges and archiving that are tested and only applied when you approve, skipping skills it doesn't know, and running on its schedule or on Run now
 - the learning loop: rating replies, corrections, reflections that propose skills and save lessons, the daily cap, and Run now
 - your profile: in every agent's instructions (or not, per agent), the word cap, and suggestions you approve
 - the knowledge library: Obsidian notes (frontmatter, tags, links), chunking at headings, uploads, web pages, Git sources and NAS shares (SMB and mounted folders) that only re-read changed files, access per collection, recall and tools, runbooks turned into skill proposals, and the same search on Postgres + pgvector
@@ -476,7 +478,8 @@ A **skill** is a short, named procedure. It has a title, a line saying *when to 
   - **How they're matched:** by meaning when an embedding model is set (Settings → Memory), and by keywords otherwise.
   - **Small collections:** with 12 or fewer skills, all of them are listed.
 - **Loading:** the agent calls `load_skill` to read a skill's full procedure and follows it. `list_skills` searches the rest.
-- **Tracking:** each time a skill is loaded, the outcome of that job (done, partial or failed) is recorded. **Settings → Skills** shows each skill's uses and success rate.
+- **Files:** a skill can come with files (scripts, reference docs, templates), as imported skills often do. `load_skill` lists them and the agent reads one with `read_skill_file` when the procedure points to it.
+- **Tracking:** each time a skill is loaded, the outcome of that job (done, partial or failed) is recorded, along with your 👍/👎 on the reply. **Settings → Skills** shows each skill's uses, when it was last used, its success rate and its ratings.
 
 **How agents learn.** When an agent works out how to do something that will come up again, or finds that a skill it used was wrong or incomplete, it calls `propose_skill`. A proposal is either a new skill, or a revision to an existing one with a diff against the current version. What happens next depends on the agent's **Learning** setting (Settings → Agents):
 - **Propose to me** (the default for every agent):
@@ -486,7 +489,46 @@ A **skill** is a short, named procedure. It has a title, a line saying *when to 
 - **Save automatically:** the change is saved at once and you're told. You can review it or roll it back on the Skills page. If there are test cases for that agent or skill (see Evals), the change is tested first. It's applied only if it doesn't lower the pass rate; otherwise it waits for you.
 - **Off:** the agent uses skills but can't propose them.
 
-Skills can come from three places besides your own writing: an agent's `propose_skill` call, a reflection after a job (see the learning loop), or a document in the knowledge library ("Propose skills" turns a runbook's procedures into proposals). Each proposal records where it came from. Sub-agents use their parent's skills but don't propose any. Skills never grant tools: every call a skill leads to still goes through your tool approvals.
+Skills can come from five places besides your own writing: an agent's `propose_skill` call, a reflection after a job (see the learning loop), a document in the knowledge library ("Propose skills" turns a runbook's procedures into proposals), an import (below), or the skill review (below). Each proposal records where it came from. Sub-agents use their parent's skills but don't propose any. Skills never grant tools: every call a skill leads to still goes through your tool approvals.
+
+#### Importing and exporting skills (SKILL.md)
+
+Agent HQ reads and writes the [Agent Skills](https://agentskills.io) format, the one Hermes skills and the Skills Hub use. A skill is a folder with a `SKILL.md` (YAML frontmatter, then markdown instructions) and any other files it needs, such as `scripts/`, `references/` or `assets/`.
+
+| SKILL.md | Agent HQ |
+|---|---|
+| `name` (hyphens) | name (underscores): `check-pve-backups` is `check_pve_backups` |
+| `description` | *When to use* |
+| the first `# Heading` of the body | title (the rest of the body is the procedure) |
+| `allowed-tools` | tools it relies on |
+| `metadata.agent-hq-script` | workbench script |
+| `license`, `compatibility`, other `metadata` | kept as they are, and written back on export |
+| other files in the folder | the skill's files, which agents read with `read_skill_file` |
+
+**Export** (Settings → Skills): **Export** on a skill downloads its `SKILL.md`, or a zip of its folder when it has files. **Export all** downloads every active skill (or every archived one, from the Archived tab) as a zip with one folder per skill. A skill exported from Agent HQ and imported back is unchanged.
+
+**Import** (Settings → Skills → **Import**) takes:
+- **a file:** a `SKILL.md`, or a zip with one skill or many;
+- **a folder:** a skill's folder, or a folder of skills, with all their files;
+- **pasted text:** a `SKILL.md`, frontmatter included;
+- **a Git repository:** every `SKILL.md` in it, or only those under a path. A link to a folder works too (GitHub `/tree/<branch>/<path>`, Gitea `/src/branch/<branch>/<path>`, GitLab `/-/tree/...`). For a private repo, give a username and token; they're used for that one shallow clone and not kept.
+
+Choose whether new skills are for every agent or for one. Every skill found becomes a **proposal** in Requests → Skill proposals, marked *import*, with where it came from. It is never applied straight away, not even for agents in Auto learning mode:
+- **Tests:** it runs through your test cases without and with it, like any other skill change. A new skill for every agent is tested against all active cases, since any agent might pick it up. A skill for one agent is tested against that agent's cases, plus any that name it.
+- **Updates:** a skill that's already here comes in as a revision with a diff (files included). One that's identical is reported as *unchanged* and skipped. Approving an update to an archived skill restores it.
+- **Limits:** up to 50 skills per import, 200 files and 5 MB per skill, and 50 MB unpacked. Folders named `.git`, `node_modules` and `__MACOSX` are skipped. Problems, such as a `SKILL.md` without frontmatter, are listed after the import.
+
+#### Upkeep: stale skills, the skill review and archiving
+
+- **Stale skills.** A skill is flagged *stale* when nobody has used it for 60 days, or, if it was never used, when it was added more than 60 days ago. It's also flagged when its ratings are poor: at least 3 👍/👎, with half or more of them 👎. The **Stale** tab lists them, and each stale skill says why. Nothing happens to them by itself. All three thresholds are under **Upkeep & review**.
+- **The skill review** (optional). A model you choose looks over every active skill: what it says, how much it's used, how it's rated, and whether it's stale. It then proposes up to 5 changes:
+  - **Merge:** skills that do the same job become one. The kept skill gets a new version, and the others are archived.
+  - **Rewrite:** a new version of a poorly rated, failing or unclear skill.
+  - **Archive:** a skill that's no longer used or no longer worth keeping.
+- **How the review runs.** Each change is a proposal in Requests → Skill proposals, marked *review*, and is tested by the evals first: against the cases that name the skills involved and the cases of agents that have used them. Nothing changes until you approve it. The review leaves alone any skill that already has a proposal waiting.
+- **When it runs:** daily, weekly or monthly at an hour you pick (in `AHQ_TIMEZONE`), or only when you press **Run review now**. Recent reviews and what came of them are listed under Upkeep & review.
+- **Its model:** any provider and model, like the evals judge. Left empty, it uses the judge, or else your first agent's model.
+- **Archiving.** **Archive** on a skill, with an optional reason, hides it from agents but keeps its history and usage. The **Archived** tab lists archived skills, and **Restore** brings one back as it was.
 
 ### The learning loop: ratings, corrections and reflections
 
@@ -1016,7 +1058,7 @@ Full tool results are kept for 14 days so you can turn any recent reply into a t
 Feedback never changes a test you've kept: a later note starts a fresh draft.
 
 **When they run:**
-- **On skill changes:** when an agent proposes one, the cases for that agent and skill run without and with the change, and the proposal card shows both pass rates.
+- **On skill changes:** when an agent proposes one, the cases for that agent and skill run without and with the change, and the proposal card shows both pass rates. Imported skills and the skill review's merges, rewrites and archiving are tested the same way (see [Upkeep](#upkeep-stale-skills-the-skill-review-and-archiving)).
 - **In Auto learning mode:** a change that lowers the pass rate isn't applied; it waits in Requests for you.
 - **Anytime:** **Run now** on a case, or **Run all**.
 

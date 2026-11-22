@@ -3040,7 +3040,20 @@ class Runtime:
                 out["tools"] = k.tools
             if k.script:
                 out["workbench_script"] = (f"{k.script} (run it with your workbench's run_script)")
+            if k.files:
+                out["files"] = [f["path"] for f in skills.file_listing(k)]
+                out["files_note"] = ("Files that come with this skill; read one with read_skill_file "
+                                     "when the procedure refers to it.")
             return out
+
+        def read_skill_file(ctx: RunContext[RunDeps], name: str, path: str) -> dict:
+            """Read a file that comes with a skill (e.g. references/REFERENCE.md or a script in
+            scripts/), as listed by load_skill."""
+            me = load_agent(ctx.deps.agent_id)
+            k = skills.find(name, me)
+            if k is None:
+                return {"error": f"no skill named {name!r}; see list_skills"}
+            return skills.read_file(k, path)
 
         def list_skills(ctx: RunContext[RunDeps], query: str = "") -> list[dict]:
             """List the skills you can use, optionally only those matching words in `query`."""
@@ -3076,7 +3089,8 @@ class Runtime:
                 revise=revise, tools=tools, script=script, only_for_me=only_for_me,
                 thread_id=ctx.deps.thread_id, job_id=ctx.deps.job_id, depth=ctx.deps.depth)
 
-        tools = [load_skill, list_skills] + ([propose_skill] if learning != LearningMode.off else [])
+        tools = [load_skill, read_skill_file, list_skills] + (
+            [propose_skill] if learning != LearningMode.off else [])
         return FunctionToolset(tools, id="skills")
 
     async def submit_skill_proposal(self, me: AgentDef, *, name: str, title: str, when_to_use: str,
@@ -3180,9 +3194,10 @@ class Runtime:
                 if k in ("name", "title", "when_to_use", "body", "tools", "script", "scope") and v is not None:
                     setattr(p, k, v)
         if approve:
-            why = skills.check_fields(p.name, p.title, p.when_to_use, p.body)
-            if why:
-                raise ValueError(why)
+            if p.action != "archive":
+                why = skills.check_fields(p.name, p.title, p.when_to_use, p.body)
+                if why:
+                    raise ValueError(why)
             k = skills.apply_proposal(p, by=by)
             p.skill_id = k.id
         p.status = "approved" if approve else "rejected"

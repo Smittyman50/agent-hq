@@ -53,12 +53,33 @@ export type LearningMode = 'off' | 'propose' | 'auto';
 export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number;
   up?: number; down?: number; last_used_at: string | null; }
 export interface SkillVersion { id: string; version: number; title: string; when_to_use: string; body: string;
-  tools: string[]; script: string | null; created_by: string; note: string; created_at: string; }
+  tools: string[]; script: string | null; files?: string[]; created_by: string; note: string; created_at: string; }
+export interface SkillFile { path: string; bytes: number; text: boolean; }
 export interface Skill {
   id?: string; name: string; title: string; when_to_use: string; body: string; tools: string[];
   script: string | null; scope: 'team' | 'agent'; agent_id: string | null; agent?: string;
-  status?: 'active' | 'retired'; version?: number; created_by?: string; created_at?: string; updated_at?: string;
+  status?: 'active' | 'archived'; version?: number; created_by?: string; created_at?: string; updated_at?: string;
   stats?: SkillStats; success_rate?: number | null; versions?: SkillVersion[]; note?: string;
+  /** Why it's stale ([] = it isn't). */
+  stale?: string[]; files?: SkillFile[]; frontmatter?: Record<string, unknown>; origin?: string;
+  archived_at?: string | null; archived_reason?: string;
+}
+export interface SkillImportResult {
+  name: string; title: string; where: string; notes: string[];
+  status: 'proposed' | 'unchanged' | 'refused'; summary: string; proposal_id?: string; skill_id?: string;
+  revision?: boolean; tests?: number;
+}
+export interface SkillImport { found: number; results: SkillImportResult[]; problems: string[]; counts: Record<string, number>; }
+export interface SkillUpkeepSettings {
+  stale_after_days: number; min_ratings: number; poor_share: number;
+  review: 'off' | 'daily' | 'weekly' | 'monthly'; review_hour: number; review_weekday: number; review_day: number;
+  provider_id: string | null; model: string; max_suggestions: number;
+}
+export interface SkillUpkeep { settings: SkillUpkeepSettings; last_review_at: string | null; next_review_at: string | null; timezone: string; }
+export interface SkillReview {
+  id: string; trigger: string; status: 'running' | 'done' | 'failed'; model: string; summary: string; error: string | null;
+  started_at: string; finished_at: string | null;
+  proposals: { id: string; name: string; action: 'save' | 'archive' | 'merge'; status: string }[];
 }
 export interface SkillProposal {
   id: string; skill_id: string | null; name: string; title: string; when_to_use: string; body: string;
@@ -66,6 +87,8 @@ export interface SkillProposal {
   agent_name: string; thread_id: string | null; base_version: number | null;
   status: 'pending' | 'approved' | 'rejected' | 'applied' | 'testing'; note: string; created_at: string; decided_at: string | null;
   source?: string; eval_run_id?: string | null; eval_summary?: EvalSummary;
+  origin?: string; action?: 'save' | 'archive' | 'merge'; merge_ids?: string[]; files?: string[];
+  merging?: { id: string; name: string; title: string }[];
   current?: { version: number; title: string; when_to_use: string; body: string }; diff?: string; stale?: boolean;
 }
 
@@ -804,14 +827,41 @@ export class Api {
     return this.http.post<ProfileProposal>(`/api/profile-proposals/${id}/decide`, d);
   }
 
-  skills(includeRetired = false) { return this.http.get<Skill[]>('/api/skills', { params: { include_retired: includeRetired } }); }
+  skills(status: 'active' | 'archived' | 'all' = 'active', staleOnly = false) {
+    return this.http.get<Skill[]>('/api/skills', { params: { status, stale: staleOnly } });
+  }
   skill(id: string) { return this.http.get<Skill>(`/api/skills/${id}`); }
   saveSkill(k: Skill) {
     const body = { name: k.name, title: k.title, when_to_use: k.when_to_use, body: k.body, tools: k.tools,
       script: k.script || null, scope: k.scope, agent_id: k.agent_id, note: k.note ?? '' };
     return k.id ? this.http.put<Skill>(`/api/skills/${k.id}`, body) : this.http.post<Skill>('/api/skills', body);
   }
-  setSkillStatus(id: string, status: 'active' | 'retired') { return this.http.post<Skill>(`/api/skills/${id}/status`, { status }); }
+  archiveSkill(id: string, reason = '') { return this.http.post<Skill>(`/api/skills/${id}/archive`, { reason }); }
+  restoreSkill(id: string) { return this.http.post<Skill>(`/api/skills/${id}/restore`, {}); }
+  skillExportUrl(id: string, format: '' | 'md' | 'zip' = '') { return `/api/skills/${id}/export` + (format ? `?format=${format}` : ''); }
+  skillsExportUrl(status: 'active' | 'archived' | 'all' = 'active') { return `/api/skills/export?status=${status}`; }
+  skillFile(id: string, path: string) {
+    return this.http.get<{ path: string; content?: string; note?: string }>(`/api/skills/${id}/files`, { params: { path } });
+  }
+  /** Files with their relative paths (a folder, zips or a lone SKILL.md). */
+  importSkillFiles(files: { file: File; path: string }[], scope: 'team' | 'agent', agentId: string | null) {
+    const form = new FormData();
+    for (const f of files) form.append('files', f.file, f.path.split('/').pop() || f.file.name);
+    form.append('paths', JSON.stringify(files.map(f => f.path)));
+    form.append('scope', scope);
+    if (agentId) form.append('agent_id', agentId);
+    return this.http.post<SkillImport>('/api/skills/import', form);
+  }
+  importSkillText(text: string, scope: 'team' | 'agent', agentId: string | null) {
+    return this.http.post<SkillImport>('/api/skills/import/text', { text, scope, agent_id: agentId });
+  }
+  importSkillGit(d: { url: string; branch?: string; path?: string; username?: string; token?: string; scope: 'team' | 'agent'; agent_id: string | null }) {
+    return this.http.post<SkillImport>('/api/skills/import/git', d);
+  }
+  skillUpkeep() { return this.http.get<SkillUpkeep>('/api/skills/upkeep'); }
+  saveSkillUpkeep(s: SkillUpkeepSettings) { return this.http.put<SkillUpkeep>('/api/skills/upkeep', s); }
+  skillReviews(limit = 20) { return this.http.get<SkillReview[]>('/api/skills/reviews', { params: { limit } }); }
+  runSkillReview() { return this.http.post<SkillReview>('/api/skills/reviews', {}); }
   rollbackSkill(id: string, version: number) { return this.http.post<Skill>(`/api/skills/${id}/rollback`, { version }); }
   skillProposals(status?: string) {
     return this.http.get<SkillProposal[]>('/api/skill-proposals', { params: status ? { status } : {} });

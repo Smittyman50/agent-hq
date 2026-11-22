@@ -370,7 +370,27 @@ def alerter(messages, info):
     return ModelResponse(parts=[TextPart(f"alert {returns[-1].content['status']}")])
 
 
-SCRIPTS = {"boss": boss(False), "alerter": alerter, "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
+def curator(messages, info):
+    """The skill review: archives every stale skill, merges skills that share a title,
+    and names one skill that doesn't exist (which is skipped)."""
+    prompt = _last_prompt(messages)
+    blocks = re.findall(r"^## ([a-z0-9_]+) .*?\nTitle: (.*?)\n(.*?)(?=^## |\Z)", prompt, re.M | re.S)
+    out, by_title = [], {}
+    for name, title, rest in blocks:
+        if "STALE:" in rest:
+            out.append({"action": "archive", "skills": [name], "reason": f"{name} is stale."})
+        by_title.setdefault(title, []).append(name)
+    for title, names in by_title.items():
+        if len(names) > 1:
+            out.append({"action": "merge", "skills": names, "reason": "They do the same job.",
+                        "new": {"title": title, "when_to_use": "When checking the backups.",
+                                "steps": "1. One merged procedure for " + ", ".join(names) + "."}})
+    out.append({"action": "archive", "skills": ["no_such_skill"], "reason": "?"})
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name,
+                                             {"summary": f"Looked at {len(blocks)} skills.", "suggestions": out})])
+
+
+SCRIPTS = {"boss": boss(False), "curator": curator, "alerter": alerter, "boss-bg": boss(True), "worker": worker_fn, "broken": broken,
            "hang-once": hang_once, "alert": alert, "slow-worker": slow_worker,
            "spawner": spawner(1), "spawner-2": spawner(2), "spawn-alpha": spawner(1, "Alpha"),
            "requester": requester, "retrying": retrying,

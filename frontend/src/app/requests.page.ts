@@ -79,7 +79,7 @@ export class GoalsInbox implements OnInit {
   imports: [SkillProposalCard],
   template: `
   <div class="inbox">
-    <p class="hint inline-hint">New skills and improvements from agents whose learning is set to “Propose to me”.
+    <p class="hint inline-hint">New skills and improvements from agents whose learning is set to “Propose to me”, skills you imported, and the skill review’s merges, rewrites and archiving.
       Approved ones go to Settings → Skills.</p>
     @if (linked(); as id) { <hq-skill-proposal-card [proposalId]="id" (decided)="reload()" class="linked" /> }
     @for (p of pending(); track p.id) {
