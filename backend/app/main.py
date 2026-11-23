@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .api import activity as activity_api
 from .api import approvals as approvals_api
 from .api import attachments as attachments_api
 from .api import skills as skills_api
@@ -144,7 +145,7 @@ def create_app(lifespan_=lifespan) -> FastAPI:
     app.add_middleware(auth_api.AuthMiddleware)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
-    for r in (auth_api.router, approvals_api.router, attachments_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, catalog_api.router, resources_api.router, threads.router, subscriptions.router, webhooks_api.router, webhooks_api.public, workitems_api.router,
+    for r in (auth_api.router, activity_api.router, approvals_api.router, attachments_api.router, skills_api.router, learning_api.router, profile_api.router, knowledge_api.router, evals_api.router, conversations_api.router, agents.router, avatars.router, desktop.router, memory_api.router, providers.router, schedules.router, subagents_api.router, tool_servers.router, catalog_api.router, resources_api.router, threads.router, subscriptions.router, webhooks_api.router, webhooks_api.public, workitems_api.router,
               notifications_api.router, system.router):
         app.include_router(r)
 

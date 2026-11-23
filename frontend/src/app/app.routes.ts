@@ -28,6 +28,9 @@ export const routes: Routes = [
   { path: 'chat', component: ChatPage, canActivate: [authGuard] },
   { path: 'chat/:id', component: ChatPage, canActivate: [authGuard] },
   { path: 'board', component: BoardPage, canActivate: [authGuard] },
+  // Loaded when opened: keeps the main bundle under its budget.
+  { path: 'activity', canActivate: [authGuard],
+    loadComponent: () => import('./activity.page').then(m => m.ActivityPage) },
   { path: 'schedules', component: SchedulesPage, canActivate: [authGuard] },
   {
     path: 'requests', component: RequestsLayout, canActivate: [authGuard], children: [

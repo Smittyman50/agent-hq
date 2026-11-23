@@ -63,7 +63,7 @@ from sqlmodel import select
 
 from . import attachments as att
 from . import knowledge_proposals as kprop
-from . import approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
+from . import activity, approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
 from . import huddles, notifications, resources, scratchpad, speed, workitems
 from .broker import Broker
 from .config import settings
@@ -1130,13 +1130,22 @@ class ObservedToolset(WrapperToolset):
                                   agent_id=d.agent_id, tool=name, args=tool_args, depth=d.depth)
         step = {"tool": name, "args": _brief(tool_args), "args_full": tool_args}
         d.trace.append(step)
+        timed = await activity.tool_started(self.broker.r, agent_id=d.agent_id, job_id=d.job_id,
+                                            tool=name)
         try:
             result = await super().call_tool(name, tool_args, ctx, tool)
-        except Exception as e:
-            step["error"] = _brief(str(e), 2000)
-            await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
-                                      agent_id=d.agent_id, tool=name, error=str(e), depth=d.depth)
+        except BaseException as e:
+            await activity.tool_finished(self.broker.r, agent_id=d.agent_id, agent=self.agent_name,
+                                         job_id=d.job_id, tool=name, started=timed,
+                                         error=str(e) or type(e).__name__)
+            if isinstance(e, Exception):
+                step["error"] = _brief(str(e), 2000)
+                await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
+                                          agent_id=d.agent_id, tool=name, error=str(e), depth=d.depth)
             raise
+        await activity.tool_finished(self.broker.r, agent_id=d.agent_id, agent=self.agent_name,
+                                     job_id=d.job_id, tool=name, started=timed,
+                                     error=str(result)[:200] if isinstance(result, Refusal) else None)
         step["result"] = _brief(result)
         step["result_full"] = _brief(result, 8000)
         await self.broker.publish(d.thread_id, "tool_result", agent=self.agent_name,
@@ -1425,10 +1434,12 @@ class Runtime:
     async def _execute(self, job: Job, worker: str) -> None:
         assignee = load_agent(job.assignee_agent_id)
         with job_span(job, assignee.name, worker) as span:
-            if job.kind == JobKind.turn:
-                await self._run_turn(job)
-            else:
-                await self._run_task(job)
+            # Shown as running on the Activity page while it lasts (app/activity.py).
+            async with activity.job_running(self.broker.r, job, assignee, worker):
+                if job.kind == JobKind.turn:
+                    await self._run_turn(job)
+                else:
+                    await self._run_task(job)
             set_output(span, (load_job(job.id).result or {}).get("reply")
                        or load_job(job.id).result)
 
@@ -1899,6 +1910,10 @@ class Runtime:
                                      model=agent.model, max_output_tokens=agent.max_output_tokens,
                                      starting=agent.request_timeout_s,
                                      enforce=bool(agent.request_timeout_auto))
+        # Count each request as it finishes, for the Activity page (app/activity.py).
+        model = activity.MeteredModel(model, redis=self.broker.r, agent_id=agent.id,
+                                      agent_name=agent.name, fallback=on_fallback,
+                                      model=(agent.fallback_model if on_fallback else agent.model) or "")
         text = "\n\n".join(instructions)
         used = context.tokens(text)
         reserve = int(context.get_settings()["reserve_tokens"])

@@ -41,6 +41,11 @@ TRACER = "agent_hq"
 _job_attrs: ContextVar[dict[str, Any] | None] = ContextVar("ahq_job_attrs", default=None)
 
 
+def current_job_attributes() -> dict[str, Any] | None:
+    """The attributes of the job this code runs in (see job_span), or None outside one."""
+    return _job_attrs.get()
+
+
 def _job_attributes_processor():
     from opentelemetry.sdk.trace import SpanProcessor
 

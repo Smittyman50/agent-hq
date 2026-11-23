@@ -192,6 +192,37 @@ export interface UsageReport {
   by_model: (UsageGroup & { provider: string; model: string })[];
   by_day: (UsageGroup & { day: string })[];
 }
+/** GET /api/activity: live counts from app/activity.py. */
+export interface ActivityTotals {
+  requests: number; input: number; cached: number; output: number; llm_ms: number; req_errors: number;
+  tools: number; tool_errors: number; tool_ms: number; runs: number;
+}
+export interface ActivityAgent {
+  agent_id: string; name: string; is_subagent: boolean; parent_agent_id: string | null;
+  totals: ActivityTotals;
+  series: { requests: number[]; input: number[]; output: number[]; tools: number[] };
+  top_tools: { tool: string; calls: number }[];
+}
+export interface ActivityJob {
+  job_id: string; agent_id: string; agent: string; parent_agent_id: string; kind: string;
+  thread_id: string; worker: string; pool: string; depth: number; task: string; started: string;
+  /** starting | model (waiting on a model request) | tool (running a tool) | between (steps) */
+  state: string; since: string; detail: string; model?: string; last_tool?: string;
+  requests: number; tools: number; input: number; output: number;
+  goal: { id: string; title: string; actions_total: number; actions_done: number;
+          current_action: string | null; turns: number } | null;
+}
+export interface ActivityEvent {
+  ts: string; type: 'model' | 'tool' | 'job_started' | 'job_finished' | 'job_ended';
+  agent_id: string; agent: string; job_id: string | null;
+  model?: string; tool?: string; ms?: number; input?: number; cached?: number; output?: number;
+  finish?: string | null; error?: string | null; kind?: string; detail?: string; seconds?: number;
+}
+export interface ActivitySnapshot {
+  window: number; bucket_s: number; now: string; buckets: string[];
+  totals: ActivityTotals; agents: ActivityAgent[]; jobs: ActivityJob[]; feed: ActivityEvent[];
+  workers: WorkerInfo[];
+}
 export interface LiveSubagents {
   live: { id: string; name: string; parent: string; model: string; expires_at: string | null }[];
   today: number; caps: SubagentCaps;
@@ -1002,6 +1033,7 @@ export class Api {
   saveSubagentCaps(c: SubagentCaps) { return this.http.put<SubagentCaps>('/api/settings/subagents', c); }
   liveSubagents() { return this.http.get<LiveSubagents>('/api/subagents/live'); }
   usage(days: number) { return this.http.get<UsageReport>('/api/usage', { params: { days } }); }
+  activity(window: number) { return this.http.get<ActivitySnapshot>('/api/activity', { params: { window } }); }
 
   workers() { return this.http.get<WorkerInfo[]>('/api/system/workers'); }
   queues() { return this.http.get<QueueInfo[]>('/api/system/queues'); }
