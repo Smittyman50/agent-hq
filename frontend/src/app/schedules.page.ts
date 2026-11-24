@@ -2,7 +2,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { Api, Frequency, ScheduleIn, ScheduleInfo } from './api.service';
+import { Api, Frequency, ScheduleIn, ScheduleInfo, ScheduleParse } from './api.service';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
 import { Workspace } from './workspace';
@@ -23,6 +23,16 @@ function blank(agentId = ''): ScheduleIn & { id?: string } {
 @Component({
   selector: 'hq-schedules',
   imports: [FormsModule, DatePipe, Avatar, Icon],
+  styles: [`
+    .nl-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 8px; }
+    .nl-row label { margin: 0; }
+    .nl-row label.grow { flex: 1; min-width: 260px; }
+    .nl-preview { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+                  background: var(--panel2); font-size: 13px; }
+    .nl-error { margin: 0 0 12px; }
+    .next-runs { margin: 4px 0 0; padding-left: 20px; display: flex; flex-wrap: wrap; gap: 2px 22px; }
+    .next-runs li { white-space: nowrap; }
+  `],
   template: `
   <div class="page-wrap">
     <header class="crumbs"><hq-icon name="schedule" [size]="18" /><strong>Scheduler</strong></header>
@@ -64,6 +74,20 @@ function blank(agentId = ''): ScheduleIn & { id?: string } {
 
           <fieldset>
             <legend>When</legend>
+            <div class="nl-row">
+              <label class="grow">Describe it <small>in plain words; you can still adjust the fields below</small>
+                <input name="nl" [ngModel]="nlText()" (ngModelChange)="nlText.set($event); parseText()"
+                  (keydown.enter)="$event.preventDefault(); useText()" autocomplete="off"
+                  placeholder="e.g. every weekday at 7am, or first Monday of the month at 9"></label>
+              <button type="button" (click)="useText()" [disabled]="!nlResult()">Use this</button>
+            </div>
+            @if (nlResult(); as r) {
+              <div class="nl-preview">
+                <strong>{{ r.summary }}</strong>
+                @if (r.fields.frequency === 'cron') { <span class="muted"> · cron <code>{{ r.cron }}</code></span> }
+                <ol class="next-runs">@for (t of r.next; track t) { <li>{{ when(t, d.timezone) }}</li> }</ol>
+              </div>
+            } @else if (nlError()) { <p class="hint nl-error">{{ nlError() }}</p> }
             <div class="seg">
               @for (f of frequencies; track f.value) {
                 <button type="button" [class.on]="d.frequency === f.value" (click)="setFrequency(f.value)">{{ f.label }}</button>
@@ -103,13 +127,14 @@ function blank(agentId = ''): ScheduleIn & { id?: string } {
                 }
               }
               <label>Time zone
-                <select name="tz" [(ngModel)]="d.timezone" (ngModelChange)="changed()">
+                <select name="tz" [(ngModel)]="d.timezone" (ngModelChange)="changed(); parseText()">
                   @for (z of zones; track z) { <option [value]="z">{{ z }}</option> }
                 </select></label>
             </div>
             @if (preview(); as p) {
-              <p class="preview"><strong>{{ p.summary }}</strong>
-                <span class="muted"> · next: {{ upcoming(p.next, d.timezone) }}</span></p>
+              <div class="preview"><strong>{{ p.summary }}</strong>
+                <span class="muted"> · next {{ p.next.length }} runs:</span>
+                <ol class="next-runs">@for (t of p.next; track t) { <li>{{ when(t, d.timezone) }}</li> }</ol></div>
             } @else if (previewError()) { <p class="error">{{ previewError() }}</p> }
           </fieldset>
 
@@ -160,6 +185,10 @@ export class SchedulesPage implements OnInit, OnDestroy {
   preview = signal<{ summary: string; next: string[] } | null>(null);
   previewError = signal('');
   error = signal('');
+  nlText = signal('');
+  nlResult = signal<ScheduleParse | null>(null);
+  nlError = signal('');
+  private nlTimer?: ReturnType<typeof setTimeout>;
 
   frequencies: { value: Frequency; label: string }[] = [
     { value: 'hourly', label: 'Hourly' }, { value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' },
@@ -185,6 +214,32 @@ export class SchedulesPage implements OnInit, OnDestroy {
     const d = s ? structuredClone({ ...s }) : blank(this.ws.enabledAgents()[0]?.id ?? '');
     if (!this.zones.includes(d.timezone)) this.zones = [d.timezone, ...this.zones];
     this.draft.set(d);
+    this.nlText.set(''); this.nlResult.set(null); this.nlError.set('');
+    this.changed();
+  }
+
+  /** Read the plain-language box (debounced): show what it means and the next runs. */
+  parseText() {
+    clearTimeout(this.nlTimer);
+    const text = this.nlText().trim();
+    if (!text) { this.nlResult.set(null); this.nlError.set(''); return; }
+    this.nlTimer = setTimeout(() => {
+      const d = this.draft();
+      if (!d) return;
+      this.api.parseSchedule(text, d.timezone, d.hour, d.minute).subscribe({
+        next: r => { if (this.nlText().trim() === text) { this.nlResult.set(r); this.nlError.set(''); } },
+        error: e => { if (this.nlText().trim() === text) {
+          this.nlResult.set(null); this.nlError.set(e.error?.detail ?? "Couldn't read that"); } },
+      });
+    }, 300);
+  }
+
+  /** Put the understood schedule into the fields (still editable, saved with Save). */
+  useText() {
+    const r = this.nlResult();
+    if (!r) return;
+    this.draft.update(d => d && { ...d, ...r.fields });
+    this.nlText.set(''); this.nlResult.set(null);
     this.changed();
   }
 
@@ -250,8 +305,6 @@ export class SchedulesPage implements OnInit, OnDestroy {
   statusClass(s: string) {
     return { done: 'done', failed: 'failed', skipped: 'partial', running: 'working', queued: 'queued' }[s] ?? '';
   }
-
-  upcoming(times: string[], tz: string) { return times.map(t => this.when(t, tz)).join(', '); }
 
   /** A UTC time shown in the schedule's own time zone. */
   when(iso: string, tz: string) {

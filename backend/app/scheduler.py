@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -107,20 +108,111 @@ def describe(s: Schedule) -> str:
     if s.frequency == "daily":
         return f"Every day at {_clock(s.hour, s.minute)}"
     if s.frequency == "weekly":
-        days = sorted(set(s.weekdays or []))
-        if days == [1, 2, 3, 4, 5]:
-            label = "Weekdays"
-        elif days == [0, 6]:
-            label = "Weekends"
-        elif len(days) == 7:
-            label = "Every day"
-        else:
-            names = [DAY_NAMES[d] + "s" for d in days]
-            label = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-        return f"{label} at {_clock(s.hour, s.minute)}"
+        return f"{_days_label(s.weekdays or [])} at {_clock(s.hour, s.minute)}"
     if s.frequency == "monthly":
         return f"Monthly on the {_ordinal(s.day_of_month)} at {_clock(s.hour, s.minute)}"
-    return f"Cron: {s.cron}"
+    return describe_cron(s.cron) or f"Cron: {s.cron}"
+
+
+def _days_label(weekdays: list[int]) -> str:
+    days = sorted(set(weekdays))
+    if days == [1, 2, 3, 4, 5]:
+        return "Weekdays"
+    if days == [0, 6]:
+        return "Weekends"
+    if len(days) == 7:
+        return "Every day"
+    names = [DAY_NAMES[d] + "s" for d in days]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _ints(field: str, lo: int, hi: int) -> list[int] | None:
+    """'1,3-5' -> [1, 3, 4, 5]; None if it isn't a plain list of numbers and ranges."""
+    out: set[int] = set()
+    for part in field.split(","):
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not m:
+            return None
+        a, b = int(m[1]), int(m[2] or m[1])
+        if not lo <= a <= b <= hi:
+            return None
+        out.update(range(a, b + 1))
+    return sorted(out)
+
+
+_NTH_NAMES = {1: "First", 2: "Second", 3: "Third", 4: "Fourth", 5: "Fifth"}
+
+
+def describe_cron(expr: str) -> str | None:
+    """Plain English for the cron shapes plain-language schedules produce ('First Monday of
+    the month at 9:00 AM', 'Every 15 minutes from 8:00 AM to 5:45 PM on weekdays'), or None
+    for anything else."""
+    parts = (expr or "").split()
+    if len(parts) != 5 or parts[3] != "*":
+        return None
+    mi, ho, dom, _, dow = parts
+    days = None
+    if dow not in ("*", "?"):
+        days = _ints(dow.replace("7", "0"), 0, 6)
+        if days is None and not re.fullmatch(r"\d#[1-5]|L\d", dow):
+            return None
+    on_days = ""
+    if days and len(days) < 7:
+        label = _days_label(days)
+        on_days = " on " + (label.lower() if label in ("Weekdays", "Weekends") else label)
+
+    # Several times an hour or every N hours, maybe inside a window of hours.
+    if dom == "*" and days is not None or dom == "*" and dow in ("*", "?"):
+        sub_hourly = mi == "*" or re.fullmatch(r"\*/\d+", mi) is not None
+        if sub_hourly and ho.isdigit():
+            ho = f"{ho}-{ho}"  # every N minutes within one hour
+        m = re.fullmatch(r"(\*|\d+-\d+)(?:/(\d+))?", ho)
+        if m and (sub_hourly or mi.isdigit()):
+            step = int(m[2] or 1)
+            first, last = (0, 23) if m[1] == "*" else map(int, m[1].split("-"))
+            last = first + (last - first) // step * step
+            window = "" if m[1] == "*" else None
+            if mi == "*" or mi.startswith("*/"):
+                if step != 1:
+                    return None
+                n = 1 if mi == "*" else int(mi[2:])
+                if not 1 <= n < 60 or 60 % n:
+                    return None
+                every = "Every minute" if n == 1 else f"Every {n} minutes"
+                if window is None:
+                    window = f" from {_clock(first, 0)} to {_clock(last, 60 - n)}"
+                return every + window + on_days
+            minute = int(mi)
+            every = "Every hour" if step == 1 else f"Every {step} hours"
+            if window is None:
+                return f"{every} from {_clock(first, minute)} to {_clock(last, minute)}{on_days}"
+            return f"{every} at :{minute:02d}{on_days}"
+
+    # Once or a few times on the days it runs.
+    if not mi.isdigit():
+        return None
+    hours = _ints(ho, 0, 23)
+    if hours is None:
+        return None
+    at = "at " + _join([_clock(h, int(mi)) for h in hours])
+    if dom == "*":
+        if m := re.fullmatch(r"(\d)#([1-5])", dow):
+            return f"{_NTH_NAMES[int(m[2])]} {DAY_NAMES[int(m[1]) % 7]} of the month {at}"
+        if m := re.fullmatch(r"L(\d)", dow):
+            return f"Last {DAY_NAMES[int(m[1]) % 7]} of the month {at}"
+        return f"{_days_label(days or list(range(7)))} {at}"
+    if dow not in ("*", "?"):
+        return None
+    if dom == "L":
+        return f"Last day of the month {at}"
+    dates = _ints(dom, 1, 31)
+    if not dates:
+        return None
+    return f"Monthly on the {_join([_ordinal(d) for d in dates])} {at}"
 
 
 def next_runs(cron: str, tz: str, after: datetime | None = None, count: int = 1) -> list[datetime]:

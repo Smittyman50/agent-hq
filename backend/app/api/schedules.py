@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from .. import scheduler
+from .. import schedule_text, scheduler
 from ..db import get_session
 from ..models import AgentDef, Job, Schedule
 
@@ -40,6 +40,16 @@ class PreviewIn(BaseModel):
     day_of_month: int = 1
     cron: str = ""
     timezone: str = "UTC"
+
+
+class ParseIn(BaseModel):
+    text: str
+    timezone: str = "UTC"
+    hour: int = 9      # used when the phrase needs a time of day and doesn't give one
+    minute: int = 0
+
+
+PREVIEW_RUNS = 5
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -84,10 +94,26 @@ def preview(body: PreviewIn):
         draft.cron = scheduler.build_cron(body.frequency, minute=body.minute, hour=body.hour,
                                           interval_hours=body.interval_hours, weekdays=body.weekdays,
                                           day_of_month=body.day_of_month, cron=body.cron)
-        upcoming = scheduler.next_runs(draft.cron, body.timezone, count=3)
+        upcoming = scheduler.next_runs(draft.cron, body.timezone, count=PREVIEW_RUNS)
     except scheduler.ScheduleError as e:
         raise HTTPException(422, str(e)) from e
     return {"cron": draft.cron, "summary": scheduler.describe(draft), "next": [_iso(t) for t in upcoming]}
+
+
+@router.post("/parse")
+def parse(body: ParseIn):
+    """Plain language ("every weekday at 7am") -> the editor's schedule fields, with the
+    description and next run times so you can check it before using it. Nothing is saved."""
+    try:
+        fields = schedule_text.parse(body.text, hour=body.hour, minute=body.minute)
+        draft = Schedule(name="preview", agent_id="", task="x", timezone=body.timezone,
+                         **{k: v for k, v in fields.items() if k != "cron"})
+        draft.cron = scheduler.build_cron(**fields)
+        upcoming = scheduler.next_runs(draft.cron, body.timezone, count=PREVIEW_RUNS)
+    except scheduler.ScheduleError as e:
+        raise HTTPException(422, str(e)) from e
+    return {"fields": {**fields, "cron": draft.cron}, "cron": draft.cron,
+            "summary": scheduler.describe(draft), "next": [_iso(t) for t in upcoming]}
 
 
 @router.post("")

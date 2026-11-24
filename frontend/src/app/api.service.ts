@@ -374,6 +374,12 @@ export interface ScheduleIn {
   cron: string; timezone: string; enabled: boolean; skip_if_running: boolean;
 }
 
+/** Plain language turned into schedule fields, with what it means and when it would run. */
+export interface ScheduleParse {
+  fields: Pick<ScheduleIn, 'frequency' | 'interval_hours' | 'minute' | 'hour' | 'weekdays' | 'day_of_month' | 'cron'>;
+  cron: string; summary: string; next: string[];
+}
+
 export interface ScheduleRun {
   at: string; trigger: 'schedule' | 'manual'; status: string; job_id?: string; thread_id?: string;
   skipped?: boolean; reason?: string; late?: boolean;
@@ -687,6 +693,9 @@ export class Api {
   updateSchedule(id: string, s: ScheduleIn) { return this.http.put<ScheduleInfo>(`/api/schedules/${id}`, s); }
   deleteSchedule(id: string) { return this.http.delete(`/api/schedules/${id}`); }
   runSchedule(id: string) { return this.http.post<ScheduleInfo>(`/api/schedules/${id}/run`, {}); }
+  parseSchedule(text: string, timezone: string, hour: number, minute: number) {
+    return this.http.post<ScheduleParse>('/api/schedules/parse', { text, timezone, hour, minute });
+  }
   previewSchedule(s: Partial<ScheduleIn>) {
     return this.http.post<{ cron: string; summary: string; next: string[] }>('/api/schedules/preview', s);
   }

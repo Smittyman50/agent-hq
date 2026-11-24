@@ -319,6 +319,7 @@ docker run --rm -e AHQ_TEST_DB=postgres -e AHQ_TEST_STRICT=1 agent-hq-test
 - thinking levels: the unified setting for OpenAI/Anthropic, `reasoning_effort` for Ollama only when the model can think, the fallback using its own provider, the support hint, an agent run receiving its level, API validation, and export
 - MQTT publisher: status and allow-listed publishes reaching a real broker; refusing wildcards, system, reserved and off-list topics, oversized payloads and bursts; and an agent publishing only after you approve
 - web reader: feeds (and finding a site's feed), readable pages without clutter, paging of long pages, redirects, robots.txt, SearXNG search, refusing LAN addresses unless allowed, and an agent reading a feed through Agent HQ
+- plain-language schedules: about 40 phrases (intervals, windows, daily, days of the week, monthly, nth weekdays, cron) to their fields, cron and description; what can't be scheduled explained; first Mondays, last days and last Fridays landing on the right dates; and the parse API previewing five runs whose fields save as a schedule
 - scheduler: every cadence and its description, bad cadences explained, time zones across a DST change, firing into the schedule's own conversation exactly once (two checkers at once), catching up once after downtime, skipping while a run is still going, run now, and disabled agents
 - ChatGPT plan providers: the full sign-in by pasted callback (PKCE, state, single use, declined consent), tokens never returned or exported, model listing, an agent turn on the plan through the Responses API (`store: false`, `stream: true`, no unsupported fields), and two workers refreshing at once without ever reusing a refresh token
 - Grok plan providers: the device sign-in (pending, slow down, declined, a subscription xAI refuses), tokens never returned or exported, switching kind dropping the sign-in, model listing without image and video models, an agent turn on the plan with its thinking sent as `reasoning_effort`, and two workers refreshing at once without ever reusing a refresh token
@@ -1068,10 +1069,27 @@ Feedback never changes a test you've kept: a later note starts a fresh draft.
 
 The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a schedule: every N hours, daily, on chosen days of the week, monthly, or any cron expression.
 
+**Describe it in plain words.** At the top of **When**, type the schedule the way you'd say it, for example `every weekday at 7am`. The editor shows what it understood ("Weekdays at 7:00 AM") and the next five run times in the schedule's time zone. Nothing changes until you click **Use this** (or press Enter). That fills in the usual fields, which you can still adjust before you **Save**. It understands:
+
+| Kind | Examples |
+|---|---|
+| Hourly and intervals | `hourly`, `every 2 hours`, `every other hour`, `every hour at :15`, `every 4 hours at 15 past`, `every 15 minutes`, `every half hour` |
+| Within hours and days | `every 30 minutes between 8am and 6pm on weekdays`, `every hour from 9 to 5 on weekdays`, `every 2 hours on weekends` |
+| Daily | `daily at 7am`, `every day at 18:30`, `every evening at 6`, `at noon`, `daily at 9am and 5pm` |
+| Days of the week | `every weekday at 7am`, `weekends at 10`, `Mondays and Thursdays at 7:30`, `mon, wed, fri at 9pm`, `Tuesday through Friday at 8am`, `weekly on Friday at 5pm` |
+| Monthly | `monthly`, `on the 15th of every month at 9`, `the 1st and 15th at noon`, `last day of the month at 11pm` |
+| Nth weekday | `first Monday of the month at 9am`, `second Tuesday of each month at 10:00`, `last Friday of the month at 5pm` |
+| Cron | any 5-field cron expression, used as is |
+
+- **No time given:** `every Monday` uses the time already in the editor.
+- **Where it lands:** shapes the regular fields can hold become Hourly, Daily, Weekly or Monthly. The rest (the first Monday, a window of hours, several times a day, every 15 minutes) become a **Custom (cron)** expression, such as `0 9 * * 1#1`, and the summary still reads in plain English.
+- **What it can't do:** if it can't follow the phrase, it says which words it didn't understand and gives examples. It never guesses. Some things cron can't express, so they're refused with a reason: `every other Tuesday` or `every 3 days` (cron can't count weeks or days between runs), `every 90 minutes`, days 29 to 31, and the fifth weekday of a month.
+- **How it works:** a small rule-based parser (`backend/app/schedule_text.py`), not a model. It's instant, needs no GPU or provider, and gives the same answer every time.
+
 - **Time zone:** each schedule has its own (your browser's by default), and daylight-saving changes are handled: "every day at 7:00 AM" stays at 7:00 AM local time.
 - **Where results go:** each schedule has its own conversation, `Scheduled: <name>`, which appears in the sidebar like any chat.
 - **What a run is:** it posts a short "Scheduled run" note, then gives the agent the task as a turn, exactly as if you'd typed it. Delegation, tools and memory all work as usual, and so do the delegation threads.
-- **Editor:** shows the cadence in plain English and the next three run times as you change it. It also lists recent runs with their status (queued, running, done, failed, skipped), and has **Run now** (doesn't move the schedule) and **Open conversation**.
+- **Editor:** shows the cadence in plain English and the next five run times as you change it. It also lists recent runs with their status (queued, running, done, failed, skipped), and has **Run now** (doesn't move the schedule) and **Open conversation**.
 
 **Reliability:**
 - **Which process runs it:** the API process checks for due schedules every 20 seconds. Each run is claimed with a Valkey lock, so it fires exactly once even if you run several API processes.
@@ -1080,7 +1098,7 @@ The **Scheduler** (above Settings in the sidebar) gives agents tasks to run on a
 - **Disabled agent:** if a schedule's agent is disabled, its runs are recorded as skipped.
 - **Turning it off:** set `AHQ_SCHEDULER=0` to stop an API process from running schedules.
 
-Monthly schedules can be set for days 1 to 28 only, so they happen every month. For "the last day of the month" or anything else unusual, use a custom cron expression.
+Monthly schedules can be set for days 1 to 28 only, so they happen every month. For the last day of the month, a weekday such as the first Monday, or anything else unusual, describe it in plain words or use a custom cron expression (`0 9 L * *`, `0 9 * * 1#1`).
 
 ## Standing goals (the Board)
 
@@ -1445,6 +1463,7 @@ backend/app/
   context.py         long conversations: context windows, compaction, trimming, overflow warnings
   thinking.py        thinking levels: per-agent setting -> model settings per provider, support check
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
+  schedule_text.py   plain-language schedules ("every weekday at 7am") -> the Scheduler's fields
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger
   notifications.py   notices for you: building them from events, routing rules, delivery, settling
                      every copy when decided, the inbox for chat answers (pairing, decisions,

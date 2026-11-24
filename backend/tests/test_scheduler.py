@@ -36,7 +36,9 @@ SCRIPTS["did"] = did
     ("weekly", {"hour": 8, "minute": 0, "weekdays": [1, 2, 3, 4, 5]}, "0 8 * * 1,2,3,4,5", "Weekdays at 8:00 AM"),
     ("monthly", {"hour": 0, "minute": 5, "day_of_month": 1}, "5 0 1 * *", "Monthly on the 1st at 12:05 AM"),
     ("monthly", {"hour": 12, "minute": 0, "day_of_month": 22}, "0 12 22 * *", "Monthly on the 22nd at 12:00 PM"),
-    ("cron", {"cron": " */15  9-17 * *  1-5 "}, "*/15 9-17 * * 1-5", "Cron: */15 9-17 * * 1-5"),
+    ("cron", {"cron": " */15  9-17 * *  1-5 "}, "*/15 9-17 * * 1-5",
+     "Every 15 minutes from 9:00 AM to 5:45 PM on weekdays"),
+    ("cron", {"cron": "0 9 * 1 *"}, "0 9 * 1 *", "Cron: 0 9 * 1 *"),
 ])
 def test_cadences(freq, kw, cron, summary):
     s = Schedule(name="x", agent_id="a", task="t", frequency=freq,
@@ -104,7 +106,7 @@ async def test_create_preview_and_validation(hq):
     r = await hq.http.post("/api/schedules/preview", json={"frequency": "weekly", "weekdays": [1, 4], "hour": 7,
                                                           "minute": 30, "timezone": NY})
     p = r.json()
-    assert p["summary"] == "Mondays and Thursdays at 7:30 AM" and len(p["next"]) == 3
+    assert p["summary"] == "Mondays and Thursdays at 7:30 AM" and len(p["next"]) == 5
 
     for bad, msg in [({"frequency": "cron", "cron": "nope"}, "cron"), ({"timezone": "Nowhere/Land"}, "time zone"),
                      ({"task": "  "}, "task"), ({"agent_id": "missing"}, "agent")]:
