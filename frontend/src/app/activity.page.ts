@@ -4,7 +4,6 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { ActivityAgent, ActivityEvent, ActivityJob, ActivitySnapshot, Api } from './api.service';
 import { Avatar } from './avatar';
-import { Icon } from './icon';
 import { Workspace } from './workspace';
 
 type Metric = 'tokens' | 'output' | 'requests' | 'tools';
@@ -18,25 +17,22 @@ const POLL_MS = 3000;
  */
 @Component({
   selector: 'hq-activity',
-  imports: [FormsModule, DecimalPipe, RouterLink, Avatar, Icon],
+  imports: [FormsModule, DecimalPipe, RouterLink, Avatar],
   template: `
-  <div class="page-wrap">
-    <header class="crumbs board-crumbs">
-      <hq-icon name="activity" [size]="18" /><strong>Activity</strong>
+    <div class="ac-scroll">
+    <div class="ac-toolbar">
       <span class="live" [class.paused]="paused()" [title]="paused() ? 'Paused' : 'Updates every 3 seconds'">
         <span class="dot"></span>{{ paused() ? 'Paused' : 'Live' }}</span>
-      <span class="board-tools">
-        <select [ngModel]="window()" (ngModelChange)="setWindow($event)" title="Totals and charts cover">
-          <option [ngValue]="15">Last 15 minutes</option><option [ngValue]="60">Last hour</option>
-          <option [ngValue]="180">Last 3 hours</option><option [ngValue]="1440">Last 24 hours</option>
-          <option [ngValue]="10080">Last 7 days</option>
-        </select>
-        <button class="ghost" (click)="paused.set(!paused())">{{ paused() ? 'Resume' : 'Pause' }}</button>
-      </span>
-    </header>
-    @if (error()) { <p class="error board-error">{{ error() }}</p> }
+      <span class="spacer"></span>
+      <select [ngModel]="window()" (ngModelChange)="setWindow($event)" title="Totals and charts cover">
+        <option [ngValue]="15">Last 15 minutes</option><option [ngValue]="60">Last hour</option>
+        <option [ngValue]="180">Last 3 hours</option><option [ngValue]="1440">Last 24 hours</option>
+        <option [ngValue]="10080">Last 7 days</option>
+      </select>
+      <button class="ghost" (click)="paused.set(!paused())">{{ paused() ? 'Resume' : 'Pause' }}</button>
+    </div>
+    @if (error()) { <p class="error">{{ error() }}</p> }
 
-    <div class="ac-scroll">
     @if (snap(); as s) {
       <div class="cards">
         <div class="card"><span class="k">Running now</span><b>{{ s.jobs.length }} job{{ s.jobs.length === 1 ? '' : 's' }}</b>
@@ -94,7 +90,15 @@ const POLL_MS = 3000;
         </select>
       </div>
       <table class="grid ac-table">
-        <tr><th>Agent</th><th class="spark-col">{{ metricLabel() }} per {{ bucketLabel() }}</th><th>Requests</th>
+        <tr><th>Agent</th><th class="spark-col">
+          <div class="spark-head"><span>{{ metricLabel() }} per {{ bucketLabel() }}</span>
+            <span class="muted" title="Bar height: every row uses the same scale">full bar = {{ compact(peak()) }}</span></div>
+          <div class="axis">
+            @for (t of ticks(); track t.pos) {
+              <span [style.left.%]="t.pos" [class.first]="t.pos === 0" [class.last]="t.pos === 100">{{ t.label }}</span>
+            }
+          </div>
+        </th><th>Requests</th>
           <th>Tokens in</th><th>Tokens out</th><th>Out tok/s</th><th>Tool calls</th><th>Top tools</th></tr>
         @for (a of s.agents; track a.agent_id) {
           <tr [class.idle]="!running(a.agent_id) && !a.totals.requests">
@@ -103,14 +107,18 @@ const POLL_MS = 3000;
               <span><span class="dotmark" [class.on]="running(a.agent_id)"></span>{{ a.name }}
                 @if (a.is_subagent) { <small>sub-agent of {{ ws.agentName(a.parent_agent_id) }}</small> }</span>
             </div></td>
-            <td class="spark-col">
+            <td class="spark-col"><div class="spark-wrap">
               <svg class="spark" [attr.viewBox]="'0 0 ' + s.buckets.length + ' 30'" preserveAspectRatio="none">
+                @for (t of ticks(); track t.pos) {
+                  <line class="grid" [attr.x1]="t.pos * s.buckets.length / 100" [attr.x2]="t.pos * s.buckets.length / 100" y1="0" y2="30" />
+                }
+                <line class="base" x1="0" [attr.x2]="s.buckets.length" y1="29.75" y2="29.75" />
                 @for (v of series(a); track $index) {
                   <rect [attr.x]="$index + 0.1" [attr.width]="0.8" [attr.y]="30 - bar(v)" [attr.height]="bar(v)">
                     <title>{{ bucketTime($index) }}: {{ v | number }}</title></rect>
                 }
               </svg>
-            </td>
+            </div></td>
             <td>{{ a.totals.requests | number }}
               @if (a.totals.req_errors) { <span class="bad small"> ({{ a.totals.req_errors }} failed)</span> }
               @if (a.totals.requests) { <div class="muted small">{{ avg(a.totals.llm_ms, a.totals.requests) }} avg</div> }</td>
@@ -136,11 +144,12 @@ const POLL_MS = 3000;
         } @empty { <div class="muted">No steps yet.</div> }
       </div>
     } @else if (!error()) { <p class="muted ac-empty">Loading…</p> }
-    </div>
-  </div>`,
+    </div>`,
   styles: [`
-    .ac-scroll { overflow: auto; padding: 12px 24px 32px; flex: 1; min-height: 0; }
-    .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ok); margin-left: 10px; }
+    .ac-scroll { padding: 12px 24px 32px; }
+    .ac-toolbar { display: flex; align-items: center; gap: 8px; }
+    .ac-toolbar select { width: auto; } .spacer { flex: 1; }
+    .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ok); }
     .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: blink 2s infinite; }
     .live.paused { color: var(--muted); } .live.paused .dot { background: var(--muted); animation: none; }
     @keyframes blink { 50% { opacity: .3; } }
@@ -167,7 +176,14 @@ const POLL_MS = 3000;
     .dotmark { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--line); margin-right: 6px; vertical-align: middle; }
     .dotmark.on { background: var(--ok); }
     .spark-col { width: 34%; min-width: 180px; }
-    .spark { width: 100%; height: 30px; display: block; }
+    .spark-head { display: flex; justify-content: space-between; gap: 8px; }
+    .axis { position: relative; height: 14px; margin-top: 3px; font-size: 10.5px; font-weight: 400; color: var(--muted); }
+    .axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+    .axis span.first { transform: none; } .axis span.last { transform: translateX(-100%); }
+    .spark-wrap { position: relative; }
+    .spark { width: 100%; height: 30px; display: block; overflow: visible; }
+    .spark line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .spark line.grid { stroke-dasharray: 2 3; }
     .spark rect { fill: var(--accent); }
     .spark rect:hover { fill: var(--text); }
     .ac-tools .pill { margin: 0 4px 2px 0; display: inline-block; }
@@ -196,7 +212,29 @@ export class ActivityPage implements OnInit, OnDestroy {
   private runningIds = computed(() => new Set((this.snap()?.jobs ?? []).map(j => j.agent_id)));
   busyAgents = computed(() => this.runningIds().size);
   /** Tallest bar across all agents, so rows can be compared at a glance. */
-  private peak = computed(() => Math.max(1, ...(this.snap()?.agents ?? []).flatMap(a => this.series(a))));
+  peak = computed(() => Math.max(1, ...(this.snap()?.agents ?? []).flatMap(a => this.series(a))));
+  /** Time marks under the chart header and as faint lines in every chart: "now" at the right. */
+  ticks = computed(() => {
+    const s = this.snap();
+    if (!s) return [];
+    const n = s.buckets.length, b = s.bucket_s;
+    const step = ({ 15: 5, 60: 15, 180: 12, 1440: 6, 10080: 4 } as Record<number, number>)[s.window] ?? Math.max(1, Math.round(n / 4));
+    const out: { pos: number; label: string }[] = [];
+    for (let k = n; k >= 0; k -= step) {
+      let label = 'now';
+      if (k < n) {
+        const ago = (n - k) * b;
+        if (s.window <= 180) label = ago < 3600 ? `${ago / 60}m ago` : `${ago / 3600}h ago`;
+        else {
+          const d = new Date(s.buckets[k]);
+          label = s.window <= 1440 ? d.toLocaleTimeString([], { hour: 'numeric' })
+                                   : d.toLocaleDateString([], { weekday: 'short' });
+        }
+      }
+      out.push({ pos: 100 * k / n, label });
+    }
+    return out.reverse();
+  });
   /** Tokens in the last finished minute (only for windows with minute-or-finer buckets). */
   rateNow = computed(() => {
     const s = this.snap();

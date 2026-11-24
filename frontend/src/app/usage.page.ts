@@ -1,23 +1,25 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { Api, UsageReport } from './api.service';
 
 /** The usage ledger: every agent run's model requests, tokens and time. */
 @Component({
   selector: 'hq-usage',
-  imports: [FormsModule, DecimalPipe],
+  imports: [FormsModule, DecimalPipe, RouterLink],
   template: `
   <div class="editor wide">
     <div class="inline head-row">
-      <h2>Usage</h2>
+      <h2>Usage history</h2>
       <span class="spacer"></span>
       <select [ngModel]="days()" (ngModelChange)="setDays($event)">
         <option [ngValue]="1">Last 24 hours</option><option [ngValue]="7">Last 7 days</option>
         <option [ngValue]="30">Last 30 days</option><option [ngValue]="90">Last 90 days</option>
       </select>
     </div>
-    <p class="hint inline-hint">One row per agent run (a chat turn, a delegated task or a sub-agent task). Time is
+    <p class="hint inline-hint">One row per agent run (a chat turn, a delegated task or a sub-agent task), recorded when
+      the run ends, so a run still going isn't here yet: see <a routerLink="/reports/live">Live activity</a>. Time is
       wall-clock time of the run, including tool calls, so it's a rough stand-in for GPU/CPU time on local models.</p>
     @if (report(); as r) {
       <div class="cards">
@@ -36,6 +38,7 @@ import { Api, UsageReport } from './api.service';
         <div class="bars">
           @for (d of r.by_day; track d.day) {
             <div class="bar" [title]="d.day + ': ' + hours(d.seconds) + ', ' + d.runs + ' runs'">
+              @if (r.by_day.length <= 31) { <em class="val">{{ hours(d.seconds) }}</em> }
               <span [style.height.%]="pct(d.seconds)"></span><small>{{ d.day.slice(5) }}</small></div>
           }
         </div>

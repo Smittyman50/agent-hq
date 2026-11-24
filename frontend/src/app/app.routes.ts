@@ -17,6 +17,7 @@ import { BoardPage } from './board.page';
 import { RequestsHome, RequestsLayout } from './requests';
 import { SubagentsPage } from './subagents.page';
 import { UsagePage } from './usage.page';
+import { ReportsLayout } from './reports';
 import { LoginPage } from './login.page';
 import { SecurityPage } from './security.page';
 import { SkillsPage } from './skills.page';
@@ -28,9 +29,15 @@ export const routes: Routes = [
   { path: 'chat', component: ChatPage, canActivate: [authGuard] },
   { path: 'chat/:id', component: ChatPage, canActivate: [authGuard] },
   { path: 'board', component: BoardPage, canActivate: [authGuard] },
-  // Loaded when opened: keeps the main bundle under its budget.
-  { path: 'activity', canActivate: [authGuard],
-    loadComponent: () => import('./activity.page').then(m => m.ActivityPage) },
+  {
+    path: 'reports', component: ReportsLayout, canActivate: [authGuard], children: [
+      { path: '', pathMatch: 'full', redirectTo: 'live' },
+      // Loaded when opened: keeps the main bundle under its budget.
+      { path: 'live', loadComponent: () => import('./activity.page').then(m => m.ActivityPage) },
+      { path: 'history', component: UsagePage },
+    ],
+  },
+  { path: 'activity', redirectTo: 'reports/live' },
   { path: 'schedules', component: SchedulesPage, canActivate: [authGuard] },
   {
     path: 'requests', component: RequestsLayout, canActivate: [authGuard], children: [
@@ -49,7 +56,7 @@ export const routes: Routes = [
       { path: 'agents', component: AgentsPage },
       { path: 'models', component: ModelsPage },
       { path: 'subagents', component: SubagentsPage },
-      { path: 'usage', component: UsagePage },
+      { path: 'usage', redirectTo: '/reports/history' },  // moved to Reports
       { path: 'memory', component: MemoryPage },
       { path: 'skills', component: SkillsPage },
       { path: 'knowledge', component: KnowledgePage },

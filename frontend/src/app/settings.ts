@@ -8,7 +8,6 @@ export const SETTINGS_SECTIONS = [
   { path: 'agents', label: 'Agents', icon: 'agents' },
   { path: 'models', label: 'Model providers', icon: 'models' },
   { path: 'subagents', label: 'Sub-agents', icon: 'subagents' },
-  { path: 'usage', label: 'Usage', icon: 'usage' },
   { path: 'memory', label: 'Memory', icon: 'memory' },
   { path: 'skills', label: 'Skills', icon: 'skills' },
   { path: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
