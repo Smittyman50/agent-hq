@@ -19,7 +19,12 @@ way of working to ordinary requests, without the board or your approval:
 3. **Replanning.** A step that ends partial or failed, or says "PLAN:" in its result, gets a
    short revise request: KEEP, STOP, or new remaining steps (revise, parse_revision), at most
    AHQ_PLAN_MAX_REVISIONS times per request.
-4. **Reply.** A last run with the conversation's history writes the reply (or the
+4. **Restarts.** When the worker running a request shuts down (a deploy) or dies, the job
+   is picked up again by a worker and carries on with the same plan: finished steps keep
+   their results, the interrupted step runs again (told to check what it already made),
+   and nothing is planned again (resume). A step that can't reach its tool server is
+   tried again after a wait (STEP_RETRIES) instead of failing. Only Stop ends a plan early.
+5. **Reply.** A last run with the conversation's history writes the reply (or the
    WorkResult, for a delegated task) from the results (final_prompt). That's what the
    conversation's history keeps, so follow-ups know what was done.
 
@@ -51,6 +56,11 @@ MIN_WORDS = 3          # auto: messages shorter than this never plan ("yes", "th
 PLAN_TIMEOUT = 120     # seconds for one planning or revise request
 CLIP_RESULT = 1500     # characters of a step's details kept on the plan
 FINISHED = ("done", "partial", "failed", "skipped", "stopped")
+# Plans a job picked up again after a worker restart carries on with (see resume).
+UNFINISHED = ("working", "writing", "interrupted")
+RESUMABLE = UNFINISHED + ("done", "partial", "failed")  # not "stopped": that was you
+STEP_RETRIES = 2       # a step whose tool server can't be reached is tried again this often,
+STEP_RETRY_WAIT = 20   # waiting this many seconds more each time (a container being recreated)
 
 PLAN_RULES = """\
 You plan next actions for {name}, an AI agent, before it starts on a request.
@@ -250,11 +260,16 @@ def step_prompt(plan: dict, step: dict, request: str) -> str:
     carried = ""
     if done and done[-1].get("details"):
         carried = f"\n\nWhat step {done[-1]['n']} left for the next steps:\n{_clip(done[-1]['details'], CLIP_RESULT)}"
+    again = ""
+    if step.get("restarts"):
+        again = ("\n\n[This step was started before and interrupted (a worker restart or a tool "
+                 "server that couldn't be reached). Files and notes from that attempt may already "
+                 "be there: check your workbench and read_notes, keep what's done and finish the rest.]")
     return (f"[Next actions: step {step['n']} of {len(plan['steps'])}]\n"
             f"Request: {plan.get('brief') or _clip(request, 1500)}\n\n"
             f"The user's message:\n{_clip(request, 3000)}\n\n"
             f"Plan:\n{_plan_lines(plan, step['n'])}{carried}\n\n"
-            f"Your step now: {step['n']}. {step['title']}\n{step.get('details') or ''}".rstrip())
+            f"Your step now: {step['n']}. {step['title']}\n{step.get('details') or ''}".rstrip() + again)
 
 
 def revise_prompt(plan: dict, step: dict) -> str:
@@ -297,6 +312,31 @@ def new_plan(*, job, agent, draft: dict, depth: int) -> dict:
                    "status": "pending", "summary": "", "started_at": None, "finished_at": None}
                   for i, s in enumerate(draft["steps"], 1)],
     }
+
+
+def interrupt(plan: dict) -> None:
+    """The worker is going away mid-plan: leave the plan to be resumed."""
+    for s in plan["steps"]:
+        if s["status"] == "running":
+            s["status"] = "pending"
+            s["restarts"] = s.get("restarts", 0) + 1
+    if plan["status"] != "writing":
+        plan["status"] = "interrupted"
+    plan["interrupted"] = plan.get("interrupted", 0) + 1
+
+
+def resume(plan: dict) -> None:
+    """A job picked up again: carry on from the first step that hasn't finished. A step
+    left running (the worker died without a word) runs again."""
+    for s in plan["steps"]:
+        if s["status"] == "running":
+            s["status"] = "pending"
+            s["restarts"] = s.get("restarts", 0) + 1
+    if plan["status"] in ("working", "interrupted"):
+        plan["status"] = "working"
+    elif plan["status"] in ("done", "partial", "failed"):
+        plan["status"] = "writing"  # the steps finished; the reply never got sent
+    plan["resumed"] = plan.get("resumed", 0) + 1
 
 
 def next_step(plan: dict) -> dict | None:

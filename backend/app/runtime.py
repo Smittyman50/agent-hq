@@ -69,7 +69,7 @@ from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
 from . import memory
-from .telemetry import TRACER, current_traceparent, job_span, set_output
+from .telemetry import TRACER, current_traceparent, finish_step_span, job_span, set_output, step_span
 from opentelemetry import trace
 from .models import (
     AgentDef,
@@ -2225,24 +2225,39 @@ class Runtime:
         """Run a turn or delegated task, as next actions when it needs several steps
         (app/nextactions.py): plan, work each step as its own focused run, then write the
         reply from the results. Anything else, or a plan that can't be made, runs as one
-        run (run_agent). Returns what run_agent returns."""
-        if not nextactions.wants_plan(agent, job, prompt, replay=deps.replay):
-            return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
-        try:
-            draft = await self._draft_plan(agent, prompt, history, deps)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # planning is an optimisation: never fail the request over it
-            log.warning("next actions: %s couldn't plan job %s: %s", agent.name, deps.job_id, e)
-            draft = None
-        if draft is None:
-            return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
-        plan = nextactions.new_plan(job=job, agent=agent, draft=draft, depth=deps.depth)
-        await self._save_plan(plan)
-        await self.save_message(
-            deps.thread_id, Role.event,
-            f"{agent.name} broke this into {len(plan['steps'])} next actions.",
-            agent_id=agent.id, kind="next_actions", job_id=job.id, depth=deps.depth)
+        run (run_agent). Returns what run_agent returns.
+
+        A job picked up again after its worker died or was restarted (a deploy) carries on
+        with the plan it already has, from the step that was interrupted."""
+        plan = await self._resumable_plan(job, agent, deps)
+        if plan is not None:
+            nextactions.resume(plan)
+            await self._save_plan(plan)
+            at = nextactions.next_step(plan)
+            where = (f"at step {at['n']} of {len(plan['steps'])}" if at
+                     else "with the reply")
+            await self.save_message(
+                deps.thread_id, Role.event,
+                f"{agent.name} picked up its next actions where it left off, {where}.",
+                agent_id=agent.id, kind="next_actions_resumed", job_id=job.id, depth=deps.depth)
+        else:
+            if not nextactions.wants_plan(agent, job, prompt, replay=deps.replay):
+                return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+            try:
+                draft = await self._draft_plan(agent, prompt, history, deps)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # planning is an optimisation: never fail the request over it
+                log.warning("next actions: %s couldn't plan job %s: %s", agent.name, deps.job_id, e)
+                draft = None
+            if draft is None:
+                return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+            plan = nextactions.new_plan(job=job, agent=agent, draft=draft, depth=deps.depth)
+            await self._save_plan(plan)
+            await self.save_message(
+                deps.thread_id, Role.event,
+                f"{agent.name} broke this into {len(plan['steps'])} next actions.",
+                agent_id=agent.id, kind="next_actions", job_id=job.id, depth=deps.depth)
         try:
             await self._work_plan(agent, plan, prompt, deps, as_worker)
             plan["status"] = "writing"
@@ -2252,17 +2267,41 @@ class Runtime:
             plan["status"] = nextactions.outcome(plan)
             return out
         except asyncio.CancelledError:
-            nextactions.skip_remaining(plan, "stopped")
-            plan["status"] = "stopped"
+            # You pressed Stop, or the worker is shutting down (a deploy, a restart). Only a
+            # Stop ends the plan; otherwise it's left to resume on the worker that picks
+            # the job up again.
+            stopped = False
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                stopped = await asyncio.shield(self._stop_pending(job.id))
+            if stopped:
+                nextactions.skip_remaining(plan, "stopped")
+                plan["status"] = "stopped"
+            else:
+                nextactions.interrupt(plan)
             raise
         except Exception:
             nextactions.skip_remaining(plan, "stopped")
             plan["status"] = "failed"
             raise
         finally:
-            # Shielded: a stopped turn still records where it got to.
+            # Shielded: a stopped or interrupted turn still records where it got to. An
+            # interrupted plan keeps the running expiry, so it's still there to resume.
+            ttl = None if plan["status"] == "interrupted" else nextactions.finished_ttl()
             with contextlib.suppress(Exception, asyncio.CancelledError):
-                await asyncio.shield(self._save_plan(plan, ttl=nextactions.finished_ttl()))
+                await asyncio.shield(self._save_plan(plan, ttl=ttl))
+
+    async def _resumable_plan(self, job: Job | None, agent: AgentDef, deps: RunDeps) -> dict | None:
+        """This job's plan, if an earlier attempt at it left one unfinished."""
+        if job is None or deps.replay is not None or job.attempts < 2:
+            return None
+        try:
+            plan = await nextactions.load(self.broker.r, job.id)
+        except Exception as e:
+            log.warning("next actions: couldn't read the plan of job %s: %s", job.id, e)
+            return None
+        if plan and plan.get("agent_id") == agent.id and plan.get("status") in nextactions.RESUMABLE:
+            return plan
+        return None
 
     async def _work_plan(self, agent: AgentDef, plan: dict, prompt: str, deps: RunDeps,
                          as_worker: bool) -> None:
@@ -2276,16 +2315,13 @@ class Runtime:
                 break
             step["status"], step["started_at"] = "running", nextactions._now()
             await self._save_plan(plan)
-            try:
-                out, _ = await self.run_agent(agent, nextactions.step_prompt(plan, step, prompt),
-                                              deps, history=None, as_worker=as_worker, step=True)
-                res = as_work_result(out)
-            except asyncio.CancelledError:
-                step["status"] = "stopped"
-                raise
-            except Exception as e:  # the step failed (its fallback too, if it has one)
-                log.warning("next actions: step %s of job %s failed: %s", step["n"], deps.job_id, e)
-                res = WorkResult(status="failed", summary=f"This step hit an error: {_brief(str(e), 400)}")
+            sp = nextactions.step_prompt(plan, step, prompt)
+            with step_span(plan, step, sp) as span:
+                ctx = span.get_span_context()
+                if ctx.is_valid:  # tracing on: where to find this step in Phoenix
+                    step["trace_id"] = format(ctx.trace_id, "032x")
+                res = await self._run_step(agent, plan, step, sp, deps, as_worker)
+                finish_step_span(span, res.status, res.summary)
             step["status"] = res.status
             step["summary"] = res.summary.strip()
             step["details"] = nextactions._clip(res.details, nextactions.CLIP_RESULT)
@@ -2313,6 +2349,35 @@ class Runtime:
                 await self.broker.publish(deps.thread_id, "plan_revised", job_id=plan["job_id"],
                                           agent=agent.name, agent_id=agent.id, depth=deps.depth,
                                           steps=len(plan["steps"]))
+
+    async def _run_step(self, agent: AgentDef, plan: dict, step: dict, text: str, deps: RunDeps,
+                        as_worker: bool) -> WorkResult:
+        """One next action as its own run. A tool server that can't be reached (most likely
+        being recreated by a deploy) gets a wait and another try before the step fails."""
+        tries = 0
+        while True:
+            try:
+                out, _ = await self.run_agent(agent, text, deps, history=None,
+                                              as_worker=as_worker, step=True)
+                return as_work_result(out)
+            except asyncio.CancelledError:
+                raise  # Stop or shutdown: run_with_plan decides what that means for the plan
+            except Exception as e:  # the step failed (its fallback too, if it has one)
+                down = _find_exc(e, ToolServerUnreachable)
+                if down is not None and tries < nextactions.STEP_RETRIES:
+                    # Most likely being recreated (a deploy): wait, then try this step
+                    # again rather than failing it.
+                    tries += 1
+                    wait = nextactions.STEP_RETRY_WAIT * tries
+                    await self.save_message(
+                        deps.thread_id, Role.event,
+                        f"{agent.name} couldn't reach {down.server} on step {step['n']}; trying "
+                        f"the step again in {wait}s.", agent_id=agent.id, kind="step_retry")
+                    await asyncio.sleep(wait)
+                    step["restarts"] = step.get("restarts", 0) + 1
+                    continue
+                log.warning("next actions: step %s of job %s failed: %s", step["n"], deps.job_id, e)
+                return WorkResult(status="failed", summary=f"This step hit an error: {_brief(str(e), 400)}")
 
     async def _planning_model(self, agent: AgentDef):
         """The agent's own main model, counted on the Activity page, with less thinking."""

@@ -418,7 +418,7 @@ const EVERYONE = '__huddle__';
                 <span class="plan-who">{{ p.agent }}</span>
                 @if (p.kind === 'task') { <span class="muted plan-for">delegated</span> }
                 <span class="pill {{ planPill(p) }}">{{ planLabel(p) }}</span>
-                <span class="muted plan-count">{{ doneCount(p) }}/{{ p.steps.length }}@if (p.revisions) { · replanned {{ p.revisions }}× }</span>
+                <span class="muted plan-count">{{ doneCount(p) }}/{{ p.steps.length }}@if (p.revisions) { · replanned {{ p.revisions }}× }@if (p.resumed) { · resumed {{ p.resumed }}× }</span>
               </summary>
               @if (p.brief) { <div class="plan-brief muted">{{ p.brief }}</div> }
               <ol class="plan-steps">
@@ -1089,8 +1089,10 @@ export class ChatPage implements OnInit, OnDestroy {
   isLive(p: Plan) { return LIVE_PLAN.includes(p.status); }
   mark(status: PlanStep['status']) { return STEP_MARK[status] ?? '○'; }
   doneCount(p: Plan) { return p.steps.filter(s => ['done', 'partial', 'failed', 'skipped', 'stopped'].includes(s.status)).length; }
-  planPill(p: Plan) { return this.isLive(p) ? 'working' : p.status; }
-  planLabel(p: Plan) { return p.status === 'writing' ? 'replying' : p.status; }
+  planPill(p: Plan) { return this.isLive(p) ? 'working' : p.status === 'interrupted' ? 'partial' : p.status; }
+  planLabel(p: Plan) {
+    return p.status === 'writing' ? 'replying' : p.status === 'interrupted' ? 'waiting for a worker' : p.status;
+  }
   /** The running plan of the conversation's own turn, else the newest running one. */
   livePlan = computed(() => {
     const live = Object.values(this.plans()).filter(p => this.isLive(p));

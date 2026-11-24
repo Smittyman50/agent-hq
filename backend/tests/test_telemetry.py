@@ -230,3 +230,43 @@ async def test_huddle_turns_are_traced_per_agent_in_one_session(hq):
     by_name = {s.name: s.attributes for s in turns}
     assert by_name["turn Scarlett"]["agent_hq.agent_id"] == scarlett["id"]
     assert by_name["turn Scarlett"]["agent_hq.pool"] == "gpu"
+
+
+async def test_each_next_action_is_a_trace_of_its_own(hq, monkeypatch):
+    """A planned request's steps show in Phoenix as each one finishes, like goal turns:
+    each is a root span linked to the turn, in the conversation's session."""
+    from app import nextactions
+    from app.config import reload_settings
+
+    from . import test_next_actions  # registers the fake planner  # noqa: F401
+
+    monkeypatch.setenv("AHQ_NEXT_ACTIONS", "1")
+    reload_settings()
+    await hq.start_worker()
+    a = await hq.agent(name="Hi-Tech", model="fake:planner")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "build me a zork inspired text based game")
+    await hq.wait_agent_replies(t["id"], 1)
+    pool = await settle(hq)
+    turn = job_spans("turn", pool)[0]
+    steps = sorted((s for s in pool if s.name.startswith("next action ")), key=lambda s: s.attributes["agent_hq.step"])
+    assert [s.name for s in steps] == ["next action 1/3 Hi-Tech: Write the room map",
+                                       "next action 2/3 Hi-Tech: Write the parser",
+                                       "next action 3/3 Hi-Tech: Test the game"]
+    for s in steps:
+        assert s.parent is None and s.context.trace_id != turn.context.trace_id  # its own trace
+        assert [l.context.span_id for l in s.links] == [turn.context.span_id]
+        assert s.attributes["session.id"] == t["id"]
+        assert s.attributes["agent_hq.job_id"] == turn.attributes["agent_hq.job_id"]
+        assert s.attributes["openinference.span.kind"] == "CHAIN"
+        assert s.attributes["output.value"].startswith("[done] Did step")
+        assert s.status.is_ok
+    # The step's model calls and tool calls are inside its trace, not the turn's.
+    by_id = {s.context.span_id: s for s in pool}
+    inside = [s for s in pool if steps[0] in ancestors(s, by_id)]
+    assert inside and all(s.context.trace_id == steps[0].context.trace_id for s in inside)
+    assert all(s.attributes.get("agent_hq.step") == 1 for s in inside)
+    plan = await nextactions.load(hq.runtime.broker.r, turn.attributes["agent_hq.job_id"])
+    assert plan["steps"][0]["trace_id"] == format(steps[0].context.trace_id, "032x")
+    monkeypatch.setenv("AHQ_NEXT_ACTIONS", "0")
+    reload_settings()

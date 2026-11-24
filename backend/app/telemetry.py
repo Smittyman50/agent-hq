@@ -8,6 +8,11 @@ Set OTEL_EXPORTER_OTLP_ENDPOINT (e.g. http://perceptor:4318, OTLP over HTTP) and
 * Each job runs inside a "job" span whose parent is the span that queued it. The W3C
   traceparent travels with the job through Valkey, so a conversation turn, its
   delegations on other machines and any background report all form one trace.
+* Next actions (app/nextactions.py): each step of a planned request is a trace of its
+  own ("next action ..."), like a goal turn, so it shows in Phoenix as soon as the step
+  finishes instead of when the whole request does, which can be hours later. It links to
+  the turn's trace and carries the same session.id, so the conversation's Phoenix session
+  holds the turn and all its steps.
 * Every span inside a job carries session.id = the conversation ID (Phoenix groups
   them as a session) plus agent, job, kind, pool and worker attributes.
 * Images (screenshots sent to vision models) are never put into spans.
@@ -173,6 +178,45 @@ def job_span(job, agent_name: str, worker: str):
             yield span
     finally:
         _job_attrs.reset(token)
+
+
+@contextlib.contextmanager
+def step_span(plan: dict, step: dict, prompt: str):
+    """One next action of a planned request (app/nextactions.py) as a trace of its own,
+    linked to the job's span. Every span inside it carries the job's attributes, as a job
+    span's do, plus the step's."""
+    tracer = trace.get_tracer(TRACER)
+    parent = trace.get_current_span().get_span_context()
+    links = [trace.Link(parent, {"agent_hq.link": "the turn or task this step belongs to"})] \
+        if parent.is_valid else []
+    step_attrs = {"agent_hq.step": step["n"], "agent_hq.steps": len(plan["steps"]),
+                  "agent_hq.step_title": step["title"][:200],
+                  "agent_hq.step_restarts": int(step.get("restarts") or 0)}
+    outer = _job_attrs.get() or {}
+    token = _job_attrs.set({**outer, **step_attrs})
+    try:
+        with tracer.start_as_current_span(
+            f"next action {step['n']}/{len(plan['steps'])} {plan['agent']}: {step['title'][:80]}",
+            context=otel_context.Context(),  # a new trace: shows in Phoenix when this step ends
+            kind=trace.SpanKind.INTERNAL, links=links,
+            attributes={**outer, **step_attrs, "openinference.span.kind": "CHAIN",
+                        "input.value": prompt[:4000]},
+        ) as span:
+            yield span
+    finally:
+        _job_attrs.reset(token)
+
+
+def finish_step_span(span, status: str, summary: str) -> None:
+    """The step's result on its span: output, and an error status unless it finished."""
+    if span is None or not span.is_recording():
+        return
+    span.set_attribute("agent_hq.step_status", status)
+    span.set_attribute("output.value", f"[{status}] {summary}"[:4000])
+    if status == "failed":
+        span.set_status(trace.Status(trace.StatusCode.ERROR, summary[:200]))
+    elif status == "done":
+        span.set_status(trace.Status(trace.StatusCode.OK))
 
 
 @contextlib.contextmanager

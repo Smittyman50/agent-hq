@@ -267,3 +267,116 @@ async def test_a_planner_that_fails_falls_back_to_one_run(hq, planning_on, monke
     t = await hq.thread(a["id"])
     await hq.say(t["id"], "build me a zork inspired text based game")
     assert await hq.wait_agent_replies(t["id"], 1) == ["Done directly."]
+
+
+# --------------------------------------------------------------------------- restarts
+
+HANG = {"step2": 0}
+
+
+def hanging_planner():
+    """Like planner_script, but its first try at step 2 hangs: the worker 'dies' there."""
+    base = planner_script()
+
+    async def fn(messages, info):
+        first = _first_prompt(messages)
+        if first.startswith("[Next actions: step 2") and not any(
+                getattr(p, "part_kind", "") == "tool-return" for m in messages for p in getattr(m, "parts", [])):
+            HANG["step2"] += 1
+            SEEN.setdefault("step2_prompts", []).append(first)
+            if HANG["step2"] == 1:
+                await asyncio.sleep(3600)
+        return base(messages, info)
+    fn.plans = True
+    return fn
+
+
+SCRIPTS["planner-hangs"] = hanging_planner()
+
+
+async def _wait_for(cond, timeout=10.0):
+    for _ in range(int(timeout / 0.05)):
+        if await cond():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("timed out")
+
+
+async def test_a_restarted_worker_resumes_the_plan_instead_of_starting_over(hq, planning_on):
+    HANG["step2"] = 0
+    a_worker = await hq.start_worker(name="A")
+    agent = await hq.agent(name="Hi-Tech", model="fake:planner-hangs")
+    t = await hq.thread(agent["id"])
+    await hq.say(t["id"], "build me a zork inspired text based game")
+    r = hq.runtime.broker.r
+
+    async def in_step_2():
+        return HANG["step2"] >= 1
+    await _wait_for(in_step_2)
+    job = hq.jobs()[-1]
+    await a_worker.stop(graceful=False)  # a deploy: the worker goes away mid-step
+    plan = await nextactions.load(r, job.id)
+    assert plan["status"] == "interrupted"
+    assert [s["status"] for s in plan["steps"]] == ["done", "pending", "pending"]
+    assert await r.ttl(f"ahq:plan:{job.id}") > settings.pad_ttl_hours * 3600  # not the finished expiry
+
+    await hq.start_worker(name="B", claim_idle_ms=300)
+    assert await hq.wait_agent_replies(t["id"], 1, timeout=20) == ["Your game is ready."]
+    assert len(SEEN["planned"]) == 1  # planned once, not again after the restart
+    assert [s["n"] for s in SEEN["steps"]].count(1) == 3  # step 1's three requests, once: not redone
+    assert "This step was started before and interrupted" in SEEN["step2_prompts"][-1]
+    plan = await nextactions.load(r, job.id)
+    assert plan["status"] == "done" and plan["resumed"] == 1
+    assert [s["status"] for s in plan["steps"]] == ["done", "done", "done"]
+    assert any((m.meta or {}).get("kind") == "next_actions_resumed" and "at step 2 of 3" in m.content
+               for m in hq.messages(t["id"]))
+    assert hq.jobs()[-1].attempts == 2
+
+
+async def test_stop_ends_the_plan(hq, planning_on):
+    HANG["step2"] = 0
+    await hq.start_worker()
+    agent = await hq.agent(name="Hi-Tech", model="fake:planner-hangs")
+    t = await hq.thread(agent["id"])
+    await hq.say(t["id"], "build me a zork inspired text based game")
+
+    async def in_step_2():
+        return HANG["step2"] >= 1
+    await _wait_for(in_step_2)
+    job = hq.jobs()[-1]
+    assert (await hq.http.post(f"/api/threads/{t['id']}/stop")).status_code == 200
+    r = hq.runtime.broker.r
+
+    async def stopped():
+        p = await nextactions.load(r, job.id)
+        return p and p["status"] == "stopped"
+    await _wait_for(stopped)
+    plan = await nextactions.load(r, job.id)
+    assert [s["status"] for s in plan["steps"]] == ["done", "stopped", "stopped"]
+    assert 0 < await r.ttl(f"ahq:plan:{job.id}") <= settings.pad_ttl_hours * 3600
+
+
+async def test_a_step_retries_when_its_tool_server_is_being_recreated(hq, planning_on, monkeypatch):
+    from app import runtime as rt_mod
+
+    monkeypatch.setattr(nextactions, "STEP_RETRY_WAIT", 0)
+    w = await hq.start_worker()
+    real = w.rt.run_agent
+    calls = {"n": 0}
+
+    async def flaky(agent, prompt, deps, **kw):
+        if kw.get("step") and prompt.startswith("[Next actions: step 2"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise rt_mod.ToolServerUnreachable("workbench-1", "http://workbench-1:8000", "connection refused")
+        return await real(agent, prompt, deps, **kw)
+    monkeypatch.setattr(w.rt, "run_agent", flaky)
+    agent = await hq.agent(name="Hi-Tech", model="fake:planner")
+    t = await hq.thread(agent["id"])
+    await hq.say(t["id"], "build me a zork inspired text based game")
+    assert await hq.wait_agent_replies(t["id"], 1) == ["Your game is ready."]
+    plan = await nextactions.load(hq.runtime.broker.r, hq.jobs()[-1].id)
+    assert [s["status"] for s in plan["steps"]] == ["done", "done", "done"]
+    assert plan["steps"][1]["restarts"] == 1 and plan["revisions"] == 0
+    assert any((m.meta or {}).get("kind") == "step_retry" and "workbench-1" in m.content
+               for m in hq.messages(t["id"]))

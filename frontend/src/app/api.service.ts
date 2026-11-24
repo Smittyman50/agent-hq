@@ -62,8 +62,9 @@ export interface PlanStep {
 export interface Plan {
   job_id: string; thread_id: string; agent_id: string; agent: string; parent_job_id: string | null;
   depth: number; kind: 'turn' | 'task'; brief: string;
-  status: 'working' | 'writing' | 'done' | 'partial' | 'failed' | 'stopped';
-  revisions: number; stopped_because: string; created_at: string; updated_at: string; steps: PlanStep[];
+  /** interrupted: its worker restarted mid-step; it carries on when a worker picks the job up again. */
+  status: 'working' | 'writing' | 'interrupted' | 'done' | 'partial' | 'failed' | 'stopped';
+  revisions: number; resumed?: number; stopped_because: string; created_at: string; updated_at: string; steps: PlanStep[];
 }
 export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number;
   up?: number; down?: number; last_used_at: string | null; }
