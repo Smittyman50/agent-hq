@@ -324,7 +324,7 @@ const EVERYONE = '__huddle__';
         @if (activity().length) {
           <details class="activity" open>
             <summary>Live activity ({{ activity().length }})</summary>
-            @for (a of activity(); track $index) {
+            @for (a of activityNewestFirst(); track $index) {
               <div class="act {{ a.kind }}" [style.padding-left.px]="8 + a.depth * 16" [title]="a.text">
                 <span class="ts">{{ a.ts | date:'HH:mm:ss' }}</span> {{ a.text }}
               </div>
@@ -505,6 +505,8 @@ export class ChatPage implements OnInit, OnDestroy {
   threadId = signal<string | null>(null);
   messages = signal<Message[]>([]);
   activity = signal<Activity[]>([]);
+  /** The live activity log for display: newest step at the top. */
+  activityNewestFirst = computed(() => [...this.activity()].reverse());
   busy = signal(false);
   stopping = signal(false);
   /** Something in this conversation is still running: the turn, or a task it delegated. */
