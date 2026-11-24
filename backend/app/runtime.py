@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import activity, approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import huddles, notifications, resources, scratchpad, speed, workitems
+from . import huddles, nextactions, notifications, resources, scratchpad, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -1572,7 +1572,7 @@ class Runtime:
             if heard:
                 prompt = heard + "\n\n" + prompt
         try:
-            reply, messages = await self.run_agent(agent, prompt, deps, history=history)
+            reply, messages = await self.run_with_plan(agent, prompt, deps, history=history, job=job)
         finally:
             save_trace(deps.job_id, deps.trace)
         return {"reply": reply,
@@ -1663,7 +1663,7 @@ class Runtime:
                                   from_agent=requester.name if requester else None,
                                   to_agent=assignee.name, task=job.task,
                                   background=job.background, depth=job.depth,
-                                  worker=job.worker)
+                                  worker=job.worker, parent_job_id=job.parent_job_id)
         if (job.meta or {}).get("message_id"):
             await self.update_message(job.meta["message_id"], status="working", worker=job.worker)
         if assignee.is_subagent and assignee.retired:
@@ -1675,7 +1675,7 @@ class Runtime:
             return
         try:
             try:
-                result, _ = await self.run_agent(assignee, job.task, deps, as_worker=True)
+                result, _ = await self.run_with_plan(assignee, job.task, deps, as_worker=True, job=job)
             finally:
                 save_trace(job.id, deps.trace)
             result = as_work_result(result)
@@ -1805,12 +1805,14 @@ class Runtime:
                     knowledge_context: str = "", window: int | None = None,
                     thread_id: str | None = None,
                     model_settings: ModelSettings | None = None,
-                    request_budget: int | None = None) -> Agent:
+                    request_budget: int | None = None, step: bool = False) -> Agent:
+        """`step`: one next action of a planned request (app/nextactions.py): it hands in a
+        WorkResult like a delegate, without the chat-only tools (goal board, huddle note)."""
         instructions = [agent.instructions or f"You are {agent.name}."]
         about_user = profile.context_for(agent)
         if about_user:
             instructions.append(about_user)
-        if thread_id and not as_worker:
+        if thread_id and not as_worker and not step:
             with db.session() as s:
                 thread = s.get(Thread, thread_id)
             if thread is not None and thread.huddle and huddles.is_member(thread, agent.id):
@@ -1820,7 +1822,9 @@ class Runtime:
         roster = team_roster(agent)
         if roster:
             instructions.append(roster)
-        if as_worker:
+        if step:
+            instructions.append(nextactions.STEP_RULES)
+        elif as_worker:
             instructions.append(
                 "You are working on a task delegated by another agent. Do the work, then "
                 "return a WorkResult. If you cannot finish, return status 'failed' or "
@@ -1882,7 +1886,7 @@ class Runtime:
         if mode != SubagentMode.off:
             instructions.append(subagent_rules(agent, mode))
             toolsets.append((self._subagent_toolset(mode), None))
-        if not as_worker and thread_id:
+        if not as_worker and not step and thread_id:
             goal = workitems.goal_for_thread(thread_id)
             if goal is not None and goal.owner_agent_id == agent.id:
                 instructions.append(workitems.GOAL_RULES)
@@ -1943,7 +1947,7 @@ class Runtime:
             deps_type=RunDeps,
             # Delegated agents should hand in a WorkResult, but small models often just write
             # their answer as text; accept that too rather than throwing the work away.
-            output_type=[WorkResult, str] if as_worker else str,
+            output_type=[WorkResult, str] if as_worker or step else str,
             retries=3,  # a malformed tool call or result gets a few tries, not one
             capabilities=[ProcessHistory(process_history)],
             # The agent's thinking level, translated for its model (app/thinking.py).
@@ -1972,10 +1976,11 @@ class Runtime:
         return built
 
     async def run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
-                        history: list | None = None, as_worker: bool = False):
+                        history: list | None = None, as_worker: bool = False, step: bool = False):
         """Run the agent (see _run_agent), then let go of any shared desktop this run took."""
         try:
-            return await self._run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+            return await self._run_agent(agent, prompt, deps, history=history, as_worker=as_worker,
+                                         step=step)
         finally:
             if deps.replay is None:
                 shared = resources.shared_desktops([srv.id for srv in desktop_servers(agent)])
@@ -1986,7 +1991,7 @@ class Runtime:
                         log.warning("couldn't release shared desktop %s: %s", res_id, e)
 
     async def _run_agent(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
-                         history: list | None = None, as_worker: bool = False):
+                         history: list | None = None, as_worker: bool = False, step: bool = False):
         """Run on the agent's model; on failure or escalation, rerun on its fallback model.
 
         Every run is written to the usage ledger. Sub-agents run under their caps: a limit
@@ -2040,7 +2045,7 @@ class Runtime:
                                                 **(await thinking.settings_for(
                                                     agent, on_fallback=on_fallback, override=think) or {}),
                                                 **limit_settings(agent, on_fallback=on_fallback)}) or None),
-                                            request_budget=budget)
+                                            request_budget=budget, step=step)
                 start = resume if resume is not None else history
                 start = await self._fit_history(agent, pa_agent, start, window, text or "", deps)
                 if resume is None:
@@ -2211,6 +2216,170 @@ class Runtime:
                 raise
             except Exception as last:
                 return await wrap_up(True, last)
+
+    # ------------------------------------------------------------ next actions
+
+    async def run_with_plan(self, agent: AgentDef, prompt: str, deps: RunDeps, *,
+                            history: list | None = None, as_worker: bool = False,
+                            job: Job | None = None):
+        """Run a turn or delegated task, as next actions when it needs several steps
+        (app/nextactions.py): plan, work each step as its own focused run, then write the
+        reply from the results. Anything else, or a plan that can't be made, runs as one
+        run (run_agent). Returns what run_agent returns."""
+        if not nextactions.wants_plan(agent, job, prompt, replay=deps.replay):
+            return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+        try:
+            draft = await self._draft_plan(agent, prompt, history, deps)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # planning is an optimisation: never fail the request over it
+            log.warning("next actions: %s couldn't plan job %s: %s", agent.name, deps.job_id, e)
+            draft = None
+        if draft is None:
+            return await self.run_agent(agent, prompt, deps, history=history, as_worker=as_worker)
+        plan = nextactions.new_plan(job=job, agent=agent, draft=draft, depth=deps.depth)
+        await self._save_plan(plan)
+        await self.save_message(
+            deps.thread_id, Role.event,
+            f"{agent.name} broke this into {len(plan['steps'])} next actions.",
+            agent_id=agent.id, kind="next_actions", job_id=job.id, depth=deps.depth)
+        try:
+            await self._work_plan(agent, plan, prompt, deps, as_worker)
+            plan["status"] = "writing"
+            await self._save_plan(plan)
+            out = await self.run_agent(agent, nextactions.final_prompt(prompt, plan, worker=as_worker),
+                                       deps, history=history, as_worker=as_worker)
+            plan["status"] = nextactions.outcome(plan)
+            return out
+        except asyncio.CancelledError:
+            nextactions.skip_remaining(plan, "stopped")
+            plan["status"] = "stopped"
+            raise
+        except Exception:
+            nextactions.skip_remaining(plan, "stopped")
+            plan["status"] = "failed"
+            raise
+        finally:
+            # Shielded: a stopped turn still records where it got to.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(self._save_plan(plan, ttl=nextactions.finished_ttl()))
+
+    async def _work_plan(self, agent: AgentDef, plan: dict, prompt: str, deps: RunDeps,
+                         as_worker: bool) -> None:
+        """Run each pending step in turn, replanning when one doesn't go to plan."""
+        runs = 0
+        while (step := nextactions.next_step(plan)) is not None:
+            runs += 1
+            if runs > settings.plan_max_steps * 2:  # replanning in circles: stop here
+                plan["stopped_because"] = "too many steps for one request"
+                nextactions.skip_remaining(plan)
+                break
+            step["status"], step["started_at"] = "running", nextactions._now()
+            await self._save_plan(plan)
+            try:
+                out, _ = await self.run_agent(agent, nextactions.step_prompt(plan, step, prompt),
+                                              deps, history=None, as_worker=as_worker, step=True)
+                res = as_work_result(out)
+            except asyncio.CancelledError:
+                step["status"] = "stopped"
+                raise
+            except Exception as e:  # the step failed (its fallback too, if it has one)
+                log.warning("next actions: step %s of job %s failed: %s", step["n"], deps.job_id, e)
+                res = WorkResult(status="failed", summary=f"This step hit an error: {_brief(str(e), 400)}")
+            step["status"] = res.status
+            step["summary"] = res.summary.strip()
+            step["details"] = nextactions._clip(res.details, nextactions.CLIP_RESULT)
+            step["finished_at"] = nextactions._now()
+            await self._save_plan(plan)
+            wants_change = "PLAN:" in f"{res.summary}\n{res.details}"
+            if res.status == "done" and not wants_change:
+                continue
+            if plan["revisions"] >= settings.plan_max_revisions:
+                if res.status == "failed":
+                    plan["stopped_because"] = (f"step {step['n']} failed and the plan was already "
+                                               f"revised {plan['revisions']} times")
+                    nextactions.skip_remaining(plan)
+                    break
+                continue
+            change = await self._revise_plan(agent, plan, step, deps)
+            if "stop" in change:
+                plan["stopped_because"] = change["stop"]
+                plan["revisions"] += 1
+                nextactions.skip_remaining(plan)
+                break
+            if "steps" in change:
+                nextactions.replace_remaining(plan, change["steps"])
+                await self._save_plan(plan)
+                await self.broker.publish(deps.thread_id, "plan_revised", job_id=plan["job_id"],
+                                          agent=agent.name, agent_id=agent.id, depth=deps.depth,
+                                          steps=len(plan["steps"]))
+
+    async def _planning_model(self, agent: AgentDef):
+        """The agent's own main model, counted on the Activity page, with less thinking."""
+        model = activity.MeteredModel(build_agent_model(agent), redis=self.broker.r, agent_id=agent.id,
+                                      agent_name=agent.name, model=agent.model or "")
+        merged = {**(await thinking.settings_for(agent, override="less") or {}), **limit_settings(agent)}
+        return model, (ModelSettings(**merged) if merged else None)
+
+    async def _ask_planner(self, agent: AgentDef, rules: str, text: str, deps: RunDeps, what: str) -> str:
+        model, model_settings = await self._planning_model(agent)
+        planner = Agent(model, instructions=rules, name=f"{agent.name} ({what})",
+                        model_settings=model_settings)
+        started = asyncio.get_running_loop().time()
+        usage, ok = None, False
+        try:
+            result = await asyncio.wait_for(planner.run(text, conversation_id=deps.thread_id),
+                                            nextactions.PLAN_TIMEOUT)
+            usage, ok = result.usage, True
+            return str(result.output)
+        finally:
+            subagents.record_usage(agent, provider_id=agent.provider_id, model=agent.model, usage=usage,
+                                   seconds=asyncio.get_running_loop().time() - started, ok=ok,
+                                   job_id=deps.job_id, thread_id=deps.thread_id)
+
+    def _about_for_planner(self, agent: AgentDef) -> str:
+        lines = [f"About {agent.name}: {agent.description or '(no description)'}"]
+        servers = agent_tool_servers(agent)
+        if servers:
+            lines.append("Its tools: " + "; ".join(
+                f"{srv.name}" + (f" ({_brief(srv.description, 140)})" if srv.description else "")
+                for srv in servers))
+        team = allowed_delegates(agent)
+        if team:
+            lines.append("Team members it can delegate to: " + "; ".join(
+                f"{t.name} ({_brief(t.description or 'no description', 140)})" for t in team))
+        return "\n".join(lines)
+
+    async def _draft_plan(self, agent: AgentDef, prompt: str, history: list | None,
+                          deps: RunDeps) -> dict | None:
+        mode = nextactions.mode_of(agent)
+        rules = nextactions.PLAN_RULES.format(
+            name=agent.name, max_steps=settings.plan_max_steps,
+            direct_rule=nextactions.DIRECT_ALWAYS if mode == "always" else nextactions.DIRECT_AUTO)
+        text = nextactions.planner_prompt(prompt, about=self._about_for_planner(agent),
+                                          recent=nextactions.conversation_brief(history))
+        await self.broker.publish(deps.thread_id, "planning", agent=agent.name, agent_id=agent.id,
+                                  job_id=deps.job_id, depth=deps.depth)
+        return nextactions.parse(await self._ask_planner(agent, rules, text, deps, "planning next actions"))
+
+    async def _revise_plan(self, agent: AgentDef, plan: dict, step: dict, deps: RunDeps) -> dict:
+        rules = nextactions.REVISE_RULES.format(name=agent.name, max_steps=settings.plan_max_steps)
+        try:
+            return nextactions.parse_revision(await self._ask_planner(
+                agent, rules, nextactions.revise_prompt(plan, step), deps, "revising next actions"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("next actions: couldn't revise the plan of job %s: %s", deps.job_id, e)
+            return {"keep": True}
+
+    async def _save_plan(self, plan: dict, ttl: int | None = None) -> None:
+        try:
+            await nextactions.save(self.broker.r, plan, ttl=ttl)
+        except Exception as e:  # Valkey hiccup: the work goes on; only the panel misses it
+            log.warning("next actions: couldn't save the plan of job %s: %s", plan.get("job_id"), e)
+        await self.broker.publish(plan["thread_id"], "plan", plan=plan, job_id=plan["job_id"],
+                                  agent=plan["agent"], agent_id=plan["agent_id"], depth=plan["depth"])
 
     @staticmethod
     def _user_input(agent: AgentDef, text: str, deps: RunDeps):

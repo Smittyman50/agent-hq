@@ -119,6 +119,12 @@ class Settings:
     # the most a pad may hold, in bytes. They live in Valkey only.
     pad_ttl_hours: float = field(default_factory=lambda: float(_env("PAD_TTL_HOURS", "24")))
     pad_max_bytes: int = field(default_factory=lambda: int(_env("PAD_MAX_BYTES", "65536")))
+    # Next actions (app/nextactions.py): requests broken into steps worked one at a time.
+    # Off everywhere with AHQ_NEXT_ACTIONS=0 (each agent also has its own mode); the most
+    # steps one plan may have, and how many times one request may be replanned.
+    next_actions_enabled: bool = field(default_factory=lambda: _env("NEXT_ACTIONS", "1").lower() not in ("0", "false", "no"))
+    plan_max_steps: int = field(default_factory=lambda: int(_env("PLAN_MAX_STEPS", "8")))
+    plan_max_revisions: int = field(default_factory=lambda: int(_env("PLAN_MAX_REVISIONS", "3")))
     # Largest avatar upload accepted, in bytes.
     avatar_max_bytes: int = field(default_factory=lambda: int(_env("AVATAR_MAX_BYTES", str(3 * 1024 * 1024))))
     # Chat attachments: largest file, and most files on one message.

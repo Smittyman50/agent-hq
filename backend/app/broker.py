@@ -17,6 +17,7 @@ Key layout (all prefixed "ahq:"):
   ahq:desktop:<server_id>:blocked   an agent tried the desktop while you had control
   ahq:desktop:<server_id>:handback  list a waiting agent blocks on until you hand back
   ahq:pad:<job_id>, ahq:padinfo:<job_id>  a job's scratch-pad notes (app/scratchpad.py)
+  ahq:plan:<job_id>, ahq:plans:<thread>    a request's next actions (app/nextactions.py)
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ EVENTLOG_TTL = 6 * 3600   # seconds an idle conversation's log is kept
 EVENT_REPLAY = 200        # events sent to a page that opens the conversation
 # Replayed on open these would be stale: messages come from the database and whether the
 # turn is running from /jobs, so a page only replays the activity around them.
-NOT_REPLAYED = {"message", "message_updated", "status"}
+NOT_REPLAYED = {"message", "message_updated", "status", "plan"}  # plans: GET /api/threads/{id}/plans
 
 
 def _ts() -> str:

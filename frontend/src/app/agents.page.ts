@@ -186,6 +186,17 @@ import { Avatar } from './avatar';
         </fieldset>
 
         <fieldset>
+          <legend>Next actions <small>how it works through a big request</small></legend>
+          <div class="seg">
+            @for (m of nextActionModes; track m.value) {
+              <label class="seg-opt" [class.on]="(d.next_actions ?? 'auto') === m.value">
+                <input type="radio" name="nextactions" [value]="m.value" [(ngModel)]="d.next_actions"> {{ m.label }}</label>
+            }
+          </div>
+          <p class="hint inline-hint">{{ nextActionsHint(d.next_actions ?? 'auto') }}</p>
+        </fieldset>
+
+        <fieldset>
           <legend>Standing goals <small>outcomes it keeps working until they're done (the Board)</small></legend>
           <label class="inline-num">Goals at once (WIP limit)
             <input name="goalwip" type="number" min="0" max="10" [(ngModel)]="d.goal_wip"></label>
@@ -398,10 +409,24 @@ export class AgentsPage implements OnInit {
     { value: 'propose', label: 'Propose to me' },
     { value: 'auto', label: 'Save automatically' },
   ] as const;
+  nextActionModes = [
+    { value: 'auto', label: 'When it helps' },
+    { value: 'always', label: 'Always' },
+    { value: 'off', label: 'Off' },
+  ] as const;
   addProvider: string | null = null;
   addModel = '';
 
   ngOnInit() { this.load(); }
+
+  nextActionsHint(mode: string) {
+    if (mode === 'off') return 'Every request runs as one run, as before.';
+    const how = 'it breaks the request into next actions and works them one at a time, each as its own focused ' +
+      'run with a fresh request budget, replanning when a step goes wrong, then writes the reply from the results. ' +
+      'Local models keep track of big jobs much better this way. You see the steps in the chat\'s Next actions panel.';
+    if (mode === 'always') return 'Anything more than chit-chat: ' + how;
+    return 'A quick planning request first decides; questions and small changes run as one run as before. For anything bigger, ' + how;
+  }
 
   learningHint(mode: string) {
     if (mode === 'auto') return 'New skills and improvements this agent writes are saved at once; you\'re told, and can roll back.';
@@ -496,6 +521,7 @@ export class AgentsPage implements OnInit {
     d.learning_mode ??= 'propose';
     d.use_profile ??= true;
     d.goal_wip ??= 1;
+    d.next_actions ??= 'auto';
     d.goal_team_size ??= 1;
     d.thinking ??= '';
     this.lastLevel = this.reasoningLevel(d);

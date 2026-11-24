@@ -46,10 +46,25 @@ export interface AgentDef {
   max_requests?: number | null;       // most model requests one run may make (blank = 50)
   goal_wip?: number;       // standing goals it works on at once; 0 = it takes no goals
   goal_team_size?: number; // parallel next actions per goal: itself + its agents and sub-agents (needs delegates or sub-agents)
+  next_actions?: NextActionsMode;  // break big requests into steps worked one at a time
   is_subagent?: boolean;
 }
 
 export type LearningMode = 'off' | 'propose' | 'auto';
+export type NextActionsMode = 'auto' | 'always' | 'off';
+/** One step of a request's next actions (app/nextactions.py). */
+export interface PlanStep {
+  n: number; title: string; details: string;
+  status: 'pending' | 'running' | 'done' | 'partial' | 'failed' | 'skipped' | 'stopped';
+  summary: string; started_at: string | null; finished_at: string | null;
+}
+/** A request broken into next actions, kept in Valkey while the job runs and a day after. */
+export interface Plan {
+  job_id: string; thread_id: string; agent_id: string; agent: string; parent_job_id: string | null;
+  depth: number; kind: 'turn' | 'task'; brief: string;
+  status: 'working' | 'writing' | 'done' | 'partial' | 'failed' | 'stopped';
+  revisions: number; stopped_because: string; created_at: string; updated_at: string; steps: PlanStep[];
+}
 export interface SkillStats { uses: number; done: number; partial: number; failed: number; pending: number;
   up?: number; down?: number; last_used_at: string | null; }
 export interface SkillVersion { id: string; version: number; title: string; when_to_use: string; body: string;
@@ -510,7 +525,7 @@ export interface SystemStatus { valkey: boolean; mqtt: boolean | null; embedded_
 export interface Job {
   id: string; kind: 'turn' | 'task'; status: string; task: string; background: boolean;
   pool: string; attempts: number; worker: string | null;
-  requester_agent_id: string; assignee_agent_id: string;
+  requester_agent_id: string; assignee_agent_id: string; parent_job_id?: string | null;
   result: { status: string; summary: string; details: string } | null;
   created_at: string; finished_at: string | null;
 }
@@ -523,7 +538,7 @@ export function blankAgent(): AgentDef {
     fallback_provider_id: null, fallback_model: '', thinking: '', memory_enabled: true, pool: 'default',
     tool_server_ids: [], delegates: [], desktop_url: null, is_default: false, enabled: true,
     subagent_mode: 'off', subagent_limits: defaultSubagentLimits(), learning_mode: 'propose', use_profile: true, goal_wip: 1,
-    goal_team_size: 1 };
+    goal_team_size: 1, next_actions: 'auto' };
 }
 
 export function blankSubscription(agent_id = ''): Subscription {
@@ -1051,6 +1066,8 @@ export class Api {
   threads() { return this.http.get<Thread[]>('/api/threads'); }
   createThread(agent_id: string) { return this.http.post<Thread>('/api/threads', { agent_id }); }
   deleteThread(id: string) { return this.http.delete<void>(`/api/threads/${id}`); }
+  /** A conversation's next actions (Valkey only; kept a day after each request). */
+  threadPlans(threadId: string) { return this.http.get<Plan[]>(`/api/threads/${threadId}/plans`); }
   /** A job's scratch-pad notes while they're kept (Valkey only; they expire). */
   jobNotes(jobId: string) { return this.http.get<JobNotes>(`/api/jobs/${jobId}/notes`); }
   /** Save a job's notes as a Markdown file on its delegation card. */

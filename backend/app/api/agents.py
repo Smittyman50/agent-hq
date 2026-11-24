@@ -56,6 +56,8 @@ class AgentIn(BaseModel):
     goal_wip: int = Field(default=1, ge=0, le=10)
     # Parallel next actions per goal: itself plus sub-agents (needs sub-agents on); 1 = no team.
     goal_team_size: int = Field(default=1, ge=1, le=10)
+    # Next actions: auto | always | off (app/nextactions.py)
+    next_actions: str = "auto"
 
 
 LIMIT_RANGES = {"concurrent": (1, 10), "per_task": (1, 20), "per_day": (1, 200),
@@ -114,6 +116,10 @@ def _check_provider(s: Session, body: AgentIn) -> None:
             raise HTTPException(422, f"choose a {what} from the provider's list (or set its provider to none)")
     from ..thinking import LEVELS
 
+    from ..nextactions import MODES
+
+    if body.next_actions not in MODES:
+        raise HTTPException(422, "next_actions must be one of: " + ", ".join(MODES))
     if (body.thinking or "") not in LEVELS:
         raise HTTPException(422, "thinking must be one of: " + ", ".join(l or "(model default)" for l in LEVELS))
     if body.vision_coords not in ("relative_1000", "pixels"):

@@ -163,6 +163,9 @@ class AgentDef(SQLModel, table=True):
     # How many of a goal's next actions may be in progress at once: its own one, plus
     # sub-agents working the others (a self-forming team). Needs sub-agents on; 1 = no team.
     goal_team_size: int = 1
+    # Next actions (app/nextactions.py): auto (a big request is broken into steps worked
+    # one at a time; quick ones run as before), always (plan all but chit-chat), off.
+    next_actions: str = "auto"
     # Set on sub-agents themselves: temporary agents created by another agent for one task.
     # They are hidden from agent lists, can't delegate or spawn, and retire when done.
     is_subagent: bool = Field(default=False, index=True)

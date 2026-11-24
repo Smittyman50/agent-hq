@@ -46,6 +46,12 @@ def _naming_the_chat(messages: list[ModelMessage]) -> bool:
     return _instructions(messages).startswith(RULES[:40])
 
 
+def _planning(messages: list[ModelMessage]) -> bool:
+    """A next-actions planning or revise request (app/nextactions.py)."""
+    text = _instructions(messages)
+    return text.startswith("You plan next actions for") or text.startswith("You keep the plan of next actions")
+
+
 def _titled(name: str):
     """SCRIPTS[name], except that the chat-naming request after a first reply gets a fixed
     title, so it can't overwrite what a test recorded about the turn itself. A script that
@@ -59,12 +65,16 @@ def _titled(name: str):
         async def afn(messages, info):
             if _naming_the_chat(messages):
                 return ModelResponse(parts=[TextPart("Test chat")])
+            if _planning(messages) and not getattr(script, "plans", False):
+                return ModelResponse(parts=[TextPart("DIRECT")])
             return await script(messages, info)
         return afn
 
     def fn(messages, info):
         if _naming_the_chat(messages):
             return ModelResponse(parts=[TextPart("Test chat")])
+        if _planning(messages) and not getattr(script, "plans", False):
+            return ModelResponse(parts=[TextPart("DIRECT")])
         return script(messages, info)
     return fn
 
@@ -532,6 +542,9 @@ async def hq(request, tmp_path, monkeypatch, redis_url):
     monkeypatch.setenv("AHQ_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AHQ_REDIS_URL", redis_url)
     monkeypatch.setenv("AHQ_DB_URL", db_url)
+    # Next actions add a planning request to every big enough message; the scripted models
+    # here answer one request each, so planning is on only in test_next_actions.py.
+    monkeypatch.setenv("AHQ_NEXT_ACTIONS", os.environ.get("AHQ_TEST_NEXT_ACTIONS", "0"))
     reload_settings()
     db.reset_engine()
     db.init_db()

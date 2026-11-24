@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from .. import attachments, huddles, scratchpad
+from .. import attachments, huddles, nextactions, scratchpad
 from ..config import settings
 from ..db import get_session
 from ..models import AgentDef, Job, Message, Role, Thread
@@ -199,6 +199,18 @@ async def thread_events(ws: WebSocket, thread_id: str, after: str | None = None)
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(events.aclose(), 2)
+
+
+# ------------------------------------------------------------------ next actions
+
+
+@router.get("/api/threads/{thread_id}/plans")
+async def thread_plans(thread_id: str, request: Request, s: Session = Depends(get_session)):
+    """The next actions of this conversation's recent requests, while they're kept
+    (app/nextactions.py), oldest first."""
+    if not s.get(Thread, thread_id):
+        raise HTTPException(404)
+    return await nextactions.for_thread(request.app.state.runtime.broker.r, thread_id)
 
 
 # ------------------------------------------------------------------ scratch pads

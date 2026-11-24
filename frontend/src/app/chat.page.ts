@@ -4,7 +4,7 @@ import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { AgentDef, Api, Attachment, DesktopState, HqEvent, JobNotes, Message, MessageFeedback, PadNote, Thread, attachmentUrl, threadLead, threadMembers } from './api.service';
+import { AgentDef, Api, Attachment, DesktopState, HqEvent, JobNotes, Message, MessageFeedback, PadNote, Plan, PlanStep, Thread, attachmentUrl, threadLead, threadMembers } from './api.service';
 import { FileView, Files, fileSize, isArchive, isViewable } from './files';
 import { Avatar } from './avatar';
 import { Icon } from './icon';
@@ -24,6 +24,11 @@ interface Output { file: Attachment; messageId: string; who: string; at: string 
 interface FileSplit { images: Attachment[]; texts: Attachment[]; others: Attachment[]; }
 /** Per chat: how many outputs it had when you closed the panel. It opens again only when more arrive. */
 const outputsClosedAt = new Map<string, number>();
+/** Per chat: how many plans it had when you closed Next actions. It opens again when a new one starts. */
+const plansClosedAt = new Map<string, number>();
+const LIVE_PLAN = ['working', 'writing'];
+const STEP_MARK: Record<PlanStep['status'], string> = {
+  pending: '○', running: '●', done: '✓', partial: '!', failed: '✕', skipped: '–', stopped: '■' };
 /** The @huddle entry in the mention list: every member at once (app/huddles.py). */
 const EVERYONE = '__huddle__';
 
@@ -31,7 +36,7 @@ const EVERYONE = '__huddle__';
   selector: 'hq-chat',
   imports: [FormsModule, DatePipe, NgTemplateOutlet, Avatar, Icon, Markdown, Files, FileView, RequestCard, ApprovalCard, SkillProposalCard, ProfileProposalCard, KnowledgeProposalCard, GoalCard, RouterLink],
   template: `
-  <div class="chat-layout" [class.with-desktop]="desktopAgent()" [class.with-outputs]="threadId() && showOutputs()"
+  <div class="chat-layout" [class.with-desktop]="desktopAgent()" [class.with-outputs]="threadId() && (showOutputs() || showPlans())"
        [class.viewing]="threadId() && showOutputs() && viewing().size > 0">
     <section class="conversation" [class.dropping]="dropping()" (dragover)="onDragOver($event)"
              (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
@@ -83,6 +88,11 @@ const EVERYONE = '__huddle__';
                   [title]="showOutputs() ? 'Hide the Outputs panel' : 'Show the files made in this chat'">
             <hq-icon name="package" [size]="15" /> Outputs
             @if (outputs().length) { <span class="count">{{ outputs().length }}</span> }
+          </button>
+          <button type="button" class="ghost outputs-toggle" [class.on]="showPlans()" (click)="togglePlans()"
+                  [title]="showPlans() ? 'Hide the Next actions panel' : 'Show the steps the agents broke your requests into'">
+            <hq-icon name="board" [size]="15" /> Next actions
+            @if (livePlan(); as lp) { <span class="count">{{ doneCount(lp) }}/{{ lp.steps.length }}</span> }
           </button>
           <hq-icon name="monitor" [size]="16" class="muted" />
           <select [ngModel]="desktopAgentId()" (ngModelChange)="desktopAgentId.set($event)" name="desk">
@@ -339,8 +349,10 @@ const EVERYONE = '__huddle__';
       }
     </section>
 
-    @if (threadId() && showOutputs()) {
-      <aside class="outputs" aria-label="Outputs">
+    @if (threadId() && (showOutputs() || showPlans())) {
+     <aside class="side-panels" [class.both]="showOutputs() && showPlans()">
+     @if (showOutputs()) {
+      <section class="outputs" aria-label="Outputs">
         <header class="conv-head">
           <hq-icon name="package" [size]="16" class="muted" /><strong>Outputs</strong>
           @if (outputs().length) { <span class="pill">{{ outputs().length }}</span> }
@@ -389,7 +401,45 @@ const EVERYONE = '__huddle__';
             <p class="hint">Files the agents make in this chat collect here, newest first.</p>
           }
         </div>
-      </aside>
+      </section>
+     }
+     @if (showPlans()) {
+      <section class="plans" aria-label="Next actions">
+        <header class="conv-head">
+          <hq-icon name="board" [size]="16" class="muted" /><strong>Next actions</strong>
+          @if (livePlan(); as lp) { <span class="pill working">{{ doneCount(lp) }}/{{ lp.steps.length }}</span> }
+          <span class="spacer"></span>
+          <button type="button" class="icon-btn" title="Hide Next actions" (click)="togglePlans()"><hq-icon name="x" [size]="14" /></button>
+        </header>
+        <div class="plans-list">
+          @for (p of plansShown(); track p.job_id; let first = $first) {
+            <details class="plan" [open]="first || isLive(p)" [style.margin-left.px]="p.depth * 14">
+              <summary>
+                <span class="plan-who">{{ p.agent }}</span>
+                @if (p.kind === 'task') { <span class="muted plan-for">delegated</span> }
+                <span class="pill {{ planPill(p) }}">{{ planLabel(p) }}</span>
+                <span class="muted plan-count">{{ doneCount(p) }}/{{ p.steps.length }}@if (p.revisions) { · replanned {{ p.revisions }}× }</span>
+              </summary>
+              @if (p.brief) { <div class="plan-brief muted">{{ p.brief }}</div> }
+              <ol class="plan-steps">
+                @for (st of p.steps; track st.n) {
+                  <li class="plan-step {{ st.status }}" [title]="st.details || st.title">
+                    <span class="step-mark">{{ mark(st.status) }}</span>
+                    <span class="step-text"><span class="step-title">{{ st.title }}</span>
+                      @if (st.summary && st.status !== 'running') { <span class="step-sum">{{ st.summary }}</span> }</span>
+                  </li>
+                }
+              </ol>
+              @if (p.stopped_because) { <div class="plan-brief warn">Stopped early: {{ p.stopped_because }}</div> }
+              @if (p.status === 'writing') { <div class="plan-brief muted">Writing the reply from the results…</div> }
+            </details>
+          } @empty {
+            <p class="hint">When an agent breaks a request into next actions, the steps show here as it works through them.</p>
+          }
+        </div>
+      </section>
+     }
+     </aside>
     }
 
     @if (desktopAgent(); as d) {
@@ -714,6 +764,9 @@ export class ChatPage implements OnInit, OnDestroy {
     this.threadId.set(id);
     this.viewing.set(new Set());
     this.showOutputs.set(false);
+    this.showPlans.set(false);
+    this.plans.set({});
+    this.jobParents.clear();
     this.messages.set([]);
     this.activity.set([]);
     this.busy.set(false);
@@ -726,7 +779,15 @@ export class ChatPage implements OnInit, OnDestroy {
     this.sub = this.api.events(id).subscribe(ev => this.onEvent(ev));
     // Opened (or reloaded) mid-run: the live "thinking" event was missed, so ask.
     this.api.jobs(id).subscribe(jobs => {
-      if (this.threadId() === id && jobs.some(j => j.status === 'queued' || j.status === 'running')) this.busy.set(true);
+      if (this.threadId() !== id) return;
+      for (const j of jobs) this.jobParents.set(j.id, j.parent_job_id ?? null);
+      if (jobs.some(j => j.status === 'queued' || j.status === 'running')) this.busy.set(true);
+    });
+    this.api.threadPlans(id).subscribe(ps => {
+      if (this.threadId() !== id) return;
+      for (const p of ps) this.gotPlan(p, false);
+      const shut = plansClosedAt.get(id);
+      if (ps.some(p => this.isLive(p)) && (shut === undefined || ps.length > shut)) this.showPlans.set(true);
     });
   }
 
@@ -812,7 +873,6 @@ export class ChatPage implements OnInit, OnDestroy {
         break;
       }
       case 'job_retry': this.log(ev, `job ${ev['job_id']} retried on ${ev['worker']} (attempt ${ev['attempt']})`, 'err'); break;
-      case 'delegation_started': this.log(ev, `${ev['from_agent'] ?? 'you'} → ${ev['to_agent']} on ${ev['worker']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg'); break;
       case 'agent_tools': {
         const servers: string[] = ev['servers'] ?? [];
         if (!servers.length && !ev['depth']) break;  // a supervisor without tools is normal
@@ -831,6 +891,26 @@ export class ChatPage implements OnInit, OnDestroy {
       case 'note':
         // The tool call itself is already in the activity log; this fills the card's pad.
         if (ev['job_id']) this.addNote(String(ev['job_id']), { n: Number(ev['n']), text: String(ev['text'] ?? '') });
+        break;
+      case 'planning': this.log(ev, `${ev['agent']} is deciding whether to break this into next actions`, 'queue'); break;
+      case 'plan': {
+        const p = ev['plan'] as Plan;
+        if (!p || p.thread_id !== this.threadId()) break;
+        if (!this.plans()[p.job_id]) this.log(ev, `${p.agent} broke it into ${p.steps.length} next actions`, 'deleg');
+        const before = this.plans()[p.job_id];
+        for (const st of p.steps) {
+          const was = before?.steps.find(x => x.n === st.n)?.status;
+          if (st.status !== was && st.status === 'running') this.log(ev, `${p.agent} → step ${st.n}: ${st.title}`, 'call');
+          else if (st.status !== was && ['done', 'partial', 'failed'].includes(st.status))
+            this.log(ev, `${p.agent} ← step ${st.n} [${st.status}]${st.status === 'done' ? '' : ': ' + st.summary.slice(0, 200)}`, st.status === 'done' ? 'result' : 'err');
+        }
+        this.gotPlan(p, !replay);
+        break;
+      }
+      case 'plan_revised': this.log(ev, `${ev['agent']} replanned: now ${ev['steps']} next actions`, 'queue'); break;
+      case 'delegation_started':
+        if (ev['job_id']) this.jobParents.set(String(ev['job_id']), (ev['parent_job_id'] as string) ?? null);
+        this.log(ev, `${ev['from_agent'] ?? 'you'} → ${ev['to_agent']} on ${ev['worker']}${ev['background'] ? ' (background)' : ''}: ${ev['task']}`, 'deleg');
         break;
       case 'delegation_finished': {
         const r = ev['result'] ?? {};
@@ -999,6 +1079,61 @@ export class ChatPage implements OnInit, OnDestroy {
   dropping = signal(false);
 
   filesOf(m: Message): Attachment[] { return (m.meta?.['attachments'] as Attachment[]) ?? []; }
+
+  // ---- Next actions: the steps a request was broken into (app/nextactions.py)
+  plans = signal<Record<string, Plan>>({});
+  /** Closed by default; opens when a plan starts in this chat, unless you closed it since. */
+  showPlans = signal(false);
+  isLive(p: Plan) { return LIVE_PLAN.includes(p.status); }
+  mark(status: PlanStep['status']) { return STEP_MARK[status] ?? '○'; }
+  doneCount(p: Plan) { return p.steps.filter(s => ['done', 'partial', 'failed', 'skipped', 'stopped'].includes(s.status)).length; }
+  planPill(p: Plan) { return this.isLive(p) ? 'working' : p.status; }
+  planLabel(p: Plan) { return p.status === 'writing' ? 'replying' : p.status; }
+  /** The running plan of the conversation's own turn, else the newest running one. */
+  livePlan = computed(() => {
+    const live = Object.values(this.plans()).filter(p => this.isLive(p));
+    return live.find(p => p.depth === 0) ?? live.at(-1) ?? null;
+  });
+  /** Newest request first; a delegate's plan right under the plan of the job that delegated it. */
+  plansShown = computed(() => {
+    const all = Object.values(this.plans()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const ids = new Set(all.map(p => p.job_id));
+    const kids = new Map<string, Plan[]>();
+    const nearest = (p: Plan) => {  // nearest ancestor with a plan, through jobs that have none
+      let parent = p.parent_job_id;
+      const seen = new Set<string>();
+      while (parent && !ids.has(parent) && !seen.has(parent)) { seen.add(parent); parent = this.jobParents.get(parent) ?? null; }
+      return parent && ids.has(parent) ? parent : null;
+    };
+    const roots: Plan[] = [];
+    for (const p of all) {
+      const parent = nearest(p);
+      if (parent) kids.set(parent, [...(kids.get(parent) ?? []), p]); else roots.push(p);
+    }
+    const out: Plan[] = [];
+    const walk = (p: Plan) => { out.push(p); for (const k of kids.get(p.job_id) ?? []) walk(k); };
+    for (const r of roots.reverse()) walk(r);
+    return out;
+  });
+  /** Parent job of each job seen in this chat, to nest plans of deeper delegations. */
+  private jobParents = new Map<string, string | null>();
+
+  togglePlans() {
+    const on = !this.showPlans();
+    this.showPlans.set(on);
+    const id = this.threadId();
+    if (!id) return;
+    if (on) plansClosedAt.delete(id); else plansClosedAt.set(id, Object.keys(this.plans()).length);
+  }
+
+  private gotPlan(p: Plan, live: boolean) {
+    const isNew = !this.plans()[p.job_id];
+    this.plans.update(all => ({ ...all, [p.job_id]: p }));
+    const id = this.threadId();
+    if (!id || !isNew || !live || !this.isLive(p) || this.showPlans()) return;
+    const shut = plansClosedAt.get(id);
+    if (shut === undefined || Object.keys(this.plans()).length > shut) this.showPlans.set(true);
+  }
 
   // ---- Outputs: every file the agents made in this chat, in a panel beside it
   fileUrl = attachmentUrl;

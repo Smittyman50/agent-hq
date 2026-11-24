@@ -926,6 +926,27 @@ Long research runs used to lose their early findings. As tool results piled up t
 
 **API:** `GET /api/jobs/{id}/notes` returns a job's notes and how long they're kept (`gone: true` once they've expired). `POST /api/jobs/{id}/notes/keep` saves them as a file (`410` once they've expired).
 
+## Next actions: big requests worked one step at a time
+
+A local model given a big request in one run ("build me a Zork-style text adventure") has to plan, remember and do everything in one growing context, on one budget of model requests. It runs out of requests or loses track, and the fallback model takes over. Given the same request as a standing goal, it does fine, because the board breaks the work into next actions and every turn starts from the card instead of a long transcript. **Next actions** bring that way of working to ordinary requests, with no board and no approval step:
+
+1. **Decide.** A quick planning request on the agent's own model, with no tools and less thinking, answers DIRECT for anything one run handles (a question, a lookup, a small change, a follow-up). For a bigger request it writes a brief of the request, plus 2 to `AHQ_PLAN_MAX_STEPS` (8) next actions, each something one focused run can finish.
+2. **Work each step as its own run.** A step starts from just the brief, the plan with earlier steps' results, and its own instructions. It has no chat history and gets a fresh request budget. All steps share the job's [scratch pad](#scratch-pads-notes-outside-the-context-window) and see each other's files. Each step hands in a result: done, partial or failed.
+3. **Fall back and replan per step.** A step that fails moves to the fallback model for that step only; the next step is back on the main model. A step that ends partial or failed, or that says `PLAN:` in its result, gets a short revise request: keep the plan, stop, or replace the remaining steps. This happens at most `AHQ_PLAN_MAX_REVISIONS` (3) times per request.
+4. **Reply from the results.** A last run, with the conversation's history, writes the reply from the steps' results (or the WorkResult, for a delegated task). The conversation's history keeps that, so follow-ups ("make it harder") know what was done.
+
+**What plans:** your messages (in a chat, a huddle, or from Telegram or Discord), scheduled tasks and delegated tasks. **What never plans:** messages under three words (except with Always), goal turns (the board already does this), a goal team member's action, MQTT and webhook events, report-backs and decisions, `@huddle` messages to everyone, sub-agents and test runs. If planning fails, the request runs as one run, as before.
+
+**Per agent** (Settings → Agents → Next actions): **When it helps** (`auto`, the default), **Always** (anything but chit-chat) or **Off**. `AHQ_NEXT_ACTIONS=0` turns it off for every agent.
+
+**In the chat,** the **Next actions** panel on the right, below Outputs, shows each request's steps as they run: pending, running, done, partial, failed or skipped, with each step's result, how many times the plan was replanned, and when it's writing the reply. A delegate's plan sits indented under the plan that delegated to it. The panel opens by itself when a plan starts, and stays shut once you close it until the next one. The live activity log shows each step starting and finishing too.
+
+**Cost:** one extra short model request per message that's long enough to plan, plus one per replan. Planning requests count on the Activity page and in the usage ledger like any other.
+
+**Plans live in Valkey only,** like scratch pads: kept while the job runs and `AHQ_PAD_TTL_HOURS` (24) hours after it finishes.
+
+**API:** `GET /api/threads/{id}/plans` returns the conversation's plans still kept, oldest first. Live updates come as `plan` events (the whole plan) on the conversation's WebSocket, along with `planning` and `plan_revised`.
+
 ## File attachments
 
 Attach files in the chat: the 📎 button, drag and drop onto the conversation, or paste (a pasted screenshot becomes `pasted-<time>.png`). They upload as soon as you pick them, show as chips above the message box (✕ removes one), and go with your message when you send it. A message can be just files.
@@ -1439,6 +1460,7 @@ backend/app/
   runtime.py         builds agents from rows; turns; delegation; report-back; Stop
   huddles.py         huddles: members, lead, @mentions, per-agent checkpoints, catch-up
   scratchpad.py      scratch pads: per-job notes in Valkey, outside the context window
+  nextactions.py     next actions: big requests planned and worked one step at a time
   clock.py           the current date and time every agent is told (AHQ_TIMEZONE)
   worker.py          stream consumer: concurrency, heartbeats, reclaiming, registry
   broker.py          all Valkey access: job streams, results, live-event log, locks, cooldowns, stop flags
