@@ -323,6 +323,42 @@ def link(ids: list[str], message_id: str) -> list[dict[str, Any]]:
     return [summary(a) for a in out]
 
 
+ARCHIVES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar", ".zip", ".7z")
+
+
+def _stem(name: str) -> tuple[str, bool]:
+    """(name without its archive extension, whether it's an archive)."""
+    low = name.lower()
+    for ext in ARCHIVES:
+        if low.endswith(ext):
+            return low[: -len(ext)], True
+    return low, False
+
+
+def supersede(new: Attachment) -> list[Attachment]:
+    """A file an agent sends again during the same run replaces the one it sent before,
+    so the reply carries one copy, not every attempt: the same name, the same bytes, or
+    another archive of the same name (game.zip after game.tar.gz). Only this run's files
+    that aren't on a message yet; anything already shown to you stays. Returns the
+    replaced files (deleted)."""
+    if not new.job_id:
+        return []
+    stem, archive = _stem(new.name)
+    gone: list[Attachment] = []
+    with db.session() as s:
+        rows = s.exec(select(Attachment).where(Attachment.job_id == new.job_id,
+                                               Attachment.message_id == None,  # noqa: E711
+                                               Attachment.id != new.id)).all()
+        for a in rows:
+            a_stem, a_archive = _stem(a.name)
+            if (a.name.lower() == new.name.lower() or (a.sha256 and a.sha256 == new.sha256)
+                    or (archive and a_archive and a_stem == stem)):
+                gone.append(a)
+                s.delete(a)
+        s.commit()
+    return gone
+
+
 def made_by_job(job_id: str | None) -> list[Attachment]:
     """Files an agent made during this job that aren't on a message yet."""
     if not job_id:
@@ -448,8 +484,14 @@ class Outgoing:
     """A file an agent made, for the tool result."""
 
     att: Attachment
+    replaced: list[Attachment] | None = None  # earlier files of this run it replaced (supersede)
 
     def result(self) -> dict:
-        return {"attached": True, "attachment": ref(self.att.id), "name": self.att.name,
-                "size": human_size(self.att.size),
-                "note": "It will appear with your reply (or your result). Mention it briefly."}
+        out = {"attached": True, "attachment": ref(self.att.id), "name": self.att.name,
+               "size": human_size(self.att.size),
+               "note": "It will appear with your reply (or your result). Mention it briefly."}
+        if self.replaced:
+            out["replaced"] = [f"{a.name} ({ref(a.id)})" for a in self.replaced]
+            out["note"] += (" It replaces the earlier version you sent in this task, which is "
+                            "gone; mention only this one.")
+        return out

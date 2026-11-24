@@ -103,7 +103,10 @@ You're working through a request as next actions, one step at a time. This run i
 step: do it completely with your tools, and only it; later steps run after you. The plan in
 your prompt is your memory of the request: earlier steps' results are in it, their notes are
 on your scratch pad (read_notes), and files they made are still where they left them. Write
-on your scratch pad anything a later step will need. Then return a WorkResult: status done,
+on your scratch pad anything a later step will need. Don't send files to the user from a step
+(create_file, send_from_workbench...) unless this step is the one that delivers them: leave
+work files where they are and name them in your result. The reply after the last step sends
+the finished files, once. Then return a WorkResult: status done,
 partial or failed; summary: what you did and what it produced, in a few sentences with file
 names; details: anything the next steps need. If what you learned changes the plan (a later
 step isn't needed, or a new one is), start a line of the summary with "PLAN:" and say how."""
@@ -278,7 +281,7 @@ def revise_prompt(plan: dict, step: dict) -> str:
             f"{_clip(step.get('summary') or '', 800)}\n{_clip(step.get('details') or '', 800)}").strip()
 
 
-def final_prompt(request: str, plan: dict, *, worker: bool) -> str:
+def final_prompt(request: str, plan: dict, *, worker: bool, files: list[str] | None = None) -> str:
     rows = []
     for s in plan["steps"]:
         row = f"{s['n']}. [{s['status']}] {s['title']}"
@@ -290,6 +293,11 @@ def final_prompt(request: str, plan: dict, *, worker: bool) -> str:
     why = f"\nThe plan stopped early: {plan['stopped_because']}" if plan.get("stopped_because") else ""
     to = ("Return your WorkResult to whoever delegated this" if worker
           else "Write your reply to the user")
+    if files:
+        why += ("\nFiles already attached during the steps (they go with your reply): "
+                + "; ".join(files) + ". Don't send them again unless you changed them.")
+    why += ("\nSend each finished file once. Sending a file again with the same name, or "
+            "another archive of the same thing (a .zip after a .tar.gz), replaces the earlier one.")
     return (f"{request}\n\n[You worked through this request as next actions. Results:\n"
             + "\n".join(rows) + why +
             f"\n{to} now, from these results; your scratch pad has the notes (read_notes). "

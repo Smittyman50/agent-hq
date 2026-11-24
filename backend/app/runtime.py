@@ -2262,7 +2262,10 @@ class Runtime:
             await self._work_plan(agent, plan, prompt, deps, as_worker)
             plan["status"] = "writing"
             await self._save_plan(plan)
-            out = await self.run_agent(agent, nextactions.final_prompt(prompt, plan, worker=as_worker),
+            sent = [f"{a.name} ({att.ref(a.id)}, {att.human_size(a.size)})"
+                    for a in att.made_by_job(job.id)]
+            out = await self.run_agent(agent, nextactions.final_prompt(prompt, plan, worker=as_worker,
+                                                                       files=sent),
                                        deps, history=history, as_worker=as_worker)
             plan["status"] = nextactions.outcome(plan)
             return out
@@ -2814,7 +2817,7 @@ class Runtime:
                               agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id)
             except att.AttachmentError as e:
                 return {"error": str(e)}
-            return att.Outgoing(a).result()
+            return att.Outgoing(a, att.supersede(a)).result()
 
         async def send_back(ctx: RunContext[RunDeps], where: str, path: str, name: str) -> dict:
             if (fake := rehearsal(ctx, name or path)) is not None:
@@ -2833,7 +2836,7 @@ class Runtime:
                     agent_id=ctx.deps.agent_id, job_id=ctx.deps.job_id))
             except Exception as e:
                 return {"error": str(e)}
-            return att.Outgoing(a).result()
+            return att.Outgoing(a, att.supersede(a)).result()
 
         async def send_from_workbench(ctx: RunContext[RunDeps], path: str, name: str = "") -> dict:
             """Give the user a file from your workbench (a chart, a spreadsheet, an export...).

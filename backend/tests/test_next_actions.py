@@ -380,3 +380,14 @@ async def test_a_step_retries_when_its_tool_server_is_being_recreated(hq, planni
     assert plan["steps"][1]["restarts"] == 1 and plan["revisions"] == 0
     assert any((m.meta or {}).get("kind") == "step_retry" and "workbench-1" in m.content
                for m in hq.messages(t["id"]))
+
+
+
+def test_the_reply_is_told_which_files_the_steps_already_sent():
+    plan = {"steps": [{"n": 1, "title": "Build", "status": "done", "summary": "built", "details": ""}],
+            "stopped_because": ""}
+    text = nextactions.final_prompt("make a game", plan, worker=False,
+                                    files=["tetris_game.tar.gz (att_x, 14 KB)"])
+    assert "Files already attached during the steps (they go with your reply): tetris_game.tar.gz" in text
+    assert "Send each finished file once" in text
+    assert "Don't send files to the user from a step" in nextactions.STEP_RULES

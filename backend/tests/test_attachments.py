@@ -401,3 +401,48 @@ async def test_desktop_in_and_out(hq, tmp_path):
     assert sent["source"] == "desktop"
     r = await hq.http.get(f"/api/attachments/{sent['id']}")
     assert r.content == b"%PDF-1.4 invoice 42"
+
+
+async def test_a_file_sent_again_in_the_same_run_replaces_the_earlier_one(hq):
+    """A planned request's steps and its reply packaged the same game four times
+    (tetris_game.tar.gz twice, tetris_game.zip twice): one run sends one copy."""
+    from app import attachments as att_mod
+
+    a = await hq.agent(name="Hi-Tech", model="fake:echo")
+    t = await hq.thread(a["id"])
+
+    def send(name, data, job="job1", message_id=None):
+        new = att_mod.store(t["id"], name, data, source="workbench", agent_id=a["id"], job_id=job,
+                            message_id=message_id)
+        return new, att_mod.supersede(new)
+
+    first, gone = send("tetris_game.tar.gz", b"v1")
+    assert gone == []
+    shown, _ = send("tetris_game.tar.gz", b"shown", job="job1", message_id=None)
+    assert [x.id for x in att_mod.made_by_job("job1")] == [shown.id]  # same name: replaced
+    zipped, gone = send("tetris_game.zip", b"v3")
+    assert [g.name for g in gone] == ["tetris_game.tar.gz"]  # another archive of the same thing
+    notes, gone = send("notes.md", b"v3")
+    assert [g.name for g in gone] == ["tetris_game.zip"]  # same bytes
+    readme, gone = send("README.md", b"something else")
+    other_job, gone2 = send("tetris_game.zip", b"v4", job="job2")
+    assert gone == [] and gone2 == []  # other names and other runs stay
+    assert {x.name for x in att_mod.made_by_job("job1")} == {"notes.md", "README.md"}
+    out = att_mod.Outgoing(zipped, [first]).result()
+    assert out["replaced"] == [f"tetris_game.tar.gz ({att_mod.ref(first.id)})"]
+
+
+async def test_files_already_shown_are_never_replaced(hq):
+    from app import attachments as att_mod
+
+    a = await hq.agent(name="Hi-Tech", model="fake:echo")
+    t = await hq.thread(a["id"])
+    await hq.say(t["id"], "hi")  # a message to hang the first file on
+    msg = hq.messages(t["id"])[0]
+    old = att_mod.store(t["id"], "game.zip", b"old", source="workbench", job_id="job1", message_id=msg.id)
+    new = att_mod.store(t["id"], "game.zip", b"new", source="workbench", job_id="job1")
+    assert att_mod.supersede(new) == []
+    from app import db
+    from app.models import Attachment
+    with db.session() as s:
+        assert s.get(Attachment, old.id) is not None
