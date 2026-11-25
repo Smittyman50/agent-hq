@@ -26,7 +26,7 @@ interface NewResource { kind: ResourceKind; scope: ResourceScope; description: s
       @if (!docker()) {
         <p class="hint">Agent HQ has no Docker access, so it can register a resource's tool servers but not
           run its container. Start the <code>docker-proxy</code> service and set <code>AHQ_DOCKER_URL</code>
-          (README → Resources).</p>
+          (see docs/desktops-and-workbenches.md).</p>
       }
       @if (adoptable().length) {
         <div class="adopt">

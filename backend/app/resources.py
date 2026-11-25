@@ -103,8 +103,8 @@ class Docker:
 
     async def _req(self, method: str, path: str, ok: tuple[int, ...] = (), **kw) -> httpx.Response:
         if not self.enabled:
-            raise DockerError("Agent HQ has no Docker access (set AHQ_DOCKER_URL; see the README's "
-                              "Resources section)")
+            raise DockerError("Agent HQ has no Docker access (set AHQ_DOCKER_URL; see "
+                              "docs/desktops-and-workbenches.md)")
         try:
             async with httpx.AsyncClient(base_url=self.url, timeout=120,
                                          transport=self._transport) as c:

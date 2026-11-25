@@ -173,7 +173,7 @@ async def create_resource(body: ResourceIn, request: Request, s: Session = Depen
     else:
         res.status = "unknown"
         res.error = ("Agent HQ has no Docker access, so it registered the tool servers but "
-                     "created no container. See the README's Resources section.")
+                     "created no container. See docs/desktops-and-workbenches.md.")
     s.add(res)
     s.commit()
     s.refresh(res)

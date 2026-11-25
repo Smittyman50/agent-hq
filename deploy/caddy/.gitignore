@@ -1,2 +1,2 @@
-# your step-ca root certificate (copy it here; see the README)
+# your step-ca root certificate (copy it here; see docs/deployment.md)
 root_ca.crt

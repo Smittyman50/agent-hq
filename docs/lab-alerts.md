@@ -1,6 +1,6 @@
 # Alerts from your lab
 
-Your systems can wake agents through [inbound webhooks](../README.md#inbound-webhooks). Each sender posts to a hook, `https://<site>/hooks/<name>`. The delivery becomes an event `webhook/<source>/<event>`, and **Events subscriptions** route events to agents with a prompt template. Which agents get what is up to you. This page covers the sender side for common homelab systems, plus a routing scheme that works well.
+Your systems can wake agents through [inbound webhooks](architecture.md#inbound-webhooks). Each sender posts to a hook, `https://<site>/hooks/<name>`. The delivery becomes an event `webhook/<source>/<event>`, and **Events subscriptions** route events to agents with a prompt template. Which agents get what is up to you. This page covers the sender side for common homelab systems, plus a routing scheme that works well.
 
 ## Routing by domain
 

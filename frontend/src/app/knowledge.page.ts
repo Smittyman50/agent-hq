@@ -200,7 +200,7 @@ function lines(x: string): string[] { return x.split('\n').map(s => s.trim()).fi
             @if (kind === 'share') {
               <p class="hint inline-hint">A share on your NAS (TrueNAS, Windows, Samba), read in place and never written to.
                 SMB is read over the network: use a user with read-only access to the share. For an NFS export, mount it
-                into the hq container under /shares (see the README) and give that path. Only files whose size or
+                into the hq container under /shares (see docs/memory-and-knowledge.md) and give that path. Only files whose size or
                 modified time changed are read again.</p>
               <label>Share <small>smb://host/share/folder or \\\\host\\share\\folder; or a mounted folder like /shares/docs</small>
                 <input name="nurl" [(ngModel)]="draft.url" placeholder="smb://truenas.home.arpa/docs/Runbooks" required></label>

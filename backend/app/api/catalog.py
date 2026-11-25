@@ -305,7 +305,7 @@ async def install(body: InstallIn, request: Request, s: Session = Depends(get_se
     else:
         res.status = "unknown"
         res.error = ("Agent HQ has no Docker access, so it registered the tool server but created no "
-                     "container. See the README's Resources section.")
+                     "container. See docs/desktops-and-workbenches.md.")
     s.add(res)
     s.commit()
     s.refresh(res)

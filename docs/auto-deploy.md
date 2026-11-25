@@ -17,8 +17,8 @@ server that hosts Agent HQ and redeploys it with `deploy/autodeploy/deploy.sh`:
 2. **Build.** `docker compose build`. When `desktop/`, `workbench/` or `mcp-runner/` changed,
    also `docker compose --profile images build`, which a plain build skips. Agent HQ then
    moves each running workbench and package server to its new image by itself, as soon as
-   none of its agents has work queued or running (see the README's
-   [Automatic recreate](../README.md#automatic-recreate-after-a-rebuild)). Desktops keep
+   none of its agents has work queued or running (see
+   [Automatic recreate](desktops-and-workbenches.md#automatic-recreate-after-a-rebuild)). Desktops keep
    the old image until you **Recreate** them under **Settings → Desktops & workbenches**;
    the log reminds you.
 3. **Back up.** Asks the new image which schema revisions are pending

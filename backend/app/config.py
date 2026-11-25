@@ -63,7 +63,7 @@ class Settings:
     # Leave empty to disable the MQTT bridge.
     mqtt_url: str = field(default_factory=lambda: _env("MQTT_URL", ""))
     # Where Agent HQ publishes notifications for you (sub-agent requests and decisions),
-    # on the same broker as AHQ_MQTT_URL. JSON payloads; see the README.
+    # on the same broker as AHQ_MQTT_URL. JSON payloads; see docs/agents.md (Sub-agents).
     mqtt_notify_topic: str = field(default_factory=lambda: _env("MQTT_NOTIFY_TOPIC", "agent-hq/notifications"))
     # Notification channels (Settings → Notifications): run the Telegram/Discord listeners
     # that take your answers in this API process (one listener per bot, held with a lock),
