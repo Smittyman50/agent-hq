@@ -48,6 +48,9 @@ mcp = FastMCP("workbench", instructions=(
     "Your own Linux workbench with a persistent Python environment. Each chat has its own "
     "workspace folder, empty when the chat starts; paths are relative to it. Write code to files, run it, and read the output. Packages you install "
     "with pip_install stay installed. Save scripts you'll want again with save_script. "
+    "For PDFs, the Cairo, Pango and GDK-Pixbuf libraries and fonts are installed, so "
+    "pip_install weasyprint, cairosvg, reportlab or fpdf2 work; rsvg-convert turns SVG into "
+    "PDF or PNG, and pdftotext, pdfinfo, pdftoppm and pdfunite come from poppler. "
     "There is no internet access unless the user has turned it on; PyPI works for installs."))
 
 
