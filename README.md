@@ -114,6 +114,7 @@ flowchart LR
 **Operations**
 - Sign-in with 2FA, API tokens and an audit log, behind HTTPS ([Deployment](docs/deployment.md)).
 - Inbound webhooks and MQTT events wake agents ([Architecture](docs/architecture.md), [Lab alerts](docs/lab-alerts.md)).
+- Reports: live activity, the usage ledger, and budgets that warn before an agent or provider runs away with GPU time, a plan's limits or an API bill ([Budgets](docs/budgets.md)).
 - Tracing to Arize Phoenix or any OpenTelemetry backend ([Observability](docs/architecture.md#observability)).
 - Automatic deploys on every push with a test gate ([Auto-deploy](docs/auto-deploy.md)).
 
@@ -150,6 +151,7 @@ To run it from source for development instead, see [Getting started](docs/gettin
 | [Memory and knowledge](docs/memory-and-knowledge.md) | Long-term memory, scratch pads, attachments, the knowledge library |
 | [Learning](docs/learning.md) | Skills, the learning loop, your profile, evals |
 | [Notifications](docs/notifications.md) | Telegram, Discord and MQTT channels |
+| [Budgets](docs/budgets.md) | Where the work ran, estimated API cost, per-goal totals, budgets that warn |
 | [Schema migrations](docs/schema-migrations.md) | How the database schema is upgraded |
 | [Development](docs/development.md) | Running the tests, the code layout |
 | [Example homelab crew](docs/examples/homelab-crew.md) | A worked example of a lab crew |

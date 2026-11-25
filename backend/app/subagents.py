@@ -334,8 +334,13 @@ def record_usage(agent: AgentDef, *, provider_id: str | None, model: str, usage:
         with db.session() as s:
             s.add(row)
             s.commit()
+            s.refresh(row)
     except Exception as e:  # the ledger must never break a run
         log.warning("could not record usage: %s", e)
+        return
+    from . import budgets
+
+    budgets.after_run(row)  # warnings, in the background (app/budgets.py)
 
 
 def model_averages(provider_id: str | None, model: str, days: int = 30) -> dict[str, Any]:
@@ -358,9 +363,12 @@ def model_averages(provider_id: str | None, model: str, days: int = 30) -> dict[
 
 
 def where_it_runs(p: ModelProvider | None) -> str:
+    from .budgets import classify
+
     if p is None:
         return "raw model spec (no provider)"
-    if p.kind in (ProviderKind.ollama, ProviderKind.openai_compatible):
+    cls = classify(p)
+    if cls == "local":
         host = urlparse(p.base_url or "http://localhost").hostname or "local"
         return f"your hardware ({host}: GPU/CPU)"
     if p.kind == ProviderKind.chatgpt:
@@ -387,7 +395,7 @@ async def _model_details(p: ModelProvider | None, model: str) -> str:
 
 async def estimate(me: AgentDef, plans: list[dict[str, Any]], *, concurrent: int) -> dict[str, Any]:
     """The system's own view of what a request costs, shown next to the agent's case."""
-    from . import slots
+    from . import budgets, slots
 
     items, overlaps = [], []
     for plan in plans:
@@ -401,7 +409,7 @@ async def estimate(me: AgentDef, plans: list[dict[str, Any]], *, concurrent: int
             "model_details": await _model_details(p, plan.get("model", "")),
             "runs_on": where_it_runs(p), "est_minutes": plan.get("est_minutes", 10),
             "provider_slots": p.max_concurrent if p else 0, "slots_free_now": free,
-            "ledger": avg})
+            "ledger": avg, "budgets": budgets.headroom(plan.get("provider_id"), me.id)})
         hits = await overlapping_agents(f"{plan['role']}: {plan.get('purpose', '')}", exclude_id=me.id)
         if hits and hits[0]["score"] >= 0.6:
             overlaps.append({"role": plan["role"], "closest_agent": hits[0]["name"],

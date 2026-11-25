@@ -5,7 +5,8 @@ import { Icon } from './icon';
 /**
  * Reports: how hard the agents are working. Live activity is counted as it happens
  * (app/activity.py, the last 7 days at most); Usage history is the ledger, one row per
- * finished run, kept for good.
+ * finished run, kept for good; Budgets is the same ledger by where the work ran (your
+ * hardware, a plan, a per-token API), per goal, with budgets that warn (app/budgets.py).
  */
 @Component({
   selector: 'hq-reports-layout',
@@ -17,6 +18,7 @@ import { Icon } from './icon';
         <nav class="rp-tabs">
           <a routerLink="/reports/live" routerLinkActive="on">Live activity</a>
           <a routerLink="/reports/history" routerLinkActive="on">Usage history</a>
+          <a routerLink="/reports/budgets" routerLinkActive="on">Budgets</a>
         </nav>
       </header>
       <div class="rp-body"><router-outlet /></div>

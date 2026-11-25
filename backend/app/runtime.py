@@ -64,7 +64,7 @@ from sqlmodel import select
 from . import attachments as att
 from . import knowledge_proposals as kprop
 from . import activity, approvals, clock, context, db, evals, knowledge, learning, profile, skills, slots, subagents, thinking, titles
-from . import huddles, nextactions, notifications, resources, scratchpad, speed, workitems
+from . import budgets, huddles, nextactions, notifications, resources, scratchpad, speed, workitems
 from .broker import Broker
 from .config import settings
 from .llm import build_agent_model, build_model_for, describe_model
@@ -1900,6 +1900,9 @@ class Runtime:
         if agent.can_alert and not agent.is_subagent:
             instructions.append(notifications.ALERT_RULES)
             toolsets.append((notifications.alert_toolset(self), None))
+        if budgets.tool_applies(agent):
+            instructions.append(budgets.BUDGET_RULES)
+            toolsets.append((budgets.toolset(), None))
         if agent.is_subagent:
             instructions.append(SUBAGENT_SELF_RULES)
         instructions.append(clock.instructions())  # last: it changes every minute (caching)

@@ -21,7 +21,7 @@ from sqlmodel import Session, select
 
 from .models import (AgentAvatar, AgentDef, Attachment, EvalCase, EvalResult, Feedback, Job, JobStatus,
                      JobTrace, KnowledgeCollection, KnowledgeProposal, Memory, MemoryScope, Message,
-                     ProfileProposal, Reflection, Schedule, Skill, SkillProposal, SkillUse, SkillVersion,
+                     ProfileProposal, Reflection, Schedule, Skill, SkillProposal, SkillUse, SkillVersion, SpendBudget,
                      SubagentRequest, Subscription, Thread, ToolApproval, WorkItem, WorkItemEvent, WorkStatus,
                      _now)
 
@@ -75,6 +75,7 @@ def plan(s: Session, agent: AgentDef) -> dict[str, Any]:
         "messages": _count(s, Message, Message.thread_id.in_(tids)),
         "schedules": _count(s, Schedule, Schedule.agent_id.in_(ids)),
         "subscriptions": _count(s, Subscription, Subscription.agent_id.in_(ids)),
+        "budgets": _count(s, SpendBudget, SpendBudget.scope == "agent", SpendBudget.target_id.in_(ids)),
         "memories": _count(s, Memory, Memory.agent_id.in_(ids), Memory.scope != MemoryScope.team),
         "skills": _count(s, Skill, Skill.agent_id.in_(ids), Skill.scope == "agent"),
         "test_cases": _count(s, EvalCase, EvalCase.agent_id.in_(ids)),
@@ -134,6 +135,7 @@ def purge(s: Session, agent: AgentDef) -> list[str]:
     # Its triggers.
     _rm(s, Schedule, Schedule.agent_id.in_(ids))
     _rm(s, Subscription, Subscription.agent_id.in_(ids))
+    _rm(s, SpendBudget, SpendBudget.scope == "agent", SpendBudget.target_id.in_(ids))
     s.exec(sa_update(Schedule).where(Schedule.thread_id.in_(tids)).values(thread_id=None))
     s.exec(sa_update(Subscription).where(Subscription.thread_id.in_(tids)).values(thread_id=None))
     # Notification channels: no longer its default agent, and its rules forget it (a rule

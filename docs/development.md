@@ -47,6 +47,7 @@ They cover:
 - deleting agents: only once disabled, never with work in flight, removing what it owns while keeping usage, team memories and skills, and returning its goals to the backlog
 - sign-in: setup code, passwords, 2FA, sessions, lockout, API tokens, the audit log, and cross-site refusal
 - sub-agents: off/ask/allowed, limits, refusing duplicates of existing agents, requests and grants, provider slots and the usage ledger
+- budgets: providers sorted into your hardware, plans and per-token APIs; the price list slimmed, matched per provider, refreshed once a day, and kept when a download fails; days, weeks and months in your time zone across a DST change; budgets on agents (with their sub-agents) and providers, each warning level sent once per period and starting over the next; a finished run checking its budgets end to end; per-goal totals; check_budget only for agents that choose models; and budgets deleted with their agent or provider
 - notifications, against a fake Telegram Bot API: the token checked and never shown, pairing and strangers ignored, routing by type, agent and severity, a tool approval decided by button and by a "no, …" reply, a web UI decision editing the chat message, decisions turned off, chatting with the default agent and replying to continue, a goal question answered from the chat, alerts and their hourly cap, one listener per bot, the delivery log, and the MQTT channel publishing the same JSON to a real broker
 - Discord, against a fake Discord (REST and Gateway): the token checked and hidden and the invite link, pairing by DM and in a server channel, strangers ignored, a tool approval decided by button (deferred, then answered to the presser) and by reply, the message edited, answers coming back as plain text that pings nobody, chatting with the default agent, a server channel ignoring talk not addressed to the bot, the Message Content intent refused until it's turned on in the portal, and resuming the Gateway after a drop
 - goal teams: your agents (delegate_action) and sub-agents (assign_action) working actions in parallel, dependencies, team slots, one action per agent per goal, results landing on actions with no report turns, a failed result blocking its action, waiting on the team, the done check, approval mode, duplicate refusals pointing to your agent, and Stop
@@ -96,6 +97,7 @@ backend/app/
   scheduler.py       scheduled tasks: cadence -> cron, time zones, firing due runs exactly once
   schedule_text.py   plain-language schedules ("every weekday at 7am") -> the Scheduler's fields
   subagents.py       sub-agents: modes, limits, duplicate check, grants, estimates, ledger
+  budgets.py         Reports → Budgets: where the work ran, the price list, per-goal totals, budget warnings, check_budget
   notifications.py   notices for you: building them from events, routing rules, delivery, settling
                      every copy when decided, the inbox for chat answers (pairing, decisions,
                      replies, default-agent chat), replies back to the chat, send_alert, listeners

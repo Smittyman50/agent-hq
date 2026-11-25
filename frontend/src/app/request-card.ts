@@ -45,7 +45,8 @@ interface Form {
                 <td>{{ p.purpose }}</td>
                 <td>{{ p.label }}@if (e?.model_details) { <div class="muted small">{{ e.model_details }}</div> }</td>
                 <td>{{ e?.runs_on }}
-                  @if (e?.provider_slots) { <div class="muted small">{{ e.slots_free_now }} of {{ e.provider_slots }} slots free now</div> }</td>
+                  @if (e?.provider_slots) { <div class="muted small">{{ e.slots_free_now }} of {{ e.provider_slots }} slots free now</div> }
+                  @for (b of e?.budgets ?? []; track b) { <div class="muted small">budget · {{ b }}</div> }</td>
                 <td>{{ p.est_minutes }} min</td>
                 <td>@if (e?.ledger?.runs) {
                     {{ e.ledger.avg_seconds | number:'1.0-0' }} s, {{ e.ledger.avg_tokens | number }} tokens / run

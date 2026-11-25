@@ -35,6 +35,7 @@ export const routes: Routes = [
       // Loaded when opened: keeps the main bundle under its budget.
       { path: 'live', loadComponent: () => import('./activity.page').then(m => m.ActivityPage) },
       { path: 'history', component: UsagePage },
+      { path: 'budgets', loadComponent: () => import('./budgets.page').then(m => m.BudgetsPage) },
     ],
   },
   { path: 'activity', redirectTo: 'reports/live' },

@@ -594,6 +594,7 @@ export class AgentsPage implements OnInit {
           p.conversations ? n(p.conversations, 'conversation') + ` (${n(p.messages, 'message')})` : '',
           p.schedules ? n(p.schedules, 'schedule') : '',
           p.subscriptions ? n(p.subscriptions, 'event subscription') : '',
+          p.budgets ? n(p.budgets, 'budget') : '',
           p.memories ? n(p.memories, 'memory', 'memories') : '',
           p.skills ? n(p.skills, 'skill') : '',
           p.test_cases ? n(p.test_cases, 'test case') : '',

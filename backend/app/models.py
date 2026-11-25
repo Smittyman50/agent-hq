@@ -914,6 +914,26 @@ class UsageRecord(SQLModel, table=True):
     ok: bool = True
 
 
+class SpendBudget(SQLModel, table=True):
+    """A budget on the ledger (Reports → Budgets; app/budgets.py): warn when an agent or a
+    provider gets near a limit you set for a day, week or month. It only ever warns; nothing
+    is stopped or switched to another model."""
+
+    id: str = Field(default_factory=_id, primary_key=True)
+    scope: str = Field(default="agent", index=True)   # agent | provider
+    target_id: str = Field(index=True)                # an AgentDef.id or a ModelProvider.id
+    period: str = "day"                               # day | week | month (your time zone)
+    # requests | tokens | local_minutes (run time on your own hardware) | cost_usd (API providers)
+    metric: str = "requests"
+    limit: float = 0
+    warn_pct: int = 80        # the early warning; another one goes out at 100%
+    enabled: bool = True
+    note: str = Field(default="", sa_column=Column(Text, default=""))
+    # Warnings already sent: {"period": "2026-11-24", "levels": [80, 100]}
+    state: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
+
+
 class MemoryKind(str, Enum):
     fact = "fact"              # something true about the environment
     incident = "incident"      # something that happened and how it was handled

@@ -65,6 +65,7 @@ TYPES: dict[str, dict[str, str]] = {
     "goal_question": {"label": "Goal questions", "group": "request"},
     "desktop_request": {"label": "Desktop take-over requests", "group": "request"},
     "agent_alert": {"label": "Agent alerts", "group": "alert"},
+    "budget_warning": {"label": "Budget warnings", "group": "alert"},
     "goal_blocked": {"label": "Blocked goals", "group": "info"},
     "skill_applied": {"label": "Skills applied (auto learning)", "group": "info"},
     "tool_approval_decision": {"label": "Tool approval decisions", "group": "decision"},
@@ -241,6 +242,11 @@ def describe(event: dict[str, Any]) -> Notice:
         n.severity = sev
         n.title = f"{SEVERITY_ICON[sev]} {agent}"
         n.body = _cut(event.get("text"), 3500)
+    elif t == "budget_warning":
+        n.severity = "critical" if event.get("severity") == "critical" else "warning"
+        n.ref_kind, n.ref_id = t, event.get("budget_id", "")
+        n.title = f"{SEVERITY_ICON[n.severity]} Budget: {event.get('target')} at {float(event.get('pct') or 0):.0f}%"
+        n.body = _cut(event.get("text"), 1500)
     elif t == "skill_applied":
         n.title = f"{agent} added the skill {event.get('skill')} (v{event.get('version')})"
     elif t == "tool_approval_decision":

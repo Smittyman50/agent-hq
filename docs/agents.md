@@ -228,8 +228,8 @@ An approval is a grant for that agent in that conversation, and it expires. Your
 ### Provider slots and the usage ledger
 
 - **Slots:** each model provider has **Max concurrent requests** (Settings → Model providers; 0 = no limit). It caps how many model calls run against that provider at once, across every worker, so a burst of agents and sub-agents queues instead of swamping a GPU box. Slots are leases in Valkey that are renewed while a call runs, so a crashed worker can't hold one for more than 90 seconds.
-- **The ledger:** every agent run (chat turn, delegated task or sub-agent task) is recorded with its model, model requests, tokens and wall-clock time. **Settings → Usage** totals these by agent (sub-agent runs count under the agent that created them), by model and by day. Request estimates use the same numbers.
-- **Daily budgets** aren't built yet, on purpose: watch the real numbers here first.
+- **The ledger:** every agent run (chat turn, delegated task or sub-agent task) is recorded with its model, model requests, tokens and wall-clock time. **Reports → Usage history** totals these by agent (sub-agent runs count under the agent that created them), by model and by day. Request estimates use the same numbers.
+- **Budgets:** **Reports → Budgets** splits the ledger by where the work ran (your hardware, a plan, a per-token API), estimates API cost, totals each goal, and warns you when an agent or a provider nears a limit you set. Budgets never stop anything. Agents allowed sub-agents (or with a fallback model) get `check_budget`, and the request card shows the budgets each proposed model would count toward. See [Budgets](budgets.md).
 
 ## Disabling and deleting agents
 

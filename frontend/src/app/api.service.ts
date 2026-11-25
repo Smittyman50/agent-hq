@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 
 export interface AgentDeletePlan {
   can_delete: boolean; reason: string | null;
-  conversations: number; messages: number; schedules: number; subscriptions: number;
+  conversations: number; messages: number; schedules: number; subscriptions: number; budgets?: number;
   memories: number; skills: number; test_cases: number; goals_unassigned: number; subagents: number;
 }
 
@@ -127,7 +127,8 @@ export interface SubagentPlan {
 export interface SubagentEstimate {
   subagents: { role: string; model: string; model_details: string; runs_on: string; est_minutes: number;
     provider_slots: number; slots_free_now: number | null;
-    ledger: { runs: number; avg_seconds?: number; avg_requests?: number; avg_tokens?: number; days?: number } }[];
+    ledger: { runs: number; avg_seconds?: number; avg_requests?: number; avg_tokens?: number; days?: number };
+    budgets?: string[] }[];
   total_minutes: number; peak_concurrent: number; wall_minutes: number;
   overlaps: { role: string; closest_agent: string; score: number }[];
   overlap_check: boolean;
@@ -202,6 +203,39 @@ export interface UsageGroup {
   runs: number; failed: number; requests: number; input_tokens: number; output_tokens: number;
   seconds: number; avg_seconds: number; avg_tokens: number;
 }
+export type RunsOn = 'local' | 'plan' | 'api' | 'unknown';
+export interface SpendTotals {
+  runs: number; requests: number; input_tokens: number; output_tokens: number; seconds: number;
+  cost_usd: number; unpriced_runs: number;
+}
+export interface SpendProvider extends SpendTotals {
+  provider_id: string | null; provider: string; kind: string; runs_on: RunsOn;
+  models: (SpendTotals & { model: string; price_per_mtok?: [number, number] | null })[];
+}
+export interface GoalSpend extends SpendTotals {
+  id: string; title: string; status: string; agent: string; started_at: string | null;
+  finished_at: string | null; turns: number; local_seconds: number; cloud_requests: number;
+}
+export type BudgetMetric = 'requests' | 'tokens' | 'local_minutes' | 'cost_usd';
+export interface BudgetIn {
+  id?: string; scope: 'agent' | 'provider'; target_id: string; period: 'day' | 'week' | 'month';
+  metric: BudgetMetric; limit: number; warn_pct: number; enabled: boolean; note: string;
+}
+export interface BudgetStatus extends BudgetIn {
+  id: string; target_name: string; metric_label: string; metric_noun: string; used: number; pct: number;
+  level: 'ok' | 'warn' | 'over' | 'off'; unpriced_runs: number; resets_at: string;
+}
+export interface PriceInfo { fetched_at: string | null; source: string | null; models: number; error: string; tried_at: string | null; }
+export interface BudgetReport {
+  days: number; by_class: Partial<Record<RunsOn, SpendTotals>>; by_provider: SpendProvider[];
+  goals: GoalSpend[]; budgets: BudgetStatus[]; pricing: PriceInfo & { enabled: boolean };
+}
+export interface BudgetTargets {
+  agents: { id: string; name: string }[]; providers: { id: string; name: string; runs_on: RunsOn }[];
+  metrics: Record<BudgetMetric, string>; periods: string[];
+}
+export interface BudgetSettings { pricing: boolean; pricing_url: string; refresh_hours: number; prices: PriceInfo; }
+
 export interface UsageReport {
   days: number; total: UsageGroup | null; subagents: UsageGroup | null;
   by_agent: (UsageGroup & { agent: string; subagent_runs: number })[];
@@ -1058,6 +1092,15 @@ export class Api {
   saveSubagentCaps(c: SubagentCaps) { return this.http.put<SubagentCaps>('/api/settings/subagents', c); }
   liveSubagents() { return this.http.get<LiveSubagents>('/api/subagents/live'); }
   usage(days: number) { return this.http.get<UsageReport>('/api/usage', { params: { days } }); }
+  budgetReport(days: number) { return this.http.get<BudgetReport>('/api/budgets/report', { params: { days } }); }
+  budgetTargets() { return this.http.get<BudgetTargets>('/api/budgets/targets'); }
+  saveBudget(b: BudgetIn) {
+    return b.id ? this.http.put<BudgetStatus>(`/api/budgets/${b.id}`, b) : this.http.post<BudgetStatus>('/api/budgets', b);
+  }
+  deleteBudget(id: string) { return this.http.delete<void>(`/api/budgets/${id}`); }
+  budgetSettings() { return this.http.get<BudgetSettings>('/api/budgets/settings'); }
+  saveBudgetSettings(v: Partial<BudgetSettings>) { return this.http.put<BudgetSettings>('/api/budgets/settings', v); }
+  refreshPrices() { return this.http.post<PriceInfo>('/api/budgets/prices/refresh', {}); }
   activity(window: number) { return this.http.get<ActivitySnapshot>('/api/activity', { params: { window } }); }
 
   workers() { return this.http.get<WorkerInfo[]>('/api/system/workers'); }

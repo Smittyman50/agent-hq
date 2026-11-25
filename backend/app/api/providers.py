@@ -123,6 +123,11 @@ def delete_provider(provider_id: str, s: Session = Depends(get_session)):
     if users:
         names = ", ".join(a.name for a in users)
         raise HTTPException(409, f"still used by: {names}. Move those agents to another provider first.")
+    from ..models import SpendBudget
+
+    for b in s.exec(select(SpendBudget).where(SpendBudget.scope == "provider",
+                                              SpendBudget.target_id == provider_id)).all():
+        s.delete(b)  # its budgets go with it
     s.delete(p)
     s.commit()
 
